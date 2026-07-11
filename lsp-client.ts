@@ -30,6 +30,7 @@ import {
 	type Diagnostic,
 	type DocumentDiagnosticReport,
 	type FullDocumentDiagnosticReport,
+	type PublishDiagnosticsParams,
 } from "vscode-languageserver-protocol/node";
 
 // Importing from the /node subpath auto-installs the jsonrpc Node RAL
@@ -256,6 +257,17 @@ export class LspClient {
 	private ready: Promise<void> | null = null;
 	/** Documents opened on this server, keyed by file URI. */
 	private openDocs = new Map<string, number>();
+	/**
+	 * Latest push-model diagnostics per URI, populated by the
+	 * textDocument/publishDiagnostics notification handler. Latest-wins: each
+	 * notification replaces the previous set for that URI (the spec sends a
+	 * full set, not a delta). Used as a synchronous fallback for
+	 * code_diagnostics on servers that reject the LSP 3.17 pull model
+	 * (typescript-language-server, bash-language-server, ccls) — the tool opens
+	 * the document, waits briefly for the server's delayer to fire, then reads
+	 * this map. Cleared on server exit/shutdown alongside openDocs.
+	 */
+	private diagnosticsByUri = new Map<string, Diagnostic[]>();
 
 	constructor(lang: Lang, rootPath: string, cfg: ServerConfig) {
 		this.lang = lang;
@@ -297,12 +309,24 @@ export class LspClient {
 			this.capabilities = null;
 			this.ready = null;
 			this.openDocs.clear();
+			this.diagnosticsByUri.clear();
 		});
 
 		// StreamMessageReader/Writer accept NodeJS streams directly (node RAL).
 		const reader = new StreamMessageReader(proc.stdout);
 		const writer = new StreamMessageWriter(proc.stdin);
 		const conn = createMessageConnection(reader, writer, silentLogger);
+		// Register the push-diagnostics handler BEFORE sending initialize, so no
+		// early publishDiagnostics notification (sent right after didOpen on some
+		// servers) is missed. String method name, per the landmine #2 rule.
+		conn.onNotification(
+			"textDocument/publishDiagnostics",
+			(params: PublishDiagnosticsParams) => {
+				const uri = params.uri;
+				const diags = params.diagnostics ?? [];
+				this.diagnosticsByUri.set(uri, diags);
+			},
+		);
 		conn.listen();
 		this.conn = conn;
 
@@ -319,11 +343,29 @@ export class LspClient {
 						hierarchicalDocumentSymbolSupport: true,
 					},
 					rename: { prepareSupport: false },
-					// Advertise support for the diagnostic pull model (LSP 3.17). Servers
-					// that implement textDocument/diagnostic (pyright/ty) will then
-					// advertise diagnosticProvider in their ServerCapabilities, which we
-					// check via supportsPullDiagnostics(). code_diagnostics is a pure
-					// request/response tool (pull) — no publishDiagnostics collection.
+					// Advertise support for BOTH diagnostics models so each server
+					// can pick the one it implements:
+					//  - Pull (textDocument/diagnostic, LSP 3.17): pyright/ty implement
+					//    it and answer the request (pyright even without advertising
+					//    diagnosticProvider). code_diagnostics tries pull first.
+					//  - Push (textDocument/publishDiagnostics): typescript-language-
+					//    server gates its ENTIRE diagnostics flow on
+					//    Boolean(clientCapabilities.textDocument.publishDiagnostics)
+					//    (cli.mjs: diagnosticsSupport = Boolean(publishDiagnostics));
+					//    without this cap it sends zero notifications no matter how
+					//    long you wait. bash-language-server/ccls likewise push via
+					//    this notification. We collect into diagnosticsByUri (latest-
+					//    wins) and code_diagnostics falls back to that map when the
+					//    pull request is rejected. The tool contract stays
+					//    synchronous; the push cache is an implementation detail.
+					publishDiagnostics: {
+						// We don't render diagnostic tags, related information, or
+						// version fields; the mere PRESENCE of this capability key
+						// is what typescript-language-server gates its diagnostics
+						// flow on (Boolean(clientCaps.textDocument.publishDiagnostics)).
+						versionSupport: false,
+					},
+					// Pull model advertisement (see above).
 					diagnostic: {
 						dynamicRegistration: false,
 						relatedDocumentSupport: false,
@@ -541,6 +583,27 @@ export class LspClient {
 		return null;
 	}
 
+	/**
+	 * Read the latest push-model diagnostics cached for `absPath` from the
+	 * textDocument/publishDiagnostics handler, or undefined if none have arrived
+	 * yet. This is the FALLBACK for code_diagnostics on servers that reject the
+	 * pull model (typescript-language-server, bash-language-server, ccls): the
+	 * tool opens the document, waits for the server's diagnostics delayer to
+	 * fire, then polls this. Returns a snapshot copy so the caller can iterate
+	 * without the notification handler mutating the array mid-loop.
+	 *
+	 * The push model is only active because start() advertises
+	 * textDocument.publishDiagnostics in client capabilities — without that,
+	 * typescript-language-server gates its whole diagnostics flow off
+	 * (diagnosticsSupport = Boolean(clientCaps.textDocument.publishDiagnostics))
+	 * and sends zero notifications.
+	 */
+	getPushedDiagnostics(absPath: string): Diagnostic[] | undefined {
+		const uri = pathToFileURL(absPath).href;
+		const diags = this.diagnosticsByUri.get(uri);
+		return diags ? [...diags] : undefined;
+	}
+
 	/** Graceful LSP shutdown + exit. Safe to call multiple times. */
 	async shutdown(): Promise<void> {
 		const conn = this.conn;
@@ -551,6 +614,7 @@ export class LspClient {
 		this.capabilities = null;
 		this.ready = null;
 		this.openDocs.clear();
+		this.diagnosticsByUri.clear();
 		try {
 			await conn.sendRequest("shutdown");
 			conn.sendNotification("exit", null);

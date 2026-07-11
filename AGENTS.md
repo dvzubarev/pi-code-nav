@@ -6,10 +6,10 @@ pi extension providing LSP-backed code navigation tools for the LLM.
 
 Eight tools the LLM can call after `/code-nav` enables them: `code_outline`,
 `code_definition`, `code_references`, `code_symbol`, `code_rename`,
-`code_hover`, `code_symbols_in` (tree-sitter), `code_diagnostics` (LSP pull
-model). Six are backed by real language servers (ccls/ty/pyright/
-bash-language-server/typescript-language-server), one by in-process WASM
-tree-sitter, one is a diagnostic reporter. Tool params are 1-based; LSP is
+`code_hover`, `code_symbols_in` (tree-sitter), `code_diagnostics` (LSP
+pull-first, push-fallback). Six are backed by real language servers
+(ccls/ty/pyright/bash-language-server/typescript-language-server), one by
+in-process WASM tree-sitter, one is a diagnostic reporter. Tool params are 1-based; LSP is
 0-based — translation happens in the tool layer.
 
 ## Files
@@ -58,8 +58,18 @@ tree-sitter, one is a diagnostic reporter. Tool params are 1-based; LSP is
    `/code-nav` command, not `session_start`. Most sessions pay zero cost.
 4. **No idle timeout on servers.** ccls re-indexing is expensive; the user
    wants servers alive for the whole session.
-5. **`code_diagnostics` is pull-model only.** No `publishDiagnostics`
-   handler. Do not add push-notification collection.
+5. **`code_diagnostics` is pull-first with a bounded push fallback.** It
+   tries the LSP 3.17 `textDocument/diagnostic` request first (pyright/ty
+   answer it); on rejection (tsserver/bash-language-server/ccls) it falls back
+   to the `publishDiagnostics` notification cache — a latest-wins per-URI map
+   populated by a handler in `LspClient.start()`, read with a bounded ~1.2s
+   poll. The tool contract stays synchronous (one call → one result string).
+   Do NOT convert this to an open-ended/unbounded notification collector the
+   tool waits on unpredictably — that's the async collection the user
+   rejected. The push fallback REQUIRES advertising
+   `textDocument.publishDiagnostics` in client caps (tsserver gates its whole
+   diagnostics flow on `Boolean(clientCaps.textDocument.publishDiagnostics)`;
+   without it, zero notifications).
 6. **1-based ↔ 0-based translation.** All tool params are 1-based; every tool
    does `line - 1` / `column - 1` before calling LSP. Output is uniformly
    1-based so positions round-trip between tools.

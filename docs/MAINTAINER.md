@@ -235,66 +235,71 @@ key like `compilationDatabaseDirectory` without surgery.
 - **No multi-root workspace support.** `ctx.cwd` is the single root, per the
   user's instruction. pyright's `multiRoot: false` mirrors this.
 
-### `code_diagnostics` — design notes (the pull model, not push)
+### `code_diagnostics` — design notes (pull first, push fallback)
 
 There are now eight tools; `code_diagnostics` was added later than the original
 seven. It reports errors/warnings for a file.
 
-**The pull model is the only design, deliberately.** LSP has two diagnostics
+**The design is pull-first with a push fallback.** LSP has two diagnostics
 flows:
-- *Push* (`textDocument/publishDiagnostics`): the server sends a
-  notification whenever it finishes analyzing a document. The client collects
-  diagnostics into a per-URI map and reads them later. This is **async** — the
-  server publishes on its own schedule, and the client must keep a notification
-  handler around to gather results over time.
 - *Pull* (`textDocument/diagnostic`, LSP 3.17): the client sends a request
-  for a specific document and the server returns that document's diagnostic set
-  in the response. One request → one response.
+  for a specific document and the server returns that document's diagnostic
+  set in the response. One request → one response.
+- *Push* (`textDocument/publishDiagnostics`): the server sends a notification
+  whenever it finishes analyzing a document. The client collects diagnostics
+  into a per-URI map and reads them later.
 
 The user-facing tool contract is synchronous: the agent calls
-`code_diagnostics(path)`, waits, and gets the result back. The user explicitly
-rejected the push-notification approach ("No async bullshit from
-notifications from the lsp server"). So `code_diagnostics` uses the **pull
-model only**: `openDocument` (required for the server to analyze the file) →
-`textDocument/diagnostic` request → render the response. There is NO
-`publishDiagnostics` handler and NO per-URI notification cache anywhere in
-`lsp-client.ts` or `index.ts`. Do not add one — it would reintroduce the async
-collection the user rejected.
+`code_diagnostics(path)`, waits, and gets the result back. The user
+explicitly rejected an *open-ended* push-notification collection ("No async
+bullshit from notifications from the lsp server"). The pull model is the
+natural fit — but only pyright/ty answer the pull request (see table below).
+For servers that reject the pull request (tsserver, bash-language-server,
+ccls), the tool falls back to a **bounded** read of the push cache:
+`openDocument` → poll `LspClient.getPushedDiagnostics()` for up to ~1.2s →
+render. The push cache (`diagnosticsByUri` in `LspClient`) is latest-wins per
+URI, populated by a `textDocument/publishDiagnostics` handler installed in
+`start()`. It is NOT an open-ended collector the tool waits on unpredictably —
+the poll has a fixed ~1.2s budget (tsserver's diagnostics delayer is 300-800ms
+by line count; ccls publishes after indexing). This honors the synchronous
+contract: one tool call → one result string.
 
-**Do NOT gate on advertised capabilities.** Capability advertisement for the
-pull model is unreliable across the servers we support, verified empirically:
+**The push fallback is gated on a CLIENT capability we must advertise.**
+typescript-language-server gates its ENTIRE diagnostics flow on
+`Boolean(clientCapabilities.textDocument.publishDiagnostics)` (cli.mjs:
+`diagnosticsSupport = Boolean(publishDiagnostics)`). Without that cap it sends
+*zero* `publishDiagnostics` notifications no matter how long you wait — the
+server silently does nothing. `LspClient.start()` advertises
+`textDocument.publishDiagnostics: { versionSupport: false }` in client caps
+precisely so tsserver/bash-language-server/ccls opt in. This is harmless to
+pyright/ty (they ignore the field and answer pull anyway).
 
-| Server               | Advertises `diagnosticProvider`? | `textDocument/diagnostic` works? |
-| -------------------- | ------------------------------- | ------------------------------- |
-| ty (Astral)          | yes                             | yes (returns diagnostics)        |
-| pyright-langserver   | **no**                          | **yes** (answers anyway)          |
-| ccls                 | no                              | no (rejected)                    |
-| bash-language-server | no                              | no (rejected: "Unhandled method")|
-| typescript-language-server | no                        | no (rejected: "Unhandled method")|
+**Do NOT gate on advertised SERVER capabilities.** Capability advertisement
+for the pull model is unreliable across the servers we support, verified
+empirically:
+
+| Server               | Advertises `diagnosticProvider`? | `textDocument/diagnostic` works? | Push fallback used? |
+| -------------------- | ------------------------------- | ------------------------------- | ------------------- |
+| ty (Astral)          | yes                             | yes (returns diagnostics)        | no (pull works)     |
+| pyright-langserver   | **no**                          | **yes** (answers anyway)          | no (pull works)     |
+| ccls                 | no                              | no (rejected)                    | yes (after indexing) |
+| bash-language-server | no                              | no (rejected: "Unhandled method")| yes                  |
+| typescript-language-server | no                        | no (rejected: "Unhandled method")| yes                  |
 
 `LspClient.supportsPullDiagnostics()` exists as introspection (it reads
 `ServerCapabilities.diagnosticProvider`) but the tool does **not** pre-gate
-on it — pyright would be wrongly rejected if it did. The tool sends the
-request and lets the server's actual response decide: a server that can't
-answer returns a JSON-RPC error, which the tool surfaces honestly
-(`bash: textDocument/diagnostic request failed: Unhandled method ...`).
-TypeScript is the same (`typescript: textDocument/diagnostic request failed:
-Unhandled method ...`). This is more accurate than trusting advertised
-capabilities.
+on it — pyright would be wrongly rejected if it did. The tool tries pull
+first; on rejection it falls back to the push cache; if the push cache is
+also empty after the budget, it surfaces the pull error honestly. This is
+more accurate than trusting advertised capabilities.
 
-**`ccls` note.** ccls rejects the pull request. If C++ diagnostics become
-important, the only synchronous option for ccls is the pull model (which it
-lacks) — you'd have to either (a) switch C++ to clangd (which implements the
-pull model) via `.pi/lsp.json`, or (b) reconsider the user's no-push-policy
-for C++ specifically (not recommended). Do not silently fall back to a
-publishDiagnostics cache; that violates the synchronous contract.
-
-`renderDiagnostic` in `index.ts` (and its mirror in `nav-cli.mjs`) prints
-1-based `path:line:col` (the diagnostic range start, +1 from 0-based LSP),
-severity name (`error`/`warning`/`info`/`hint`), optional `source` and
-`(code)`, and the message. Output positions are reusable as `line`/`column`
-input to `code_hover`/`code_definition`/`code_references`, matching the
-round-trip contract of the other tools.
+`renderDiagnostic` (in `render.ts`) prints 1-based `path:line:col` (the
+diagnostic range start, +1 from 0-based LSP), severity name
+(`error`/`warning`/`info`/`hint`), optional `source` and `(code)`, and the
+message. Output positions are reusable as `line`/`column` input to
+`code_hover`/`code_definition`/`code_references`, matching the round-trip
+contract of the other tools. Both pull and push diagnostics render through
+the same path (`renderDiagnostics` in `nav.ts`).
 
 ### Testing what's here
 
@@ -451,13 +456,16 @@ true immediately when `openDocs.size > 0` or when `lang !== "typescript"`).
 all open the target document first, so they load the project naturally and
 don't need `ensureProjectLoaded`.
 
-**No pull diagnostics.** typescript-language-server does not implement the
-LSP 3.17 `textDocument/diagnostic` pull model — it uses the push
-`publishDiagnostics` model. `code_diagnostics` is pull-only (by design — see
-the "code_diagnostics design notes" section and landmine #5 in AGENTS.md), so
-it returns a `"Unhandled method textDocument/diagnostic"` error for TS files.
-This is the same documented limitation as bash-language-server. Do NOT add
-`publishDiagnostics` collection to "fix" this.
+**Diagnostics via push fallback.** typescript-language-server does NOT
+implement the LSP 3.17 `textDocument/diagnostic` pull model — it rejects the
+request with "Unhandled method". `code_diagnostics` falls back to the
+`textDocument/publishDiagnostics` push cache for TS/JS files (see "code_diagnostics
+— design notes" above). This only works because `LspClient.start()` advertises
+`textDocument.publishDiagnostics` in client capabilities; without that cap,
+tsserver gates its whole diagnostics flow off (`diagnosticsSupport =
+Boolean(clientCaps.textDocument.publishDiagnostics)`) and sends zero
+notifications. The tool polls the cache for up to ~1.2s (tsserver delays
+300-800ms by line count).
 
 **Tree-sitter for `.tsx`/`.jsx` uses the `tsx` grammar, not `typescript`.**
 The `typescript` tree-sitter grammar mis-parses JSX (`<Card>` becomes
@@ -500,10 +508,14 @@ spawn time (`process.env.HOME`) — keep that dynamic, don't hardcode.
   isolation with node + the two npm deps. Diagnostics: `supportsPullDiagnostics()`
   (capability introspection only — do not gate on it) and `pullDiagnostics(absPath)`
   (the LSP 3.17 textDocument/diagnostic request; throws if the server rejects
-  the method). The client advertises `textDocument.diagnostic` capability in
-  `initialize` so servers that gate on client caps will offer the pull model.
-  There is NO `publishDiagnostics` handler in this file (the push model is
-  deliberately unused — see "code_diagnostics — design notes" above).
+  the method). The client advertises BOTH `textDocument.diagnostic` (pull) and
+  `textDocument.publishDiagnostics` (push) capabilities in `initialize`. The
+  push cap is REQUIRED for typescript-language-server, which gates its whole
+  diagnostics flow on `Boolean(clientCaps.textDocument.publishDiagnostics)`.
+  A `conn.onNotification("textDocument/publishDiagnostics", ...)` handler
+  (string method name, per landmine #2) populates `diagnosticsByUri` (latest-
+  wins per URI); `getPushedDiagnostics(absPath)` reads a snapshot of it for the
+  `code_diagnostics` push fallback. See "code_diagnostics — design notes" above.
 - `index.ts` — `codeNavExtension(pi)`: registers the 3 slash commands + the
   `session_shutdown` hook at load; `registerTools()` (called only by
   `/code-nav`) registers the 8 LLM tools (6 LSP + `code_symbols_in` +

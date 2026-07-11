@@ -502,29 +502,80 @@ export async function diagnostics(
 		return `${lang}: server unavailable: ${e}`;
 	}
 	// Open the document on the server. didOpen is required for the server
-	// to analyze the file; the pull model (textDocument/diagnostic)
-	// operates on opened documents. Idempotent (openDocument dedupes by URI).
+	// to analyze the file; both the pull model (textDocument/diagnostic) and
+	// the push model (textDocument/publishDiagnostics) operate on opened
+	// documents. Idempotent (openDocument dedupes by URI).
 	await client.openDocument(abs, text);
-	// Send the pull request. We do NOT pre-gate on
-	// supportsPullDiagnostics(): pyright answers textDocument/diagnostic
-	// without advertising diagnosticProvider, while bash-language-server
-	// rejects it with a JSON-RPC "Unhandled method" error. The request
-	// itself is the source of truth — a server that can't answer returns
-	// an error we surface honestly (no silent empty/stale results).
-	let diags: Diagnostic[] | null;
+	// Try the pull model first (LSP 3.17 textDocument/diagnostic). We do NOT
+	// pre-gate on supportsPullDiagnostics(): pyright answers without
+	// advertising diagnosticProvider, while bash-language-server rejects with
+	// a JSON-RPC "Unhandled method" error. The request itself is the source
+	// of truth: a server that can't answer returns an error we fall back
+	// from (below) rather than trusting advertised capabilities.
+	let diags: Diagnostic[] | null | undefined;
+	let pullError: Error | null = null;
 	try {
 		diags = await client.pullDiagnostics(abs);
 	} catch (e) {
-		return `${lang}: textDocument/diagnostic request failed: ${e instanceof Error ? e.message : e}`;
+		pullError = e instanceof Error ? e : new Error(String(e));
 	}
-	if (diags === null) {
+	// FALLBACK: push model (textDocument/publishDiagnostics). Servers that reject
+	// the pull model (typescript-language-server, bash-language-server, ccls)
+	// still emit publishDiagnostics notifications after didOpen, but only if the
+	// client advertised textDocument.publishDiagnostics in initialize (which
+	// LspClient.start() now does). The notification handler in LspClient caches
+	// the latest set per URI; we poll it for up to ~1.2s to let the server's
+	// diagnostics delayer fire (tsserver delays 300-800ms by line count; ccls
+	// publishes after indexing). The tool contract stays synchronous - this is
+	// a bounded wait, not open-ended collection.
+	if (pullError || diags === null) {
+		const pushed = await pollPushedDiagnostics(client, abs);
+		if (pushed !== undefined) {
+			// Push succeeded. If the push cache is ALSO empty but pull rejected,
+			// mention the pull failure so the user can tell a clean file from a
+			// silent server.
+			if (pushed.length === 0 && pullError) {
+				return `(no diagnostics for ${params.path}; pull model rejected: ${pullError.message})`;
+			}
+			return renderDiagnostics(params.path, pushed);
+		}
+		// No push diagnostics arrived either - surface the pull error honestly.
+		if (pullError) {
+			return `${lang}: textDocument/diagnostic request failed: ${pullError.message}`;
+		}
 		return `(no diagnostics returned for ${params.path})`;
 	}
-	if (diags.length === 0) {
-		return `(no diagnostics for ${params.path})`;
+	return renderDiagnostics(params.path, diags as Diagnostic[]);
+}
+
+/**
+ * Poll the client's push-diagnostics cache for `absPath` until it has a value
+ * or the budget (~1.2s) is exhausted. Returns undefined if nothing arrived.
+ * Servers that push publishDiagnostics do so on their own schedule (tsserver:
+ * a Delayer(300) + a 300-800ms computed delay after didOpen). The first poll
+ * is immediate (the server may have already fired during initialize/didOpen
+ * round-trips); later polls back off.
+ */
+async function pollPushedDiagnostics(
+	client: LspClient,
+	absPath: string,
+): Promise<Diagnostic[] | undefined> {
+	const waits = [0, 100, 200, 300, 600]; // ~1.2s total budget
+	for (const w of waits) {
+		if (w > 0) await new Promise((r) => setTimeout(r, w));
+		const diags = client.getPushedDiagnostics(absPath);
+		if (diags !== undefined) return diags;
 	}
-	const lines = diags.map((d) => renderDiagnostic(params.path, d));
-	return `${diags.length} diagnostic(s) for ${params.path}:\n` + lines.join("\n");
+	return undefined;
+}
+
+/** Shared renderer for the diagnostic list (pull or push origin). */
+function renderDiagnostics(path: string, diags: Diagnostic[]): string {
+	if (diags.length === 0) {
+		return `(no diagnostics for ${path})`;
+	}
+	const lines = diags.map((d) => renderDiagnostic(path, d));
+	return `${diags.length} diagnostic(s) for ${path}:\n` + lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
