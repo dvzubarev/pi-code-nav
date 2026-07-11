@@ -451,7 +451,7 @@ path and line range across a turn.
 ## Testing this
 
 - A `symbols-in <file> <startLine:1> <endLine:1> [--docs] [--roles type,call,...]`
-  subcommand was added to `lsp-nav-cli-testing/nav-cli.mjs`, mirroring
+  subcommand was added to `scripts/nav-cli.mjs`, mirroring
   `code_symbols_in`'s output exactly (the harness's "precise mirror of
   `index.ts` output" rule applies). `--roles` mirrors the tool's `roles`
   parameter (default: `type,call,member,import` — omit `var`).

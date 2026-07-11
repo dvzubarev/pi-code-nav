@@ -318,7 +318,7 @@ can't resolve the pi package outside jiti). To re-test:
    (jiti) resolves these differently so the extension still loads even if
    tsc can't find types — but keep tsc green.
 
-### The CLI test harness — `lsp-nav-cli-testing/nav-cli.mjs`
+### The CLI test harness — `scripts/nav-cli.mjs`
 
 There is now a dedicated CLI harness that exercises the six tool wrappers
 **without pi or an LLM**, so you can see exactly what text an agent would

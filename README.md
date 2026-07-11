@@ -253,7 +253,7 @@ contracts. Add tests there when changing `classifyRole` or rendering.
 
 Integration tests for `lsp-client.ts` (and the tool layer in `index.ts`) are
 not included — they require real LSP servers running and a workspace to index.
-Use `lsp-nav-cli-testing/nav-cli.mjs` for manual end-to-end checks against the
+Use `scripts/nav-cli.mjs` for manual end-to-end checks against the
 live servers.
 
 ## Verified

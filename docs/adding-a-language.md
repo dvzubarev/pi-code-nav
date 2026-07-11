@@ -110,7 +110,7 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
     7), the LSP client is spawned via `tsLangToLspLang(tsLang)`, **not** a
     bare `tsLang as Lang` cast. That cast is only valid when `TsLang == Lang`.
 
-## 4. CLI test harness — `lsp-nav-cli-testing/nav-cli.mjs`
+## 4. CLI test harness — `scripts/nav-cli.mjs`
 
 13. Mirror every change above. `nav-cli.mjs` MUST stay a precise mirror of
     `index.ts` output formatting — that is its whole point. Specifically:
@@ -163,7 +163,7 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
 - `npm run check` — tsc passes (the `Lang` union widening surfaces every
   `Record<Lang, ...>` that needs the new key).
 - `npm test` — all unit tests pass, including the new `test/<lang>.test.mjs`.
-- End-to-end: run `node lsp-nav-cli-testing/nav-cli.mjs` against a real file
+- End-to-end: run `node scripts/nav-cli.mjs` against a real file
   of the new language for `outline`, `symbol`, `symbols-in --docs`,
   `definition`, `references`, `hover`. The last three are the round-trip
   that `code_symbols_in` positions must satisfy.

@@ -26,7 +26,7 @@ tree-sitter, one is a diagnostic reporter. Tool params are 1-based; LSP is
 - `tree-sitter-parse.ts` — `parseSymbols()` parses a line range with WASM
   tree-sitter, returns a deduplicated symbol table. No pi or LSP dependency.
 - `test/` — unit tests for `tree-sitter-parse.ts` (pure tree-sitter, no LSP).
-- `lsp-nav-cli-testing/nav-cli.mjs` — CLI harness exercising the LSP tools
+- `scripts/nav-cli.mjs` — CLI harness exercising the LSP tools
   without pi/LLM. Must mirror `index.ts` output formatting exactly.
 - `docs/MAINTAINER.md` — the "why" behind every decision and the landmines.
   **Read before touching `index.ts` or `lsp-client.ts`.**
