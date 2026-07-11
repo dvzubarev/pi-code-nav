@@ -1,0 +1,28 @@
+{
+  "name": "pi-extension-code-nav",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LSP-backed code navigation extension for pi",
+  "keywords": ["pi-package"],
+  "scripts": {
+    "clean": "rm -rf node_modules",
+    "build": "echo 'nothing to build — jiti loads .ts at runtime'",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test:unit": "node --test test/*.test.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "dependencies": {
+    "tree-sitter-wasm": "^1.1.2",
+    "vscode-jsonrpc": "^8.2.1",
+    "vscode-languageserver-protocol": "^3.17.5",
+    "web-tree-sitter": "^0.26.10"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.3"
+  }
+}

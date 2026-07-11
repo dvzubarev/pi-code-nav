@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@earendil-works/pi-coding-agent": [
+        "/home/denin/.npm-local/lib/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"
+      ],
+      "typebox": [
+        "/home/denin/.npm-local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/build/index.d.mts"
+      ],
+      "@earendil-works/pi-ai": [
+        "/home/denin/.npm-local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.d.ts"
+      ],
+      "vscode-languageserver-protocol/node": [
+        "./node_modules/vscode-languageserver-protocol/lib/node/main.d.ts"
+      ],
+      "vscode-languageserver-protocol": [
+        "./node_modules/vscode-languageserver-protocol/lib/common/api.d.ts"
+      ]
+    }
+  },
+  "include": ["index.ts", "lsp-client.ts", "tree-sitter-parse.ts"]
+}
