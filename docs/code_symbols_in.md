@@ -451,11 +451,12 @@ path and line range across a turn.
 ## Testing this
 
 - A `symbols-in <file> <startLine:1> <endLine:1> [--docs] [--roles type,call,...]`
-  subcommand was added to `scripts/nav-cli.mjs`, mirroring
-  `code_symbols_in`'s output exactly (the harness's "precise mirror of
-  `index.ts` output" rule applies). `--roles` mirrors the tool's `roles`
-  parameter (default: `type,call,member,import` — omit `var`).
-  `definition ... --list-symbols` mirrors the `list_symbols` integration
+  subcommand in `scripts/nav-cli.mjs` calls the same `nav.symbolsIn` the
+  `code_symbols_in` tool uses (no separate formatting to keep in sync).
+  `--roles` passes through to the tool's `roles` parameter (default:
+  `type,call,member,import` — omit `var`).
+  `definition ... --list-symbols` calls `nav.definition` with
+  `list_symbols: true`, same as the `list_symbols` integration
   (same default role set). If you change rendering in `tree-sitter-parse.ts`
   (`renderSymbolTable`, `hoverFirstLine`) or the role classification, make the
   same change in the CLI and vice versa.

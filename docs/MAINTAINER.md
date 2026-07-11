@@ -298,19 +298,20 @@ round-trip contract of the other tools.
 
 ### Testing what's here
 
-The smoke tests were deleted after verification (they hardcoded `/tmp` paths
-and imported the bare `.ts` via node's `--experimental-strip-types`, which
-can't resolve the pi package outside jiti). To re-test:
-1. Write a small `.py` file, then run a node script that imports
-   `./lsp-client.ts` (with `--experimental-strip-types`) and calls
-   `ensureReady` + `documentSymbols` + `hover`. This works standalone because
-   `lsp-client.ts` only depends on the two npm packages, not on pi.
-2. To test the full extension including tools, use pi RPC:
-   `printf '{"type":"get_commands"}' | pi --mode rpc --no-session` and
-   grep for `code-nav`. The tools themselves can only be exercised by the
-   LLM after `/code-nav`, so a real test means enabling in a session and
-   asking the model to call `code_outline` on a file.
-3. `tsc -p tsconfig.json` should always exit 0 before you commit. The
+- **Unit tests** (`npm test`, `test/*.test.mjs`): pure tree-sitter,
+  no servers, no pi. Pin `classifyRole` per language, the default role set,
+  dedup, position math, and the `renderSymbolTable` / `hoverFirstLine`
+  formats. Load `tree-sitter-parse.ts` through jiti.
+- **End-to-end tests** (`npm run test:e2e`, `test/*.e2e.mjs`): real language
+  servers. Call the `nav.*` tool implementations (`outline` / `definition` /
+  `references` / `symbol` / `rename` / `hover` / `symbolsIn` / `diagnostics`)
+  through real `LspClient`s scoped to a temp workspace with fixture files —
+  the EXACT code path `index.ts` uses. Skip automatically when a server
+  isn't on PATH (see `serverAvailable` in `test/e2e-helpers.mjs`).
+- **Full extension (commands register)**: `printf '{"type":"get_commands"}' |
+  pi --mode rpc --no-session | grep code-nav`. The tools themselves are best
+  exercised by the LLM after `/code-nav`, or by `npm run test:e2e`.
+- `tsc -p tsconfig.json` should always exit 0 before you commit. The
    tsconfig has `paths` mapping `@earendil-works/pi-coding-agent` and
    `typebox` to the global pi install — these paths are **machine-specific**
    (they point under `/home/denin/.npm-local/lib/...`). If you move machines
@@ -320,19 +321,20 @@ can't resolve the pi package outside jiti). To re-test:
 
 ### The CLI test harness — `scripts/nav-cli.mjs`
 
-There is now a dedicated CLI harness that exercises the six tool wrappers
-**without pi or an LLM**, so you can see exactly what text an agent would
-receive from each `code_*` tool. It imports `lsp-client.ts` directly and
-re-implements the rendering helpers from `index.ts` in plain JS. **It must
-stay a precise mirror of `index.ts`'s output formatting** — that is its whole
-point ("I want to know what is fed to an agent"). If you change rendering in
-`index.ts` (`renderLocation`, `hoverText`, `renderDocSymbol`, the `###`
-headers, the source-snippet extraction, `applyWorkspaceEdit`), make the same
-change in `nav-cli.mjs` and vice versa. The one allowed divergence is error
-handling: the extension pushes `(unknown language for file: …)` / `(cannot
-read …)` into the result text and returns a non-error result; the CLI may
-throw for unrecoverable CLI-usage errors (missing args) since it's a
-human-facing tool.
+A dedicated CLI harness exercises the eight tool implementations **without pi
+or an LLM**, so you can see exactly what text an agent would receive from each
+`code_*` tool. It is a THIN argv-parser around `nav.ts` (which `index.ts` also
+imports) — it does NOT re-implement any rendering or tool logic. Both the
+extension and the CLI import from `render.ts` + `nav.ts`, so they produce
+byte-identical output by construction. **The old "keep nav-cli.mjs in sync
+with index.ts by hand" landmine is gone** — there is nothing to mirror; if you
+change a render function or a tool body, both consumers see it automatically.
+The one allowed divergence is error handling: the extension's single-file
+tools (outline/rename/symbols_in/diagnostics) return `isError: true` on a
+top-level failure (`Unknown language for file: …`, `Cannot read …`); `nav.ts`
+throws `UnknownLanguageError` for the unknown-language case and `index.ts`
+catches it and marks `isError`. The CLI lets that throw to a top-level
+`FAILED:` message (human-facing).
 
 Subcommands (root = cwd or `CODE_NAV_ROOT`):
 ```
@@ -346,11 +348,11 @@ Subcommands (root = cwd or `CODE_NAV_ROOT`):
 `hover`/`definition`/`references` accept **one or more** `(file line col)`
 triples — the extras are batched through one LSP client per language. This
 mirrors the optional `positions` array the `code_definition`/`code_hover`/
-`code_references` tools now accept in `index.ts` (see "Batched positions"
-below). When more than one position is passed, each result block is prefixed
-with `### <path>:<line>:<col>` so the agent/user can correlate results to
-inputs. Single-position calls produce identical output to the old form (no
-header) — so an agent that always passes the scalar form sees no change.
+`code_references` tools accept (see "Batched positions" below). When more
+than one position is passed, each result block is prefixed with
+`### <path>:<line>:<col>` so the agent/user can correlate results to inputs.
+Single-position calls produce identical output to the old form (no header) —
+so an agent that always passes the scalar form sees no change.
 
 ### Batched positions (`positions` array parameter)
 
@@ -361,7 +363,8 @@ wrapped into a one-element list. This lets the agent batch several symbol
 lookups in a single tool call — one round-trip instead of N — which is
 meaningfully cheaper for the model and for the server (one client per
 language, documents opened once). The scalar form remains supported so
-existing prompts and agents don't break.
+existing prompts and agents don't break. (The logic lives in `nav.ts`; both
+`index.ts` and `scripts/nav-cli.mjs` call it.)
 
 **Do not remove the scalar `path`/`line`/`column` parameters** — they are the
 common case and keep the tool ergonomic for a single lookup. The array is the

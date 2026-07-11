@@ -228,12 +228,25 @@ ship as prebuilt WASM — no native compilation, no peer-dependency conflicts.
 ## Testing
 
 Unit tests for `tree-sitter-parse.ts` (the `code_symbols_in` backing module)
-live in `test/` and run with no LSP servers and no pi — pure tree-sitter:
+live in `test/*.test.mjs` and run with no LSP servers and no pi — pure
+tree-sitter:
 
 ```
 npm test            # run all unit tests (node --test test/*.test.mjs)
 npm run test:unit   # same
 ```
+
+End-to-end tests for `nav.ts` (the eight tool implementations) live in
+`test/*.e2e.mjs` and run against **real language servers** via the same
+`nav.*` functions `index.ts` uses at runtime:
+
+```
+npm run test:e2e    # requires the language servers on PATH (project nix shell)
+```
+
+E2e tests are skipped automatically when a server isn't available, so
+`npm run test:e2e` stays green on a server-less machine (reports skips).
+Set `CODE_NAV_SKIP_E2E=1` to force-skip the whole e2e suite.
 
 The harness loads the extension's `.ts` sources through **jiti** — the same
 loader pi uses to load extensions — so module resolution (`node_modules`,
@@ -251,10 +264,10 @@ without wrapping, and comment/string noise is excluded. See `test/core.test.mjs`
 for cross-cutting behavior and `test/{python,cpp,bash}.test.mjs` for per-language
 contracts. Add tests there when changing `classifyRole` or rendering.
 
-Integration tests for `lsp-client.ts` (and the tool layer in `index.ts`) are
-not included — they require real LSP servers running and a workspace to index.
-Use `scripts/nav-cli.mjs` for manual end-to-end checks against the
-live servers.
+Integration tests for `lsp-client.ts` and the tool layer (`nav.ts`) **are
+included** as `test/*.e2e.mjs` (run `npm run test:e2e`). For manual checks,
+`scripts/nav-cli.mjs` is a thin argv-parser around the same `nav.ts` — so
+the CLI's output is byte-identical to what the agent receives.
 
 ## Verified
 

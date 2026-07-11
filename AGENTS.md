@@ -16,18 +16,32 @@ tree-sitter, one is a diagnostic reporter. Tool params are 1-based; LSP is
 
 - `index.ts` — extension entry. Registers 3 slash commands
   (`/code-nav`, `/code-nav:off`, `/code-nav:status`) + `session_shutdown`
-  hook at load; `registerTools()` (only called by `/code-nav`) registers the
-  8 LLM tools. `ServerPool` manages per-language `LspClient` instances.
-  Rendering helpers format LSP results into text. `applyWorkspaceEdit` writes
-  rename results to disk.
+  hook at load; `registerTools()` (only called by `/code-nav`) is now a thin
+  shim around the tool implementations in `nav.ts`. `ServerPool` manages
+  per-language `LspClient` instances.
+- `render.ts` — pure rendering + small helpers (no pi, no LSP, no fs beyond
+  readFile/writeFile in the WorkspaceEdit applier): `symbolKindName`,
+  `renderDocSymbol`, `renderSymbolInfo`, `renderLocation`, `renderDiagnostic`,
+  `hoverText`, `resolveDefBodyRange`, `resolveSymbolSelStart`,
+  `applyWorkspaceEdit`, `langForFile`, `EXT_LANG`. Shared verbatim by
+  `index.ts`, the CLI harness, and the e2e tests — this is what killed the
+  old "keep nav-cli.mjs in sync with index.ts by hand" landmine.
+- `nav.ts` — the eight tool implementations (`outline`, `definition`,
+  `references`, `symbol`, `rename`, `hover`, `symbolsIn`, `diagnostics`) as
+  plain async functions `(params, cwd, clientOf) => text`. No pi dependency;
+  takes a `ClientProvider` (`(lang) => LspClient`) instead of `ServerPool`.
+  `index.ts`'s `registerTools` and `scripts/nav-cli.mjs` both call these, so
+  the CLI and automated tests exercise the EXACT code path the agent uses.
 - `lsp-client.ts` — `LspClient` class: spawn, initialize handshake, per-method
   wrappers, shutdown. Pure transport, no pi dependency. Imports from
   `vscode-languageserver-protocol/node` (NOT the bare package — see below).
 - `tree-sitter-parse.ts` — `parseSymbols()` parses a line range with WASM
   tree-sitter, returns a deduplicated symbol table. No pi or LSP dependency.
-- `test/` — unit tests for `tree-sitter-parse.ts` (pure tree-sitter, no LSP).
-- `scripts/nav-cli.mjs` — CLI harness exercising the LSP tools
-  without pi/LLM. Must mirror `index.ts` output formatting exactly.
+- `test/` — unit tests for `tree-sitter-parse.ts` (pure tree-sitter, no
+  servers, `*.test.mjs`) + end-to-end tests for `nav.ts` (real language
+  servers, `*.e2e.mjs`). Run `npm test` (unit) / `npm run test:e2e` (e2e).
+- `scripts/nav-cli.mjs` — CLI harness exercising the eight tools
+  without pi/LLM. Thin argv-parser around `nav.ts` (no duplicated logic).
 - `docs/MAINTAINER.md` — the "why" behind every decision and the landmines.
   **Read before touching `index.ts` or `lsp-client.ts`.**
 - `docs/code_symbols_in.md` — deep-dive on the tree-sitter tool.
@@ -56,6 +70,7 @@ tree-sitter, one is a diagnostic reporter. Tool params are 1-based; LSP is
 nix develop          # devShell with node + language servers
 npm install          # install node deps (once)
 npm test             # unit tests (pure tree-sitter, no servers needed)
+npm run test:e2e     # end-to-end tests (real language servers; needs servers on PATH)
 npm run check        # tsc --noEmit type-check
 ./install.sh         # symlink this dir into ~/.pi/agent/extensions/code-nav/
 ```

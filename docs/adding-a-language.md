@@ -112,14 +112,13 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
 
 ## 4. CLI test harness — `scripts/nav-cli.mjs`
 
-13. Mirror every change above. `nav-cli.mjs` MUST stay a precise mirror of
-    `index.ts` output formatting — that is its whole point. Specifically:
-    - `langFor()` mirrors `EXT_LANG`.
-    - `symbol`'s default language list mirrors `code_symbol`'s.
-    - `symbol` calls `ensureProjectLoaded()` before `workspaceSymbol`.
-    - `symbols-in --docs` uses `tsLangToLspLang(tsLang)` (not `const lang =
-      tsLang`).
-    - Import `tsLangToLspLang` alongside `tsLangForFile`.
+13. Nothing to mirror anymore. The CLI is a thin argv-parser around `nav.ts`
+    (which `index.ts` also imports); the render helpers live in `render.ts`.
+    Adding a language to `EXT_LANG` (in `render.ts`) and `tsLangToLspLang`
+    (in `tree-sitter-parse.ts`) is enough — both the extension and the CLI
+    pick it up automatically. The only thing to verify is that the CLI's
+    `symbol` subcommand (which passes `language` through to `nav.symbol`)
+    accepts the new language name.
 
 ## 5. Tests — `test/`
 
@@ -163,7 +162,11 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
 - `npm run check` — tsc passes (the `Lang` union widening surfaces every
   `Record<Lang, ...>` that needs the new key).
 - `npm test` — all unit tests pass, including the new `test/<lang>.test.mjs`.
-- End-to-end: run `node scripts/nav-cli.mjs` against a real file
+- `npm run test:e2e` — add `test/<lang>.e2e.mjs` (mirror `test/python.e2e.mjs`)
+  exercising `outline`/`symbol`/`definition`/`references`/`hover`/`diagnostics`
+  against the real server via `nav.*`. Skip gracefully when the server isn't on
+  PATH (see `serverAvailable` in `test/e2e-helpers.mjs`).
+- End-to-end (manual): run `node scripts/nav-cli.mjs` against a real file
   of the new language for `outline`, `symbol`, `symbols-in --docs`,
   `definition`, `references`, `hover`. The last three are the round-trip
   that `code_symbols_in` positions must satisfy.
