@@ -108,10 +108,7 @@ export async function outline(
 // ---------------------------------------------------------------------------
 
 export interface DefinitionParams {
-	path: string;
-	line: number;
-	column: number;
-	positions?: Position[];
+	positions: Position[];
 	list_symbols?: boolean;
 }
 
@@ -120,10 +117,7 @@ export async function definition(
 	cwd: string,
 	clientOf: ClientProvider,
 ): Promise<string> {
-	const posList: Position[] =
-		params.positions && params.positions.length > 0
-			? params.positions
-			: [{ path: params.path, line: params.line, column: params.column }];
+	const posList: Position[] = params.positions;
 	const out: string[] = [];
 	// One client per language; reuse across positions of the same lang.
 	const clients = new Map<Lang, LspClient>();
@@ -216,10 +210,7 @@ export async function definition(
 // ---------------------------------------------------------------------------
 
 export interface ReferencesParams {
-	path: string;
-	line: number;
-	column: number;
-	positions?: Position[];
+	positions: Position[];
 }
 
 export async function references(
@@ -227,10 +218,7 @@ export async function references(
 	cwd: string,
 	clientOf: ClientProvider,
 ): Promise<string> {
-	const posList: Position[] =
-		params.positions && params.positions.length > 0
-			? params.positions
-			: [{ path: params.path, line: params.line, column: params.column }];
+	const posList: Position[] = params.positions;
 	const out: string[] = [];
 	const clients = new Map<Lang, LspClient>();
 	for (const pos of posList) {
@@ -360,10 +348,7 @@ export async function rename(
 // ---------------------------------------------------------------------------
 
 export interface HoverParams {
-	path: string;
-	line: number;
-	column: number;
-	positions?: Position[];
+	positions: Position[];
 }
 
 export async function hover(
@@ -371,10 +356,7 @@ export async function hover(
 	cwd: string,
 	clientOf: ClientProvider,
 ): Promise<string> {
-	const posList: Position[] =
-		params.positions && params.positions.length > 0
-			? params.positions
-			: [{ path: params.path, line: params.line, column: params.column }];
+	const posList: Position[] = params.positions;
 	const out: string[] = [];
 	const clients = new Map<Lang, LspClient>();
 	for (const pos of posList) {

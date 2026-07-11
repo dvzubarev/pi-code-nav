@@ -156,24 +156,23 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		name: "code_definition",
 		label: "Code Definition",
 		description:
-			"Find the definition of the symbol(s) at the given (path, line, column) position(s). Lines/columns are 1-based. Accepts a single position or an array of positions to batch multiple lookups in one call. Returns each definition's location and its source code. Set list_symbols=true to also append a tree-sitter symbol table for each returned snippet (so you can discover third-party/stdlib symbols used inside the body and pass their coordinates to code_hover/code_definition/code_references).",
+			"Find the definition of the symbol(s) at the given (path, line, column) position(s). Lines/columns are 1-based. Pass one or more positions to look up (batching multiple in one call is cheaper than N separate calls). Returns each definition's location and its source code. Set list_symbols=true to also append a tree-sitter symbol table for each returned snippet (so you can discover third-party/stdlib symbols used inside the body and pass their coordinates to code_hover/code_definition/code_references).",
 		promptGuidelines: [
 			"Use code_definition with 1-based line and column to jump to a symbol's definition and read its source. Pass an array of positions to batch several lookups in one call. Set list_symbols=true to also list the symbols used inside each returned snippet (useful for discovering third-party/stdlib APIs in the body).",
 		],
 		parameters: Type.Object({
-			path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-			line: Type.Number({ description: "1-based line number" }),
-			column: Type.Number({ description: "1-based column number" }),
-			positions: Type.Optional(
-				Type.Array(
-					Type.Object({
-						path: Type.String({
-							description: "File path (absolute or relative to cwd)",
-						}),
-						line: Type.Number({ description: "1-based line number" }),
-						column: Type.Number({ description: "1-based column number" }),
+			positions: Type.Array(
+				Type.Object({
+					path: Type.String({
+						description: "File path (absolute or relative to cwd)",
 					}),
-				),
+					line: Type.Number({ description: "1-based line number" }),
+					column: Type.Number({ description: "1-based column number" }),
+				}),
+				{
+					description:
+						"One or more (path, line, column) positions to look up. Lines/columns are 1-based.",
+				},
 			),
 			list_symbols: Type.Optional(
 				Type.Boolean({
@@ -198,24 +197,23 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		name: "code_references",
 		label: "Code References",
 		description:
-			"Find all references to the symbol(s) at the given (path, line, column) position(s). Lines/columns are 1-based. Accepts a single position or an array of positions to batch multiple lookups in one call. Returns a list of locations (file:line:col - line:col).",
+			"Find all references to the symbol(s) at the given (path, line, column) position(s). Lines/columns are 1-based. Pass one or more positions to look up (batching multiple in one call is cheaper than N separate calls). Returns a list of locations (file:line:col - line:col).",
 		promptGuidelines: [
-			"Use code_references with 1-based line and column to find all usages of a symbol before renaming or refactoring. Pass an array of positions to batch several lookups in one call.",
+			"Use code_references with 1-based line and column to find all usages of a symbol before renaming or refactoring. Pass multiple positions to batch several lookups in one call.",
 		],
 		parameters: Type.Object({
-			path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-			line: Type.Number({ description: "1-based line number" }),
-			column: Type.Number({ description: "1-based column number" }),
-			positions: Type.Optional(
-				Type.Array(
-					Type.Object({
-						path: Type.String({
-							description: "File path (absolute or relative to cwd)",
-						}),
-						line: Type.Number({ description: "1-based line number" }),
-						column: Type.Number({ description: "1-based column number" }),
+			positions: Type.Array(
+				Type.Object({
+					path: Type.String({
+						description: "File path (absolute or relative to cwd)",
 					}),
-				),
+					line: Type.Number({ description: "1-based line number" }),
+					column: Type.Number({ description: "1-based column number" }),
+				}),
+				{
+					description:
+						"One or more (path, line, column) positions to look up. Lines/columns are 1-based.",
+				},
 			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -285,24 +283,23 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		name: "code_hover",
 		label: "Code Hover / Docs",
 		description:
-			"Retrieve hover/documentation for the symbol(s) at the given (path, line, column) position(s). Lines/columns are 1-based. Accepts a single position or an array of positions to batch multiple lookups in one call. Returns docstring, signature, and type info when available.",
+			"Retrieve hover/documentation for the symbol(s) at the given (path, line, column) position(s). Lines/columns are 1-based. Pass one or more positions to look up (batching multiple in one call is cheaper than N separate calls). Returns docstring, signature, and type info when available.",
 		promptGuidelines: [
-			"Use code_hover with 1-based line and column to read a symbol's documentation, docstring, or type signature. Pass an array of positions to batch several lookups in one call.",
+			"Use code_hover with 1-based line and column to read a symbol's documentation, docstring, or type signature. Pass multiple positions to batch several lookups in one call.",
 		],
 		parameters: Type.Object({
-			path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-			line: Type.Number({ description: "1-based line number" }),
-			column: Type.Number({ description: "1-based column number" }),
-			positions: Type.Optional(
-				Type.Array(
-					Type.Object({
-						path: Type.String({
-							description: "File path (absolute or relative to cwd)",
-						}),
-						line: Type.Number({ description: "1-based line number" }),
-						column: Type.Number({ description: "1-based column number" }),
+			positions: Type.Array(
+				Type.Object({
+					path: Type.String({
+						description: "File path (absolute or relative to cwd)",
 					}),
-				),
+					line: Type.Number({ description: "1-based line number" }),
+					column: Type.Number({ description: "1-based column number" }),
+				}),
+				{
+					description:
+						"One or more (path, line, column) positions to look up. Lines/columns are 1-based.",
+				},
 			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {

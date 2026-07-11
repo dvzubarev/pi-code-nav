@@ -28,8 +28,9 @@
 //
 // hover/definition/references accept one or more (file line col) triples; the
 // extra triples are batched through one LSP client per language, mirroring the
-// `positions` array parameter the code_definition/code_hover/code_references
-// tools accept in index.ts.
+// required `positions` array parameter the code_definition/code_hover/
+// code_references tools accept in index.ts (the argv triples are collected
+// into that array internally).
 //
 // Examples:
 //   node nav-cli.mjs outline temp.py
@@ -128,18 +129,12 @@ async function main() {
 			});
 		}
 		if (positions.length === 0) usage();
-		const params = {
-			path: positions[0].path,
-			line: positions[0].line,
-			column: positions[0].column,
-			positions,
-		};
-		if (cmd === "hover") console.log(await nav.hover(params, ROOT, clientOf));
+		if (cmd === "hover") console.log(await nav.hover({ positions }, ROOT, clientOf));
 		else if (cmd === "definition")
 			console.log(
-				await nav.definition({ ...params, list_symbols: listSymbols }, ROOT, clientOf),
+				await nav.definition({ positions, list_symbols: listSymbols }, ROOT, clientOf),
 			);
-		else console.log(await nav.references(params, ROOT, clientOf));
+		else console.log(await nav.references({ positions }, ROOT, clientOf));
 	} else if (cmd === "rename") {
 		const [path, lineStr, colStr, newName] = rest;
 		if (!path || !lineStr || !colStr || !newName) usage();

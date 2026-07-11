@@ -351,32 +351,26 @@ Subcommands (root = cwd or `CODE_NAV_ROOT`):
   symbol <query> [python|cpp|bash]
 ```
 `hover`/`definition`/`references` accept **one or more** `(file line col)`
-triples — the extras are batched through one LSP client per language. This
-mirrors the optional `positions` array the `code_definition`/`code_hover`/
-`code_references` tools accept (see "Batched positions" below). When more
-than one position is passed, each result block is prefixed with
-`### <path>:<line>:<col>` so the agent/user can correlate results to inputs.
-Single-position calls produce identical output to the old form (no header) —
-so an agent that always passes the scalar form sees no change.
+triples as a `positions` array — the extras are batched through one LSP
+client per language. When more than one position is passed, each result
+block is prefixed with `### <path>:<line>:<col>` so the agent/user can
+correlate results to inputs. Single-position calls produce no header.
 
-### Batched positions (`positions` array parameter)
+### The `positions` array is the sole input shape
 
-`code_definition`, `code_hover`, and `code_references` accept an **optional**
-`positions` array in addition to the scalar `path`/`line`/`column`. If
-`positions` is non-empty it is used verbatim; otherwise the scalar form is
-wrapped into a one-element list. This lets the agent batch several symbol
-lookups in a single tool call — one round-trip instead of N — which is
-meaningfully cheaper for the model and for the server (one client per
-language, documents opened once). The scalar form remains supported so
-existing prompts and agents don't break. (The logic lives in `nav.ts`; both
-`index.ts` and `scripts/nav-cli.mjs` call it.)
+`code_definition`, `code_hover`, and `code_references` take a **required**
+`positions: Position[]` array — there is NO scalar `path`/`line`/`column`
+form. Even a single lookup is `{ positions: [{ path, line, column }] }`.
+This lets the agent batch several symbol lookups in a single tool call —
+one round-trip instead of N — which is meaningfully cheaper for the model
+and for the server (one client per language, documents opened once), and it
+keeps the schema simple (one input shape, no XOR validation between a scalar
+triple and an array). (The logic lives in `nav.ts`; both `index.ts` and
+`scripts/nav-cli.mjs` call it.)
 
-**Do not remove the scalar `path`/`line`/`column` parameters** — they are the
-common case and keep the tool ergonomic for a single lookup. The array is the
-escape hatch for batching. The `code_outline`, `code_symbol`, and
-`code_rename` tools are inherently single-symbol-per-call and do **not** take
-a `positions` array (rename is destructive; outline/symbol are already
-list-shaped).
+`code_outline`, `code_symbol`, and `code_rename` are inherently
+single-symbol-per-call and do **not** take a `positions` array (rename is
+destructive; outline/symbol are already list-shaped).
 
 ### Dependencies — do not bump without reading
 

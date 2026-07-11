@@ -69,7 +69,7 @@ runOrSkip("code_definition on punintend returns its body", async () => {
 		// punintend is at second.py:24:9 (1-based) per code_outline. definition
 		// should resolve the enclosing body and return the source snippet.
 		const out = await nav.definition(
-			{ path: "second.py", line: 24, column: 9 },
+			{ positions: [{ path: "second.py", line: 24, column: 9 }] },
 			ws.root,
 			ws.clientOf,
 		);
@@ -87,7 +87,7 @@ runOrSkip("code_hover on Point.__init__ signature shows x param", async () => {
 		// __init__ is at second.py:11:9 (the `def`). Hovering there should
 		// surface the signature, which mentions the `x` parameter.
 		const out = await nav.hover(
-			{ path: "second.py", line: 11, column: 9 },
+			{ positions: [{ path: "second.py", line: 11, column: 9 }] },
 			ws.root,
 			ws.clientOf,
 		);
@@ -105,7 +105,7 @@ runOrSkip("code_references on Point class lists __init__ usages", async () => {
 		// Point is defined at second.py:10:7. Its references include its use as
 		// a default parameter in TempC.__init__ (p: Point = Point()).
 		const out = await nav.references(
-			{ path: "second.py", line: 10, column: 7 },
+			{ positions: [{ path: "second.py", line: 10, column: 7 }] },
 			ws.root,
 			ws.clientOf,
 		);
