@@ -76,7 +76,7 @@ export interface SymbolEntry {
  * arguments/literals and too noisy, matching the design doc's "finalize bash
  * when implementing; don't block on it" guidance.
  */
-export type TsLang = "python" | "cpp" | "bash";
+export type TsLang = "python" | "cpp" | "bash" | "typescript" | "tsx";
 
 /** Map a file extension to a tree-sitter language, or null if unsupported. */
 export function tsLangForFile(path: string): TsLang | null {
@@ -90,7 +90,33 @@ export function tsLangForFile(path: string): TsLang | null {
 		ext === ".m" || ext === ".mm"
 	) return "cpp";
 	if (ext === ".sh" || ext === ".bash") return "bash";
+	// TypeScript and TSX get distinct tree-sitter grammars: the `typescript`
+	// grammar mis-parses JSX (`<div>` becomes type_arguments, `{x}` an object),
+	// so .tsx must use the `tsx` grammar. .js/.jsx/.mjs/.cjs parse with the
+	// typescript grammar (JavaScript is a strict subset for our role purposes —
+	// call/member/type/import classification is identical).
+	if (ext === ".ts" || ext === ".mts" || ext === ".cts" ||
+		ext === ".js" || ext === ".mjs" || ext === ".cjs") return "typescript";
+	if (ext === ".tsx" || ext === ".jsx") return "tsx";
 	return null;
+}
+
+/**
+ * Map a tree-sitter language to the LSP `Lang` whose server can answer
+ * hover/definition for files of that grammar.
+ *
+ * `TsLang` is a superset of `Lang`: `.tsx` (and `.jsx`) parse with the `tsx`
+ * tree-sitter grammar but are served by the single `typescript` LSP server
+ * (typescript-language-server), which distinguishes .ts/.tsx via the
+ * `languageId` it gets in didOpen. Callers that need an LSP client for a
+ * `tsLang` (e.g. code_symbols_in's `include_docs` enrichment) MUST go through
+ * this helper rather than casting `tsLang as Lang` — that cast is only valid
+ * for python/cpp/bash/typescript and would break for `tsx`.
+ */
+export type LspLang = "python" | "cpp" | "bash" | "typescript";
+export function tsLangToLspLang(lang: TsLang): LspLang {
+	if (lang === "tsx") return "typescript";
+	return lang;
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +293,65 @@ function classifyRole(node: TSNode, lang: TsLang): SymbolRole | null {
 	if (lang === "bash") {
 		if (t === "variable_name") return "var";
 		if (t === "word" && pt === "command_name") return "call";
+		return null;
+	}
+
+	// TypeScript / TSX — the two grammars share the node-type vocabulary for
+	// everything except JSX, so one branch covers both.
+	//
+	// Node types of interest:
+	//   type_identifier        — a type occurrence (class name, interface,
+	//                             type alias, generic type, type annotation).
+	//                             NOT the definition site only — every use is a
+	//                             `type` so the agent can hover any of them.
+	//   property_identifier     — the right of `.` in `obj.prop`, a class
+	//                             field/method name, an interface member, an
+	//                             enum member, a JSX attribute. → `member`.
+	//   identifier              — everything else: the imported name, the called
+	//                             name, the constructed class, the base of a
+	//                             member expression, a declaration / parameter /
+	//                             local. Classified by parent + field below.
+	if (lang === "typescript" || lang === "tsx") {
+		if (t === "type_identifier") return "type";
+		// Primitive type annotations (number, string, boolean, void, any, ...) are
+		// `predefined_type` nodes, not `type_identifier`. Treat them as `type` so
+		// hover/definition works on them too — they are real type references.
+		if (t === "predefined_type") return "type";
+		if (t === "property_identifier" || t === "shorthand_property_identifier") {
+			return "member";
+		}
+		if (t === "identifier") {
+			// Imports — the names brought into scope. The TS grammar puts every
+			// imported/aliased identifier under an import/export construct; these
+			// are the third-party entry points `code_symbols_in` exists to find.
+			//   import { readFile } from "..."   → import_specifier (field name)
+			//   import * as fs from "..."         → namespace_import
+			//   import foo from "..."             → import_clause (default)
+			//   export { bar } from "..."         → export_specifier (re-export)
+			//   import type { Lang } from "..."   → same import_specifier path
+			if (pt === "import_specifier" || pt === "namespace_import" ||
+			    pt === "import_clause" || pt === "export_specifier" ||
+			    pt === "aliased_export" || pt === "aliased_import") {
+				return "import";
+			}
+			// A name being called: `compute(...)`. field `function` of a
+			// call_expression. Also covers `obj.method()` because the callee is
+			// the whole member_expression (its property_identifier child becomes
+			// a `member` above); the bare-identifier call path is just `f()`.
+			if (pt === "call_expression" && field === "function") return "call";
+			// `new Foo()` — Foo is a constructor reference; treat as a call site.
+			if (pt === "new_expression" && field === "constructor") return "call";
+			// Right of `.` in a member_expression is a property_identifier (above).
+			// The LEFT (field `object`) is the base — a local/var like `obj`, or
+			// another member_expression in a chain (`a.b.c`): the outer base is a
+			// member_expression whose own property_identifier is emitted as
+			// `member`, so this `identifier` base is just `var`.
+			if (pt === "member_expression" && field === "object") return "var";
+			// Everything else is a declaration name, parameter, or local. Match
+			// Python's convention (def name → var) so declaration names are
+			// omitted from the default role set and don't clutter the table.
+			return "var";
+		}
 		return null;
 	}
 

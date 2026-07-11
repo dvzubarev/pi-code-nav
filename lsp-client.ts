@@ -7,7 +7,9 @@
  */
 
 import { spawn, execSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
+import { readdir, readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import {
 	createMessageConnection,
 	StreamMessageReader,
@@ -33,7 +35,7 @@ import {
 // Importing from the /node subpath auto-installs the jsonrpc Node RAL
 // as a side effect of module load (see vscode-jsonrpc/lib/node/main.js).
 
-export type Lang = "cpp" | "python" | "bash";
+export type Lang = "cpp" | "python" | "bash" | "typescript";
 
 /** Command + args + init options for one language. */
 export interface ServerConfig {
@@ -80,10 +82,28 @@ const BASH_CONFIG: ServerConfig = {
 	initOptions: {},
 };
 
+/**
+ * TypeScript/JavaScript: typescript-language-server wrapping tsserver. One
+ * server covers both .ts and .tsx — the languageId sent in didOpen
+ * distinguishes them ("typescript"/"typescriptreact"). The server implements
+ * workspace/symbol, hover, definition, references, rename, and the pull
+ * diagnostic model.
+ */
+const TYPESCRIPT_CONFIG: ServerConfig = {
+	command: "typescript-language-server",
+	args: ["--stdio"],
+	initOptions: {
+		// Let the server locate the local tsconfig.json / jsconfig.json and
+		// honor the project's compiler options.
+		hostInfo: "pi-code-nav",
+	},
+};
+
 const DEFAULTS: Record<Lang, ServerConfig> = {
 	cpp: CCLS_CONFIG,
 	python: PYRIGHT_CONFIG,
 	bash: BASH_CONFIG,
+	typescript: TYPESCRIPT_CONFIG,
 };
 
 /**
@@ -104,6 +124,78 @@ function commandExists(cmd: string): boolean {
 		cmdOnPathCache.set(cmd, false);
 		return false;
 	}
+}
+
+/**
+ * Derive the LSP `languageId` for a document from its file extension.
+ *
+ * Most languages have one id matching the `Lang` tag. The TypeScript server
+ * is one server covering two file kinds: `.ts` -> "typescript" and `.tsx` ->
+ * "typescriptreact" (likewise `.js`/`.jsx`/`.mjs`/`.cjs` -> the js variants).
+ * Sending the right id lets tsserver apply the correct syntax + JSX rules.
+ * Falls back to the server language for extensions with no per-file variant.
+ */
+function languageIdFor(absPath: string, lang: Lang): string {
+	const dot = absPath.lastIndexOf(".");
+	const ext = dot < 0 ? "" : absPath.slice(dot).toLowerCase();
+	if (lang === "typescript") {
+		if (ext === ".tsx") return "typescriptreact";
+		if (ext === ".jsx") return "javascriptreact";
+		if (ext === ".js" || ext === ".mjs" || ext === ".cjs") return "javascript";
+		return "typescript";
+	}
+	if (lang === "cpp") return "cpp";
+	return lang; // python, bash
+}
+
+/**
+ * Extensions that count as source files for each language, used by
+ * findFirstSourceFile to locate a representative file to open.
+ */
+const SOURCE_EXTS: Record<Lang, readonly string[]> = {
+	typescript: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"],
+	cpp: [".cpp", ".cc", ".cxx", ".c", ".hpp", ".hh", ".hxx", ".h"],
+	python: [".py"],
+	bash: [".sh", ".bash"],
+};
+
+/**
+ * Recursively find the first source file of `lang` under `rootUri`, skipping
+ * node_modules, .git, build/, dist/, and hidden directories. Depth-first,
+ * shallow — returns on the first match (we only need one file to trigger
+ * tsserver project loading). Returns an absolute path or null.
+ */
+async function findFirstSourceFile(rootUri: string, lang: Lang): Promise<string | null> {
+	let rootPath: string;
+	try {
+		rootPath = fileURLToPath(rootUri);
+	} catch {
+		return null;
+	}
+	const exts = SOURCE_EXTS[lang];
+	const SKIP = new Set(["node_modules", ".git", ".", "build", "dist", "out", ".next", ".cache"]);
+	async function scan(dir: string): Promise<string | null> {
+		let entries;
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch {
+			return null;
+		}
+		for (const e of entries) {
+			if (e.isDirectory()) {
+				if (SKIP.has(e.name)) continue;
+				const found = await scan(resolve(dir, e.name));
+				if (found) return found;
+			} else if (e.isFile()) {
+				const dot = e.name.lastIndexOf(".");
+				if (dot >= 0 && exts.includes(e.name.slice(dot).toLowerCase())) {
+					return resolve(dir, e.name);
+				}
+			}
+		}
+		return null;
+	}
+	return scan(rootPath);
 }
 
 /**
@@ -264,7 +356,11 @@ export class LspClient {
 		const version = 1;
 		const doc: TextDocumentItem = {
 			uri,
-			languageId: this.lang === "cpp" ? "cpp" : this.lang,
+			// Derive languageId from the file extension where the LSP convention
+			// distinguishes variants of one server language (e.g. .ts ->
+			// "typescript", .tsx -> "typescriptreact"). Falls back to the server
+			// language for cases with no per-extension distinction.
+			languageId: languageIdFor(absPath, this.lang),
 			version,
 			text,
 		};
@@ -281,6 +377,35 @@ export class LspClient {
 			textDocument: { uri },
 		});
 		this.openDocs.delete(uri);
+	}
+
+	/**
+	 * Ensure the language server has loaded a project (index) before a request
+	 * that requires one. Only the TypeScript server (tsserver) needs this: it
+	 * loads projects lazily on the first didOpen of a file in that project, and
+	 * `workspace/symbol` (navto) throws "No Project." if invoked before any file
+	 * has been opened. This is a no-op for servers that index eagerly on
+	 * `initialize` (ccls/pyright/ty/bash-language-server).
+	 *
+	 * Implementation: if no document has been opened yet, find one source file
+	 * of this server's language under the workspace root and open it. The file
+	 * stays open for the session (matching the no-close-until-shutdown policy).
+	 * Returns true if a project is known to be loaded (a doc is open or one was
+	 * just opened); false if no matching file could be found.
+	 */
+	async ensureProjectLoaded(): Promise<boolean> {
+		await this.ensureReady();
+		if (this.openDocs.size > 0) return true; // a doc is open → project loaded
+		if (this.lang !== "typescript") return true; // only tsserver needs this
+		const file = await findFirstSourceFile(this.rootUri, this.lang);
+		if (!file) return false;
+		try {
+			const text = await readFile(file, "utf8");
+			await this.openDocument(file, text);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	supports(method: keyof ServerCapabilities): boolean {

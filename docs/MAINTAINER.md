@@ -24,7 +24,8 @@ Supported languages: **Python, C++, bash (optional)** — in that priority order
 C++ uses **ccls** (the user's choice, not clangd). Python **auto-detects**:
 **ty** (Astral, preferred — implements `workspace/symbol` which pyright does
 not, and reports standard LSP SymbolKind) when on PATH, falling back to
-**pyright**. Bash uses bash-language-server. All four were installed on the
+**pyright**. Bash uses bash-language-server. TypeScript & JavaScript use
+**typescript-language-server** (wrapping tsserver). All were installed on the
 machine via nix.
 
 ### Why LSP and not tree-sitter
@@ -54,9 +55,9 @@ Two hard constraints from the user made a skill insufficient:
 
 1. **"I manage LSP servers by myself; you should expect them running."**
    This *cannot* mean "connect to an already-running server over a socket" — I
-   verified ccls, pyright-langserver, and bash-language-server are all
-   **stdio-only** (ccls has no `--listen`/`--socket` flag; I checked
-   `--help-hidden`). Once a stdio server is spawned its stdin/stdout are wired
+   verified ccls, pyright-langserver, bash-language-server, and
+   typescript-language-server are all **stdio-only** (ccls has no
+   `--listen`/`--socket` flag; I checked `--help-hidden`). Once a stdio server is spawned its stdin/stdout are wired
    to that one client; nothing else can tap in. So "management" moved to
    **configuration**: the user controls *which* server, *which* init options,
    *whether* a language is enabled — via `.pi/lsp.json` and the built-in
@@ -269,6 +270,7 @@ pull model is unreliable across the servers we support, verified empirically:
 | pyright-langserver   | **no**                          | **yes** (answers anyway)          |
 | ccls                 | no                              | no (rejected)                    |
 | bash-language-server | no                              | no (rejected: "Unhandled method")|
+| typescript-language-server | no                        | no (rejected: "Unhandled method")|
 
 `LspClient.supportsPullDiagnostics()` exists as introspection (it reads
 `ServerCapabilities.diagnosticProvider`) but the tool does **not** pre-gate
@@ -276,7 +278,9 @@ on it — pyright would be wrongly rejected if it did. The tool sends the
 request and lets the server's actual response decide: a server that can't
 answer returns a JSON-RPC error, which the tool surfaces honestly
 (`bash: textDocument/diagnostic request failed: Unhandled method ...`).
-This is more accurate than trusting advertised capabilities.
+TypeScript is the same (`typescript: textDocument/diagnostic request failed:
+Unhandled method ...`). This is more accurate than trusting advertised
+capabilities.
 
 **`ccls` note.** ccls rejects the pull request. If C++ diagnostics become
 important, the only synchronous option for ccls is the pull model (which it
@@ -383,11 +387,14 @@ list-shaped).
   `Language` objects. Re-test the snippet-parse cases (python body, C++ body,
   the comment/string noise snippet) after any bump — those are the cases that
   motivated choosing tree-sitter over regex.
-- `tree-sitter-wasm@^1.1.2` — prebuilt grammar WASMs (`out/{python,cpp,bash}/`).
-  `getWasmPath(lang)` resolves the absolute path via `import.meta.url` (works
-  under jiti). Large package (~144 MB unpacked, all grammars bundled); if size
-  ever matters, vendor only the three needed `.wasm` files and drop the dep.
-  Must stay ABI-compatible with `web-tree-sitter` (see above).
+- `tree-sitter-wasm@^1.1.2` — prebuilt grammar WASMs
+  (`out/{python,cpp,bash,typescript,tsx}/`). `getWasmPath(lang)` resolves the
+  absolute path via `import.meta.url` (works under jiti). Large package (~144 MB
+  unpacked, all grammars bundled); if size ever matters, vendor only the five
+  needed `.wasm` files and drop the dep. Must stay ABI-compatible with
+  `web-tree-sitter` (see above). Note: `.tsx`/`.jsx` MUST use the `tsx` grammar
+  — the `typescript` grammar mis-parses JSX (`<Card>` becomes `type_arguments`,
+  `{value}` an `object`), which would misclassify JSX element names as `type`.
 - `@types/node@^22` (devDep, for tsc only — not needed at runtime, jiti
   doesn't type-check).
 - `typescript@^5.9.3` (devDep) — added so `npm run check` (which runs
@@ -418,6 +425,46 @@ also uses the legacy `changes` field in `WorkspaceEdit` (not `documentChanges`)
 for rename — `applyWorkspaceEdit` handles both, so the rename tool works with
 ty unchanged. If you add a server that uses neither field, you'll need a
 third path.
+
+### TypeScript server (typescript-language-server wrapping tsserver)
+
+`resolveConfig("typescript")` uses the `TYPESCRIPT_CONFIG` entry directly (no
+auto-detection — there is only one TS LSP server worth using). One server
+instance covers all TS/JS file kinds; the `languageId` sent in `didOpen`
+(`languageIdFor` in `lsp-client.ts`) distinguishes them: `.ts` → `typescript`,
+`.tsx` → `typescriptreact`, `.js` → `javascript`, `.jsx` → `javascriptreact`.
+Sending the right id is what makes tsserver apply JSX rules for `.tsx`.
+
+**tsserver loads projects lazily.** Unlike ccls/pyright/ty, which index the
+workspace eagerly on `initialize`, tsserver does not load a project until the
+first `didOpen` of a file in that project. `workspace/symbol` (tsserver's
+`navto`) throws `"No Project."` if called before then. `code_symbol` works
+around this with `LspClient.ensureProjectLoaded()`: if no document has been
+opened yet, it scans the workspace root (skipping `node_modules`, `build`,
+`dist`, `.git`, hidden dirs) for the first source file of the server's
+language and opens it. This is a no-op for the other servers (they return
+true immediately when `openDocs.size > 0` or when `lang !== "typescript"`).
+`code_outline`/`code_hover`/`code_definition`/`code_references`/`code_rename`
+all open the target document first, so they load the project naturally and
+don't need `ensureProjectLoaded`.
+
+**No pull diagnostics.** typescript-language-server does not implement the
+LSP 3.17 `textDocument/diagnostic` pull model — it uses the push
+`publishDiagnostics` model. `code_diagnostics` is pull-only (by design — see
+the "code_diagnostics design notes" section and landmine #5 in AGENTS.md), so
+it returns a `"Unhandled method textDocument/diagnostic"` error for TS files.
+This is the same documented limitation as bash-language-server. Do NOT add
+`publishDiagnostics` collection to "fix" this.
+
+**Tree-sitter for `.tsx`/`.jsx` uses the `tsx` grammar, not `typescript`.**
+The `typescript` tree-sitter grammar mis-parses JSX (`<Card>` becomes
+`type_arguments`, `{value}` an `object`), which would misclassify JSX element
+names as `type`. `tsLangForFile` maps `.tsx`/`.jsx` → `tsx` (a distinct
+grammar in `tree-sitter-wasm`) and `.ts`/`.js`/`.mts`/`.mjs`/`.cts`/`.cjs` →
+`typescript`. Because `tsx` is in `TsLang` but not `Lang` (there is only one
+TS LSP server), `TsLang` is now a **superset** of `Lang`; `tsLangToLspLang`
+maps `tsx` → `typescript` so `code_symbols_in`'s `include_docs` enrichment
+spawns the right LSP client.
 
 ### LSP `SymbolKind` is 1-based
 
@@ -468,7 +515,14 @@ spawn time (`process.env.HOME`) — keep that dynamic, don't hardcode.
   `roles` defaults to all except `var` (`DEFAULT_SYMBOL_ROLES`).
   `renderSymbolTable` formats it; `hoverFirstLine` extracts the first
   substantive line of a hover for the `include_docs` label column.
-  `tsLangForFile` maps extensions to `TsLang` (same set as `Lang`). No pi
+  `tsLangForFile` maps extensions to `TsLang` (a superset of `Lang`: it has
+  both `typescript` and `tsx`, while `Lang` has only `typescript` — the single
+  TypeScript LSP server serves both via its `languageId`). `tsLangToLspLang`
+  maps a `TsLang` to the `Lang` whose server answers it (`tsx` → `typescript`).
+  Callers that spawn an LSP client from a `tsLang` (e.g. `code_symbols_in`'s
+  `include_docs` enrichment) MUST go through `tsLangToLspLang`, NOT a bare
+  `tsLang as Lang` cast — that cast is only valid for python/cpp/bash/typescript
+  and would break for `tsx`. No pi
   dependency, no LSP dependency — pure tree-sitter. Testable in isolation
   with node + the two tree-sitter npm deps. **Unit tests live in `test/`**
   (`test/core.test.mjs` for cross-cutting behavior, `test/{python,cpp,bash}.test.mjs`

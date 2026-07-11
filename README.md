@@ -2,8 +2,9 @@
 
 LSP-backed code navigation for pi. Eight tools the LLM can call — six backed
 by real language servers (ccls for C++, ty/pyright for Python,
-bash-language-server for bash) plus one backed by tree-sitter for
-third-party symbol discovery, plus one diagnostic reporter:
+bash-language-server for bash, typescript-language-server for TypeScript &
+JavaScript) plus one backed by tree-sitter for third-party symbol discovery,
+plus one diagnostic reporter:
 
 | Tool              | Backing                            | Notes                                                |
 | ----------------- | ---------------------------------- | ---------------------------------------------------- |
@@ -75,8 +76,9 @@ ty advertises `diagnosticProvider`; pyright answers the request without
 advertising it; ccls/bash-language-server reject it with a JSON-RPC error. The
 tool sends the request and surfaces the server's actual response (or error)
 honestly — a server that can't answer returns an error rather than silently
-empty/stale results. bash-language-server does not implement the pull model,
-so `code_diagnostics` returns an error for bash files (by design — no async
+empty/stale results. bash-language-server and typescript-language-server do
+not implement the pull model, so `code_diagnostics` returns an error for bash
+and TypeScript files (by design — no async
 fallback).
 
 ## Why `code_symbols_in` (tree-sitter)
@@ -181,13 +183,33 @@ To force pyright even when `ty` is installed, set an explicit `command` in
 ```
 Command: `bash-language-server start`.
 
+**typescript-language-server** (`typescript` — covers `.ts`, `.tsx`, `.js`,
+`.jsx`, and the `.mts`/`.cts`/`.mjs`/`.cjs` module variants):
+```json
+{ "hostInfo": "pi-code-nav" }
+```
+Command: `typescript-language-server --stdio`. One server serves all
+TS/JS file kinds; the `languageId` sent in `didOpen` (`typescript` /
+`typescriptreact` / `javascript` / `javascriptreact`) tells the underlying
+tsserver which syntax + JSX rules to apply. The server implements
+`workspace/symbol`, hover, definition, references, and rename.
+
+Note: tsserver loads its project lazily on the first `didOpen` of a file in
+that project. `code_symbol` opens one source file first (scanning the
+workspace root, skipping `node_modules`/`build`/`dist`) so `workspace/symbol`
+does not fail with "No Project.". `code_diagnostics` is unavailable for
+TypeScript — typescript-language-server does not implement the LSP 3.17 pull
+model (it uses the push `publishDiagnostics` model, which this extension does
+not collect).
+
 ## File-extension → language map
 
-| Language | Extensions                                                       |
-| -------- | --------------------------------------------------------------- |
-| cpp      | `.c .cc .cpp .cxx .h .hh .hpp .hxx .m .mm`                     |
-| python   | `.py`                                                           |
-| bash     | `.sh .bash`                                                     |
+| Language   | Extensions                                                       |
+| ---------- | ---------------------------------------------------------------- |
+| cpp        | `.c .cc .cpp .cxx .h .hh .hpp .hxx .m .mm`                        |
+| python     | `.py`                                                            |
+| bash       | `.sh .bash`                                                       |
+| typescript | `.ts .tsx .js .jsx .mts .cts .mjs .cjs`                           |
 
 ## Workspace root
 
@@ -200,8 +222,8 @@ Always `ctx.cwd` (the directory pi was started in). One server per
 `web-tree-sitter` and `tree-sitter-wasm` for `code_symbols_in` (the WASM
 tree-sitter runtime and prebuilt grammar WASMs). All installed via
 `npm install` in this directory; jiti resolves them from the extension's own
-`node_modules`. The tree-sitter grammars (python, cpp, bash) ship as prebuilt
-WASM — no native compilation, no peer-dependency conflicts.
+`node_modules`. The tree-sitter grammars (python, cpp, bash, typescript, tsx)
+ship as prebuilt WASM — no native compilation, no peer-dependency conflicts.
 
 ## Testing
 

@@ -24,6 +24,8 @@
           pkgs.ty
           pkgs.pyright
           pkgs.bash-language-server
+          pkgs.typescript-language-server
+          pkgs.typescript
         ];
 
         shellHook = ''

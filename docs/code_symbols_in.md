@@ -298,11 +298,12 @@ the parser directly. tree-sitter's error-recovery handles fragments.
 
 Collect these node types from the tree walk:
 
-| Language | identifier          | type_identifier      | field/member          | call form            |
-| -------- | ------------------- | -------------------- | --------------------- | -------------------- |
-| python   | `identifier`        | `type` (annotation)  | `attribute`           | `call` (function child) |
-| cpp      | `identifier`        | `type_identifier`    | `field_identifier`    | `call_expression` child |
-| bash     | `variable_name` / `word` (in `command_name`) | n/a | — (subscript skipped) | `command_name` (the `word` child) |
+| Language   | identifier          | type_identifier      | field/member          | call form            |
+| ---------- | ------------------- | -------------------- | --------------------- | -------------------- |
+| python     | `identifier`        | `type` (annotation)  | `attribute`           | `call` (function child) |
+| cpp        | `identifier`        | `type_identifier`    | `field_identifier`    | `call_expression` child |
+| bash       | `variable_name` / `word` (in `command_name`) | n/a | — (subscript skipped) | `command_name` (the `word` child) |
+| typescript | `identifier`        | `type_identifier` + `predefined_type` | `property_identifier` / `shorthand_property_identifier` | `call_expression` field `function`; `new_expression` field `constructor` |
 
 Bash is the loose one — its node set was finalized as: `variable_name` →
 `var`, the `word` child of a `command_name` → `call`, everything else
@@ -318,8 +319,12 @@ shipped. Revisit if a real use case needs argument-level bash symbols. Do
 `dotted_name` under an `import_statement` / `import_from_statement` /
 `aliased_import`, or directly under `aliased_import` (the alias). These are
 classified as `import`, not `var`, so the default "no var" filter keeps
-them. C++ `#include` is a preprocessor directive (no identifier node) and
-bash has no import construct, so the role is Python-specific.
+them. TypeScript/TSX imports are the same role: the `identifier` under an
+`import_specifier` (`import { readFile }`), `namespace_import`
+(`import * as fs`), `import_clause` (default import), `export_specifier`
+(re-export), or `aliased_import`/`aliased_export`. C++ `#include` is a
+preprocessor directive (no identifier node) and bash has no import construct,
+so the role is Python- and TypeScript-specific.
 
 ### Python `type` nodes: emit only the outermost
 

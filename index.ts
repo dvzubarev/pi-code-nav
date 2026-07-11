@@ -2,7 +2,8 @@
  * code-nav extension
  *
  * Provides eight LLM-callable tools backed by real LSP servers (ccls for C++,
- * ty/pyright for Python, bash-language-server for bash) plus tree-sitter for
+ * ty/pyright for Python, bash-language-server for bash,
+ * typescript-language-server for TypeScript & JavaScript) plus tree-sitter for
  * third-party symbol discovery:
  *
  *   code_outline     — file structure (functions, classes, methods, signatures)
@@ -44,6 +45,7 @@ import {
 	renderSymbolTable,
 	hoverFirstLine,
 	tsLangForFile,
+	tsLangToLspLang,
 } from "./tree-sitter-parse";
 import type {
 	DocumentSymbol,
@@ -61,6 +63,13 @@ const EXT_LANG: Record<string, Lang> = {
 	".h": "cpp", ".hh": "cpp", ".hpp": "cpp", ".hxx": "cpp",
 	".m": "cpp", ".mm": "cpp",
 	".sh": "bash", ".bash": "bash",
+	// TypeScript/JavaScript — one LSP server (typescript-language-server)
+	// serves all of these; tree-sitter uses distinct grammars for the JSX
+	// variants (see tsLangForFile). .mts/.cts/.mjs/.cjs are TS/JS module
+	// variants that parse identically for our role-classification purposes.
+	".ts": "typescript", ".mts": "typescript", ".cts": "typescript",
+	".tsx": "typescript", ".jsx": "typescript",
+	".js": "typescript", ".mjs": "typescript", ".cjs": "typescript",
 };
 
 function langForFile(path: string): Lang | null {
@@ -83,7 +92,7 @@ async function loadConfig(ctx: ExtensionContext): Promise<Partial<Record<Lang, P
 			const raw = await readFile(p, "utf8");
 			const data = JSON.parse(raw);
 			if (data && typeof data === "object") {
-				for (const lang of ["cpp", "python", "bash"] as Lang[]) {
+				for (const lang of ["cpp", "python", "bash", "typescript"] as Lang[]) {
 					const ov = (data as Record<string, unknown>)[lang];
 					if (ov && typeof ov === "object") {
 						merged[lang] = { ...merged[lang], ...(ov as Partial<ServerConfig>) };
@@ -706,7 +715,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const langs: Lang[] = params.language
 				? [params.language as Lang]
-				: ["cpp", "python", "bash"];
+				: ["cpp", "python", "bash", "typescript"];
 			const out: string[] = [];
 			// Cache documentSymbol results per file so we don't re-fetch for every hit.
 			const docCache = new Map<string, DocumentSymbol[]>();
@@ -719,6 +728,11 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 					continue;
 				}
 				if (!client.supports("workspaceSymbolProvider" as keyof import("vscode-languageserver-protocol").ServerCapabilities)) continue;
+				// tsserver loads its project lazily on the first didOpen of a file in
+				// that project; workspace/symbol throws "No Project." before then.
+				// ensureProjectLoaded opens one source file (a no-op for other
+				// servers, which index eagerly on initialize).
+				await client.ensureProjectLoaded();
 				const syms = await client.workspaceSymbol(params.query);
 				for (const s of syms) {
 					const selStart = await resolveSymbolSelStart(client, s, docCache);
@@ -862,7 +876,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 			// when include_docs is true — the default path makes zero LSP calls).
 			let docs: Map<string, string> | undefined;
 			if (params.include_docs && entries.length > 0) {
-				const lang = tsLang as unknown as Lang;
+				const lang = tsLangToLspLang(tsLang);
 				let client: LspClient;
 				try { client = await state.pool.client(lang); } catch (e) { return err(`(${lang}: server unavailable: ${e})`); }
 				docs = new Map();

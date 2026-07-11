@@ -32,7 +32,7 @@
 //   node nav-cli.mjs diagnostics temp.py
 
 import { LspClient, resolveConfig } from "/home/denin/.pi/agent/extensions/code-nav/lsp-client.ts";
-import { parseSymbols, renderSymbolTable, hoverFirstLine, tsLangForFile } from "/home/denin/.pi/agent/extensions/code-nav/tree-sitter-parse.ts";
+import { parseSymbols, renderSymbolTable, hoverFirstLine, tsLangForFile, tsLangToLspLang } from "/home/denin/.pi/agent/extensions/code-nav/tree-sitter-parse.ts";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -298,6 +298,7 @@ function langFor(path) {
   if (ext === ".py") return "python";
   if ([".c",".cc",".cpp",".cxx",".h",".hh",".hpp",".hxx",".m",".mm"].includes(ext)) return "cpp";
   if (ext === ".sh" || ext === ".bash") return "bash";
+  if ([".ts",".mts",".cts",".tsx",".jsx",".js",".mjs",".cjs"].includes(ext)) return "typescript";
   return null;
 }
 
@@ -445,11 +446,12 @@ async function main() {
     }
   } else if (cmd === "symbol") {
     const [query, langArg] = rest; if (!query) usage();
-    const langs = langArg ? [langArg] : ["python","cpp","bash"];
+    const langs = langArg ? [langArg] : ["python","cpp","bash","typescript"];
     for (const lang of langs) {
       const c = new LspClient(lang, ROOT, resolveConfig(lang));
       try {
         await c.ensureReady();
+        await c.ensureProjectLoaded();
         const syms = await c.workspaceSymbol(query);
         if (syms.length === 0) {
           console.error(`[${lang}] (no symbols matching "${query}")`);
@@ -495,7 +497,7 @@ async function main() {
     if (entries === null) { console.log(`(no grammar for ${path})`); return; }
     let docs;
     if (wantDocs && entries.length > 0) {
-      const lang = tsLang; // TsLang and LSP Lang are the same set
+      const lang = tsLangToLspLang(tsLang);
       const c = new LspClient(lang, ROOT, resolveConfig(lang));
       try {
         docs = new Map();
