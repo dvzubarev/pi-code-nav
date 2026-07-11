@@ -33,19 +33,16 @@ import { Type } from "typebox";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import {
-	LspClient,
-	resolveConfig,
-	type Lang,
-	type ServerConfig,
-} from "./lsp-client";
+import { LspClient, resolveConfig, type Lang, type ServerConfig } from "./lsp-client";
 import * as nav from "./nav";
 
 /** File extension → language (re-exported from render.ts for status reporting). */
 // EXT_LANG and langForFile now live in render.ts; index.ts imports them.
 
 /** Load .pi/lsp.json (project) then ~/.pi/lsp.json (global); merge per-lang. */
-async function loadConfig(ctx: ExtensionContext): Promise<Partial<Record<Lang, Partial<ServerConfig>>>> {
+async function loadConfig(
+	ctx: ExtensionContext,
+): Promise<Partial<Record<Lang, Partial<ServerConfig>>>> {
 	const candidates = [
 		resolve(ctx.cwd, ".pi", "lsp.json"),
 		resolve(process.env.HOME ?? "", ".pi", "lsp.json"),
@@ -145,7 +142,9 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			try {
-				return text_result(await nav.outline(params, ctx.cwd, (lang) => state.pool.client(lang)));
+				return text_result(
+					await nav.outline(params, ctx.cwd, (lang) => state.pool.client(lang)),
+				);
 			} catch (e) {
 				return err(e instanceof Error ? e.message : String(e));
 			}
@@ -165,19 +164,32 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 			path: Type.String({ description: "File path (absolute or relative to cwd)" }),
 			line: Type.Number({ description: "1-based line number" }),
 			column: Type.Number({ description: "1-based column number" }),
-			positions: Type.Optional(Type.Array(Type.Object({
-				path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-				line: Type.Number({ description: "1-based line number" }),
-				column: Type.Number({ description: "1-based column number" }),
-			}))),
-			list_symbols: Type.Optional(Type.Boolean({ description: "If true, append a tree-sitter symbol table for each returned snippet (default: false). The table lists identifiers with their absolute 1-based position and syntactic role (type/call/member/import), reusable as input to code_hover/code_definition/code_references. Local-variable rows (var) are omitted by default to keep the output focused on external APIs; use code_symbols_in with roles including \"var\" if you need locals." })),
+			positions: Type.Optional(
+				Type.Array(
+					Type.Object({
+						path: Type.String({
+							description: "File path (absolute or relative to cwd)",
+						}),
+						line: Type.Number({ description: "1-based line number" }),
+						column: Type.Number({ description: "1-based column number" }),
+					}),
+				),
+			),
+			list_symbols: Type.Optional(
+				Type.Boolean({
+					description:
+						'If true, append a tree-sitter symbol table for each returned snippet (default: false). The table lists identifiers with their absolute 1-based position and syntactic role (type/call/member/import), reusable as input to code_hover/code_definition/code_references. Local-variable rows (var) are omitted by default to keep the output focused on external APIs; use code_symbols_in with roles including "var" if you need locals.',
+				}),
+			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			// nav.definition handles the full batched-position logic, per-position
 			// error messages, source-snippet extraction, and optional tree-sitter
 			// symbol table. It never throws on recoverable errors (it pushes them
 			// inline), so no try/catch wrapper is needed here.
-			return text_result(await nav.definition(params, ctx.cwd, (lang) => state.pool.client(lang)));
+			return text_result(
+				await nav.definition(params, ctx.cwd, (lang) => state.pool.client(lang)),
+			);
 		},
 	});
 
@@ -194,17 +206,25 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 			path: Type.String({ description: "File path (absolute or relative to cwd)" }),
 			line: Type.Number({ description: "1-based line number" }),
 			column: Type.Number({ description: "1-based column number" }),
-			positions: Type.Optional(Type.Array(Type.Object({
-				path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-				line: Type.Number({ description: "1-based line number" }),
-				column: Type.Number({ description: "1-based column number" }),
-			}))),
+			positions: Type.Optional(
+				Type.Array(
+					Type.Object({
+						path: Type.String({
+							description: "File path (absolute or relative to cwd)",
+						}),
+						line: Type.Number({ description: "1-based line number" }),
+						column: Type.Number({ description: "1-based column number" }),
+					}),
+				),
+			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			// nav.references handles batched positions, per-position error
 			// messages, and the ### headers when batching. Never throws on
 			// recoverable errors.
-			return text_result(await nav.references(params, ctx.cwd, (lang) => state.pool.client(lang)));
+			return text_result(
+				await nav.references(params, ctx.cwd, (lang) => state.pool.client(lang)),
+			);
 		},
 	});
 
@@ -219,12 +239,18 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		],
 		parameters: Type.Object({
 			query: Type.String({ description: "Symbol name (or prefix) to search for" }),
-			language: Type.Optional(Type.String({ description: "Optional: 'cpp' | 'python' | 'bash' to limit to one language" })),
+			language: Type.Optional(
+				Type.String({
+					description: "Optional: 'cpp' | 'python' | 'bash' to limit to one language",
+				}),
+			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			// nav.symbol iterates the enabled languages, resolves identifier
 			// selStarts via documentSymbol, and never throws on recoverable errors.
-			return text_result(await nav.symbol(params, ctx.cwd, (lang) => state.pool.client(lang)));
+			return text_result(
+				await nav.symbol(params, ctx.cwd, (lang) => state.pool.client(lang)),
+			);
 		},
 	});
 
@@ -245,7 +271,9 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			try {
-				return text_result(await nav.rename(params, ctx.cwd, (lang) => state.pool.client(lang)));
+				return text_result(
+					await nav.rename(params, ctx.cwd, (lang) => state.pool.client(lang)),
+				);
 			} catch (e) {
 				return err(e instanceof Error ? e.message : String(e));
 			}
@@ -265,11 +293,17 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 			path: Type.String({ description: "File path (absolute or relative to cwd)" }),
 			line: Type.Number({ description: "1-based line number" }),
 			column: Type.Number({ description: "1-based column number" }),
-			positions: Type.Optional(Type.Array(Type.Object({
-				path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-				line: Type.Number({ description: "1-based line number" }),
-				column: Type.Number({ description: "1-based column number" }),
-			}))),
+			positions: Type.Optional(
+				Type.Array(
+					Type.Object({
+						path: Type.String({
+							description: "File path (absolute or relative to cwd)",
+						}),
+						line: Type.Number({ description: "1-based line number" }),
+						column: Type.Number({ description: "1-based column number" }),
+					}),
+				),
+			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			// nav.hover handles batched positions, per-position error messages,
@@ -288,18 +322,36 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		promptGuidelines: [
 			"Use code_symbols_in to discover identifiers in a code snippet or line range when you have a file path but not a precise position — e.g. after code_definition returns a snippet containing a third-party/stdlib symbol you want to learn about. Read the table, pick a row's (path, line, column), and pass it to code_hover / code_definition / code_references.",
 			"The default path (include_docs=false) makes no LSP calls — it is a pure tree-sitter parse, fast and cheap. Use it first; only set include_docs=true when you need hover labels and are willing to pay the LSP round-trips.",
-			"Roles: type (a type name), call (a function/method being called), member (a field/attribute access like .push_back / .encode), import (a name brought into scope by an import — module names and imported symbols, the primary entry points for third-party discovery), var (a local variable, parameter, or assignment target — hoverable but rarely worth learning about). By default `var` is omitted (noisy locals); pass roles including \"var\" to include them. The table dedupes by (name, role) and keeps the first occurrence; pass a tighter startLine/endLine to reach a later occurrence.",
+			'Roles: type (a type name), call (a function/method being called), member (a field/attribute access like .push_back / .encode), import (a name brought into scope by an import — module names and imported symbols, the primary entry points for third-party discovery), var (a local variable, parameter, or assignment target — hoverable but rarely worth learning about). By default `var` is omitted (noisy locals); pass roles including "var" to include them. The table dedupes by (name, role) and keeps the first occurrence; pass a tighter startLine/endLine to reach a later occurrence.',
 		],
 		parameters: Type.Object({
 			path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-			startLine: Type.Number({ description: "1-based inclusive start line of the range to scan" }),
-			endLine: Type.Number({ description: "1-based inclusive end line of the range to scan" }),
-			roles: Type.Optional(Type.Array(StringEnum(["type", "call", "member", "import", "var"] as const, { description: "Which roles to emit. Default: [type, call, member, import] (all except var, which are noisy locals). Pass e.g. [\"var\"] to see only locals, or the full [\"type\",\"call\",\"member\",\"import\",\"var\"] to see everything." }))),
-			include_docs: Type.Optional(Type.Boolean({ description: "If true, hover each symbol and append the first line of the hover as a label column (default: false). Makes one LSP hover call per unique symbol." })),
+			startLine: Type.Number({
+				description: "1-based inclusive start line of the range to scan",
+			}),
+			endLine: Type.Number({
+				description: "1-based inclusive end line of the range to scan",
+			}),
+			roles: Type.Optional(
+				Type.Array(
+					StringEnum(["type", "call", "member", "import", "var"] as const, {
+						description:
+							'Which roles to emit. Default: [type, call, member, import] (all except var, which are noisy locals). Pass e.g. ["var"] to see only locals, or the full ["type","call","member","import","var"] to see everything.',
+					}),
+				),
+			),
+			include_docs: Type.Optional(
+				Type.Boolean({
+					description:
+						"If true, hover each symbol and append the first line of the hover as a label column (default: false). Makes one LSP hover call per unique symbol.",
+				}),
+			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			try {
-				return text_result(await nav.symbolsIn(params, ctx.cwd, (lang) => state.pool.client(lang)));
+				return text_result(
+					await nav.symbolsIn(params, ctx.cwd, (lang) => state.pool.client(lang)),
+				);
 			} catch (e) {
 				return err(e instanceof Error ? e.message : String(e));
 			}
@@ -337,7 +389,9 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			try {
-				return text_result(await nav.diagnostics(params, ctx.cwd, (lang) => state.pool.client(lang)));
+				return text_result(
+					await nav.diagnostics(params, ctx.cwd, (lang) => state.pool.client(lang)),
+				);
 			} catch (e) {
 				return err(e instanceof Error ? e.message : String(e));
 			}
@@ -379,7 +433,10 @@ export default function codeNavExtension(pi: ExtensionAPI) {
 		}
 		registerTools(pi, s);
 		s.pool.setEnabled(true);
-		ctx.ui.notify("code-nav enabled — tools: code_outline, code_definition, code_references, code_symbol, code_rename, code_hover, code_symbols_in, code_diagnostics", "info");
+		ctx.ui.notify(
+			"code-nav enabled — tools: code_outline, code_definition, code_references, code_symbol, code_rename, code_hover, code_symbols_in, code_diagnostics",
+			"info",
+		);
 	}
 
 	async function disable(ctx: ExtensionContext): Promise<void> {
@@ -395,7 +452,8 @@ export default function codeNavExtension(pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("code-nav", {
-		description: "Enable LSP-backed code navigation tools (code_outline, code_definition, code_references, code_symbol, code_rename, code_hover, code_symbols_in, code_diagnostics)",
+		description:
+			"Enable LSP-backed code navigation tools (code_outline, code_definition, code_references, code_symbol, code_rename, code_hover, code_symbols_in, code_diagnostics)",
 		handler: async (_args, ctx) => {
 			await enable(ctx);
 		},
@@ -422,7 +480,12 @@ export default function codeNavExtension(pi: ExtensionAPI) {
 			}
 			const lines: string[] = [];
 			for (const [lang, client] of clients) {
-				const cfg = resolveConfig(lang, state!.pool["overrides" as keyof typeof state.pool] as Partial<Record<Lang, Partial<ServerConfig>>>);
+				const cfg = resolveConfig(
+					lang,
+					state!.pool["overrides" as keyof typeof state.pool] as Partial<
+						Record<Lang, Partial<ServerConfig>>
+					>,
+				);
 				lines.push(`${lang}: ${cfg.command} ${cfg.args.join(" ")}`.trim());
 			}
 			ctx.ui.notify(`code-nav servers:\n  - ${lines.join("\n  - ")}`, "info");

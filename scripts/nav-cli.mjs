@@ -58,7 +58,7 @@ const ROOT = process.env.CODE_NAV_ROOT ?? process.cwd();
 const [cmd, ...rest] = process.argv.slice(2);
 
 function usage() {
-  console.error(`usage (root: ${ROOT}):
+	console.error(`usage (root: ${ROOT}):
   node nav-cli.mjs outline <file>
   node nav-cli.mjs hover <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [<file> <line> <col> ...] [--list-symbols]
@@ -83,7 +83,7 @@ diagnostics fetches errors/warnings for a file via the LSP pull model
 
 env:
   CODE_NAV_ROOT  workspace root (default: cwd)`);
-  process.exit(2);
+	process.exit(2);
 }
 
 // One LSP client per language, spawned lazily and reused across calls in one
@@ -107,7 +107,8 @@ async function shutdownAll() {
 async function main() {
 	if (!cmd) usage();
 	if (cmd === "outline") {
-		const [path] = rest; if (!path) usage();
+		const [path] = rest;
+		if (!path) usage();
 		console.log(await nav.outline({ path }, ROOT, clientOf));
 	} else if (cmd === "hover" || cmd === "definition" || cmd === "references") {
 		// Accept one or more (file line col) triples. Each triple is batched
@@ -120,20 +121,34 @@ async function main() {
 		if (positional.length < 3 || positional.length % 3 !== 0) usage();
 		const positions = [];
 		for (let i = 0; i + 2 < positional.length; i += 3) {
-			positions.push({ path: positional[i], line: parseInt(positional[i + 1], 10), column: parseInt(positional[i + 2], 10) });
+			positions.push({
+				path: positional[i],
+				line: parseInt(positional[i + 1], 10),
+				column: parseInt(positional[i + 2], 10),
+			});
 		}
 		if (positions.length === 0) usage();
-		const params = { path: positions[0].path, line: positions[0].line, column: positions[0].column, positions };
+		const params = {
+			path: positions[0].path,
+			line: positions[0].line,
+			column: positions[0].column,
+			positions,
+		};
 		if (cmd === "hover") console.log(await nav.hover(params, ROOT, clientOf));
-		else if (cmd === "definition") console.log(await nav.definition({ ...params, list_symbols: listSymbols }, ROOT, clientOf));
+		else if (cmd === "definition")
+			console.log(
+				await nav.definition({ ...params, list_symbols: listSymbols }, ROOT, clientOf),
+			);
 		else console.log(await nav.references(params, ROOT, clientOf));
 	} else if (cmd === "rename") {
 		const [path, lineStr, colStr, newName] = rest;
 		if (!path || !lineStr || !colStr || !newName) usage();
-		const line = parseInt(lineStr, 10), column = parseInt(colStr, 10);
+		const line = parseInt(lineStr, 10),
+			column = parseInt(colStr, 10);
 		console.log(await nav.rename({ path, line, column, newName }, ROOT, clientOf));
 	} else if (cmd === "symbol") {
-		const [query, langArg] = rest; if (!query) usage();
+		const [query, langArg] = rest;
+		if (!query) usage();
 		const params = { query };
 		if (langArg) params.language = langArg;
 		console.log(await nav.symbol(params, ROOT, clientOf));
@@ -143,19 +158,31 @@ async function main() {
 		let roles;
 		if (rolesArg) {
 			const val = rolesArg.includes("=") ? rolesArg.slice(rolesArg.indexOf("=") + 1) : "";
-			const list = val.split(",").map((s) => s.trim()).filter(Boolean);
+			const list = val
+				.split(",")
+				.map((s) => s.trim())
+				.filter(Boolean);
 			const valid = ["type", "call", "member", "import", "var"];
 			roles = list.filter((r) => valid.includes(r));
-			if (roles.length === 0) throw new Error(`--roles: expected a comma list from ${valid.join(",")}`);
+			if (roles.length === 0)
+				throw new Error(`--roles: expected a comma list from ${valid.join(",")}`);
 		}
 		const positional = rest.filter((a) => a !== "--docs" && !a.startsWith("--roles"));
 		if (positional.length !== 3) usage();
 		const [path, startStr, endStr] = positional;
-		const startLine = parseInt(startStr, 10), endLine = parseInt(endStr, 10);
+		const startLine = parseInt(startStr, 10),
+			endLine = parseInt(endStr, 10);
 		if (!Number.isInteger(startLine) || !Number.isInteger(endLine)) usage();
-		console.log(await nav.symbolsIn({ path, startLine, endLine, roles, include_docs: wantDocs }, ROOT, clientOf));
+		console.log(
+			await nav.symbolsIn(
+				{ path, startLine, endLine, roles, include_docs: wantDocs },
+				ROOT,
+				clientOf,
+			),
+		);
 	} else if (cmd === "diagnostics") {
-		const [path] = rest; if (!path) usage();
+		const [path] = rest;
+		if (!path) usage();
 		console.log(await nav.diagnostics({ path }, ROOT, clientOf));
 	} else {
 		usage();

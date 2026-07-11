@@ -64,8 +64,8 @@ export interface ClientProvider {
 /** A position triple as accepted by the batched-position tools. */
 export interface Position {
 	path: string;
-	line: number;   // 1-based
-	column: number;  // 1-based
+	line: number; // 1-based
+	column: number; // 1-based
 }
 
 // ---------------------------------------------------------------------------
@@ -76,7 +76,11 @@ export interface OutlineParams {
 	path: string;
 }
 
-export async function outline(params: OutlineParams, cwd: string, clientOf: ClientProvider): Promise<string> {
+export async function outline(
+	params: OutlineParams,
+	cwd: string,
+	clientOf: ClientProvider,
+): Promise<string> {
 	const lang = langForFile(params.path);
 	if (lang === null) throw new UnknownLanguageError(params.path);
 	const abs = toAbs(params.path, cwd);
@@ -111,19 +115,32 @@ export interface DefinitionParams {
 	list_symbols?: boolean;
 }
 
-export async function definition(params: DefinitionParams, cwd: string, clientOf: ClientProvider): Promise<string> {
-	const posList: Position[] = params.positions && params.positions.length > 0
-		? params.positions
-		: [{ path: params.path, line: params.line, column: params.column }];
+export async function definition(
+	params: DefinitionParams,
+	cwd: string,
+	clientOf: ClientProvider,
+): Promise<string> {
+	const posList: Position[] =
+		params.positions && params.positions.length > 0
+			? params.positions
+			: [{ path: params.path, line: params.line, column: params.column }];
 	const out: string[] = [];
 	// One client per language; reuse across positions of the same lang.
 	const clients = new Map<Lang, LspClient>();
 	for (const pos of posList) {
 		const lang = langForFile(pos.path);
-		if (lang === null) { out.push(`(unknown language for file: ${pos.path})`); continue; }
+		if (lang === null) {
+			out.push(`(unknown language for file: ${pos.path})`);
+			continue;
+		}
 		let client = clients.get(lang);
 		if (!client) {
-			try { client = await clientOf(lang); } catch (e) { out.push(`(${lang}: server unavailable: ${e})`); continue; }
+			try {
+				client = await clientOf(lang);
+			} catch (e) {
+				out.push(`(${lang}: server unavailable: ${e})`);
+				continue;
+			}
 			clients.set(lang, client);
 		}
 		const abs = toAbs(pos.path, cwd);
@@ -155,7 +172,10 @@ export async function definition(params: DefinitionParams, cwd: string, clientOf
 				const body = await resolveDefBodyRange(client, loc);
 				const sl = body ? body.startLine : (loc.range?.start?.line ?? 0);
 				const el = body ? body.endLine : (loc.range?.end?.line ?? sl);
-				const snippet = src.split(/\r?\n/).slice(sl, el + 1).join("\n");
+				const snippet = src
+					.split(/\r?\n/)
+					.slice(sl, el + 1)
+					.join("\n");
 				block.push("```");
 				block.push(snippet);
 				block.push("```");
@@ -202,18 +222,31 @@ export interface ReferencesParams {
 	positions?: Position[];
 }
 
-export async function references(params: ReferencesParams, cwd: string, clientOf: ClientProvider): Promise<string> {
-	const posList: Position[] = params.positions && params.positions.length > 0
-		? params.positions
-		: [{ path: params.path, line: params.line, column: params.column }];
+export async function references(
+	params: ReferencesParams,
+	cwd: string,
+	clientOf: ClientProvider,
+): Promise<string> {
+	const posList: Position[] =
+		params.positions && params.positions.length > 0
+			? params.positions
+			: [{ path: params.path, line: params.line, column: params.column }];
 	const out: string[] = [];
 	const clients = new Map<Lang, LspClient>();
 	for (const pos of posList) {
 		const lang = langForFile(pos.path);
-		if (lang === null) { out.push(`(unknown language for file: ${pos.path})`); continue; }
+		if (lang === null) {
+			out.push(`(unknown language for file: ${pos.path})`);
+			continue;
+		}
 		let client = clients.get(lang);
 		if (!client) {
-			try { client = await clientOf(lang); } catch (e) { out.push(`(${lang}: server unavailable: ${e})`); continue; }
+			try {
+				client = await clientOf(lang);
+			} catch (e) {
+				out.push(`(${lang}: server unavailable: ${e})`);
+				continue;
+			}
 			clients.set(lang, client);
 		}
 		const abs = toAbs(pos.path, cwd);
@@ -226,7 +259,11 @@ export async function references(params: ReferencesParams, cwd: string, clientOf
 		}
 		const refs = await client.references(abs, pos.line - 1, pos.column - 1, text);
 		if (refs.length === 0) {
-			out.push(posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n(no references)` : `(no references found for ${pos.path}:${pos.line}:${pos.column})`);
+			out.push(
+				posList.length > 1
+					? `### ${pos.path}:${pos.line}:${pos.column}\n(no references)`
+					: `(no references found for ${pos.path}:${pos.line}:${pos.column})`,
+			);
 			continue;
 		}
 		const rendered = refs.map((r) => renderLocation(r));
@@ -245,7 +282,11 @@ export interface SymbolParams {
 	language?: string;
 }
 
-export async function symbol(params: SymbolParams, cwd: string, clientOf: ClientProvider): Promise<string> {
+export async function symbol(
+	params: SymbolParams,
+	cwd: string,
+	clientOf: ClientProvider,
+): Promise<string> {
 	const langs: Lang[] = params.language
 		? [params.language as Lang]
 		: ["cpp", "python", "bash", "typescript"];
@@ -260,7 +301,12 @@ export async function symbol(params: SymbolParams, cwd: string, clientOf: Client
 			out.push(`(${lang}: server unavailable: ${e})`);
 			continue;
 		}
-		if (!client.supports("workspaceSymbolProvider" as keyof import("vscode-languageserver-protocol").ServerCapabilities)) continue;
+		if (
+			!client.supports(
+				"workspaceSymbolProvider" as keyof import("vscode-languageserver-protocol").ServerCapabilities,
+			)
+		)
+			continue;
 		// tsserver loads its project lazily on the first didOpen of a file in
 		// that project; workspace/symbol throws "No Project." before then.
 		// ensureProjectLoaded opens one source file (a no-op for other
@@ -287,7 +333,11 @@ export interface RenameParams {
 	newName: string;
 }
 
-export async function rename(params: RenameParams, cwd: string, clientOf: ClientProvider): Promise<string> {
+export async function rename(
+	params: RenameParams,
+	cwd: string,
+	clientOf: ClientProvider,
+): Promise<string> {
 	const lang = langForFile(params.path);
 	if (lang === null) throw new UnknownLanguageError(params.path);
 	const abs = toAbs(params.path, cwd);
@@ -316,18 +366,31 @@ export interface HoverParams {
 	positions?: Position[];
 }
 
-export async function hover(params: HoverParams, cwd: string, clientOf: ClientProvider): Promise<string> {
-	const posList: Position[] = params.positions && params.positions.length > 0
-		? params.positions
-		: [{ path: params.path, line: params.line, column: params.column }];
+export async function hover(
+	params: HoverParams,
+	cwd: string,
+	clientOf: ClientProvider,
+): Promise<string> {
+	const posList: Position[] =
+		params.positions && params.positions.length > 0
+			? params.positions
+			: [{ path: params.path, line: params.line, column: params.column }];
 	const out: string[] = [];
 	const clients = new Map<Lang, LspClient>();
 	for (const pos of posList) {
 		const lang = langForFile(pos.path);
-		if (lang === null) { out.push(`(unknown language for file: ${pos.path})`); continue; }
+		if (lang === null) {
+			out.push(`(unknown language for file: ${pos.path})`);
+			continue;
+		}
 		let client = clients.get(lang);
 		if (!client) {
-			try { client = await clientOf(lang); } catch (e) { out.push(`(${lang}: server unavailable: ${e})`); continue; }
+			try {
+				client = await clientOf(lang);
+			} catch (e) {
+				out.push(`(${lang}: server unavailable: ${e})`);
+				continue;
+			}
 			clients.set(lang, client);
 		}
 		const abs = toAbs(pos.path, cwd);
@@ -352,13 +415,17 @@ export async function hover(params: HoverParams, cwd: string, clientOf: ClientPr
 
 export interface SymbolsInParams {
 	path: string;
-	startLine: number;  // 1-based
-	endLine: number;    // 1-based
+	startLine: number; // 1-based
+	endLine: number; // 1-based
 	roles?: string[];
 	include_docs?: boolean;
 }
 
-export async function symbolsIn(params: SymbolsInParams, cwd: string, clientOf: ClientProvider): Promise<string> {
+export async function symbolsIn(
+	params: SymbolsInParams,
+	cwd: string,
+	clientOf: ClientProvider,
+): Promise<string> {
 	const tsLang = tsLangForFile(params.path);
 	if (!tsLang) throw new UnknownLanguageError(params.path);
 	const abs = toAbs(params.path, cwd);
@@ -368,7 +435,8 @@ export async function symbolsIn(params: SymbolsInParams, cwd: string, clientOf: 
 	} catch (e) {
 		return `Cannot read ${abs}: ${e}`;
 	}
-	if (params.endLine < params.startLine) return `endLine (${params.endLine}) must be >= startLine (${params.startLine})`;
+	if (params.endLine < params.startLine)
+		return `endLine (${params.endLine}) must be >= startLine (${params.startLine})`;
 	let entries;
 	try {
 		entries = await parseSymbols(tsLang, {
@@ -388,7 +456,11 @@ export async function symbolsIn(params: SymbolsInParams, cwd: string, clientOf: 
 	if (params.include_docs && entries.length > 0) {
 		const lang = tsLangToLspLang(tsLang);
 		let client: LspClient;
-		try { client = await clientOf(lang); } catch (e) { return `(${lang}: server unavailable: ${e})`; }
+		try {
+			client = await clientOf(lang);
+		} catch (e) {
+			return `(${lang}: server unavailable: ${e})`;
+		}
 		docs = new Map();
 		for (const e of entries) {
 			const key = `${e.name}|${e.role}`;
@@ -409,7 +481,11 @@ export interface DiagnosticsParams {
 	path: string;
 }
 
-export async function diagnostics(params: DiagnosticsParams, cwd: string, clientOf: ClientProvider): Promise<string> {
+export async function diagnostics(
+	params: DiagnosticsParams,
+	cwd: string,
+	clientOf: ClientProvider,
+): Promise<string> {
 	const lang = langForFile(params.path);
 	if (lang === null) throw new UnknownLanguageError(params.path);
 	const abs = toAbs(params.path, cwd);

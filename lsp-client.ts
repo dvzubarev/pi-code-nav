@@ -336,7 +336,9 @@ export class LspClient {
 			initializationOptions: initOptions,
 		};
 		// workspaceFolders.index was added in 3.x for multi-root; ccls/pyright ignore it.
-		const wf = [{ uri: this.rootUri, name: "root" }] as unknown as InitializeParams["workspaceFolders"];
+		const wf = [
+			{ uri: this.rootUri, name: "root" },
+		] as unknown as InitializeParams["workspaceFolders"];
 		initParams.workspaceFolders = wf;
 
 		const result = (await conn.sendRequest("initialize", initParams)) as {
@@ -412,7 +414,10 @@ export class LspClient {
 		return Boolean(this.capabilities && this.capabilities[method]);
 	}
 
-	async documentSymbols(absPath: string, text: string): Promise<DocumentSymbol[] | SymbolInformation[]> {
+	async documentSymbols(
+		absPath: string,
+		text: string,
+	): Promise<DocumentSymbol[] | SymbolInformation[]> {
 		await this.openDocument(absPath, text);
 		const uri = pathToFileURL(absPath).href;
 		const res = await this.conn!.sendRequest("textDocument/documentSymbol", {
@@ -421,7 +426,12 @@ export class LspClient {
 		return (res as DocumentSymbol[] | SymbolInformation[] | null) ?? [];
 	}
 
-	async definition(absPath: string, line: number, col: number, text: string): Promise<Definition> {
+	async definition(
+		absPath: string,
+		line: number,
+		col: number,
+		text: string,
+	): Promise<Definition> {
 		await this.openDocument(absPath, text);
 		const uri = pathToFileURL(absPath).href;
 		const res = await this.conn!.sendRequest("textDocument/definition", {
@@ -431,7 +441,12 @@ export class LspClient {
 		return (res as Definition) ?? [];
 	}
 
-	async references(absPath: string, line: number, col: number, text: string): Promise<Location[]> {
+	async references(
+		absPath: string,
+		line: number,
+		col: number,
+		text: string,
+	): Promise<Location[]> {
 		await this.openDocument(absPath, text);
 		const uri = pathToFileURL(absPath).href;
 		const params: ReferenceParams = {
@@ -459,7 +474,13 @@ export class LspClient {
 		return (res as SymbolInformation[] | null) ?? [];
 	}
 
-	async rename(absPath: string, line: number, col: number, text: string, newName: string): Promise<WorkspaceEdit> {
+	async rename(
+		absPath: string,
+		line: number,
+		col: number,
+		text: string,
+		newName: string,
+	): Promise<WorkspaceEdit> {
 		await this.openDocument(absPath, text);
 		const uri = pathToFileURL(absPath).href;
 		const params: RenameParams = {
@@ -482,7 +503,10 @@ export class LspClient {
 	 * (but still answers); ccls/bash-language-server do not.
 	 */
 	supportsPullDiagnostics(): boolean {
-		return Boolean(this.capabilities && (this.capabilities as unknown as { diagnosticProvider?: unknown }).diagnosticProvider);
+		return Boolean(
+			this.capabilities &&
+			(this.capabilities as unknown as { diagnosticProvider?: unknown }).diagnosticProvider,
+		);
 	}
 
 	/**
@@ -538,4 +562,3 @@ export class LspClient {
 		} catch {}
 	}
 }
-

@@ -29,10 +29,19 @@ runOrSkip("code_outline on second.py shows Point and TempC classes", async () =>
 		const lines = out.split("\n");
 		// Hierarchical DocumentSymbol[] → indented outline. Verify the two
 		// top-level classes appear with their kind and 1-based selectionRange pos.
-		assert.ok(lines.some((l) => /^Class Point  \(\d+:\d+\)$/.test(l)), `Point missing:\n${out}`);
-		assert.ok(lines.some((l) => /^Class TempC  \(\d+:\d+\)$/.test(l)), `TempC missing:\n${out}`);
+		assert.ok(
+			lines.some((l) => /^Class Point  \(\d+:\d+\)$/.test(l)),
+			`Point missing:\n${out}`,
+		);
+		assert.ok(
+			lines.some((l) => /^Class TempC  \(\d+:\d+\)$/.test(l)),
+			`TempC missing:\n${out}`,
+		);
 		// TempC's children (__init__, punintend) are indented two spaces.
-		assert.ok(lines.some((l) => /^  Method punintend  \(\d+:\d+\)$/.test(l)), `punintend missing:\n${out}`);
+		assert.ok(
+			lines.some((l) => /^  Method punintend  \(\d+:\d+\)$/.test(l)),
+			`punintend missing:\n${out}`,
+		);
 	} finally {
 		await ws.cleanup();
 	}
@@ -59,7 +68,11 @@ runOrSkip("code_definition on punintend returns its body", async () => {
 	try {
 		// punintend is at second.py:24:9 (1-based) per code_outline. definition
 		// should resolve the enclosing body and return the source snippet.
-		const out = await nav.definition({ path: "second.py", line: 24, column: 9 }, ws.root, ws.clientOf);
+		const out = await nav.definition(
+			{ path: "second.py", line: 24, column: 9 },
+			ws.root,
+			ws.clientOf,
+		);
 		assert.match(out, /def punintend/, `punintend body missing:\n${out}`);
 		// The docstring should be inside the resolved body extent.
 		assert.match(out, /Documentation of punintend/);
@@ -73,7 +86,11 @@ runOrSkip("code_hover on Point.__init__ signature shows x param", async () => {
 	try {
 		// __init__ is at second.py:11:9 (the `def`). Hovering there should
 		// surface the signature, which mentions the `x` parameter.
-		const out = await nav.hover({ path: "second.py", line: 11, column: 9 }, ws.root, ws.clientOf);
+		const out = await nav.hover(
+			{ path: "second.py", line: 11, column: 9 },
+			ws.root,
+			ws.clientOf,
+		);
 		assert.ok(out.length > 0, "hover returned empty text");
 		// ty returns a signature like __init__(self, x: int = 0, y: int = 0) -> None
 		assert.match(out, /x\s*:\s*int/i, `x param missing from hover:\n${out}`);
@@ -87,7 +104,11 @@ runOrSkip("code_references on Point class lists __init__ usages", async () => {
 	try {
 		// Point is defined at second.py:10:7. Its references include its use as
 		// a default parameter in TempC.__init__ (p: Point = Point()).
-		const out = await nav.references({ path: "second.py", line: 10, column: 7 }, ws.root, ws.clientOf);
+		const out = await nav.references(
+			{ path: "second.py", line: 10, column: 7 },
+			ws.root,
+			ws.clientOf,
+		);
 		assert.match(out, /\d+ reference\(s\):/, `reference count header missing:\n${out}`);
 		// At least one reference row should be present (the def itself, plus the
 		// default-arg usage and the call in TempC.__init__).

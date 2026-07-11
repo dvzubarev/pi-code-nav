@@ -62,9 +62,7 @@ export async function parseList(lang, text, opts = {}) {
 	const { parseSymbols } = await loadParse();
 	const entries = await parseSymbols(lang, { text, ...opts });
 	if (entries === null) throw new Error(`parseSymbols returned null for ${lang}`);
-	return entries
-		.map((e) => `${e.role}\t${e.name}\t${e.line}:${e.column}`)
-		.sort();
+	return entries.map((e) => `${e.role}\t${e.name}\t${e.line}:${e.column}`).sort();
 }
 
 /** Assert that a map contains a role:name entry at the expected 1-based pos. */
@@ -74,9 +72,7 @@ export function assertEntry(map, role, name, line, column) {
 		throw new Error(`missing ${role}:${name} (have: ${[...map.keys()].join(", ")})`);
 	}
 	if (e.line !== line || e.column !== column) {
-		throw new Error(
-			`${role}:${name} expected ${line}:${column}, got ${e.line}:${e.column}`,
-		);
+		throw new Error(`${role}:${name} expected ${line}:${column}, got ${e.line}:${e.column}`);
 	}
 	return e;
 }

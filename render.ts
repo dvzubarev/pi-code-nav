@@ -81,10 +81,33 @@ export function symbolKindName(kind: number | undefined): string {
 	// LSP SymbolKind is 1-based (File=1, Class=5, Method=6, Function=12, Variable=13, …).
 	// Index 0 is unused by the spec; pad so names[kind] resolves correctly.
 	const names = [
-		"", "File","Module","Namespace","Package","Class","Method","Property",
-		"Field","Constructor","Enum","Interface","Function","Variable","Constant",
-		"String","Number","Boolean","Array","Object","Key","Null","EnumMember",
-		"Struct","Event","Operator","TypeParameter",
+		"",
+		"File",
+		"Module",
+		"Namespace",
+		"Package",
+		"Class",
+		"Method",
+		"Property",
+		"Field",
+		"Constructor",
+		"Enum",
+		"Interface",
+		"Function",
+		"Variable",
+		"Constant",
+		"String",
+		"Number",
+		"Boolean",
+		"Array",
+		"Object",
+		"Key",
+		"Null",
+		"EnumMember",
+		"Struct",
+		"Event",
+		"Operator",
+		"TypeParameter",
 	];
 	if (kind == null || kind === 0) return "Symbol";
 	return names[kind] ?? "Symbol";
@@ -110,7 +133,10 @@ export function renderDocSymbol(sym: DocumentSymbol, depth: number, lines: strin
 }
 
 /** Render a flat SymbolInformation (from workspace/symbol) as one line. */
-export function renderSymbolInfo(s: SymbolInformation, selStart?: { line: number; character: number }): string {
+export function renderSymbolInfo(
+	s: SymbolInformation,
+	selStart?: { line: number; character: number },
+): string {
 	const loc = s.location;
 	const path = uriToPath(loc.uri);
 	// selStart is the resolved identifier position (0-based LSP coords) when
@@ -164,7 +190,10 @@ export async function resolveSymbolSelStart(
 		}
 		const match = findDocSymbolByNameRange(syms, sym.name, sym.location.range);
 		if (match?.selectionRange?.start) {
-			return { line: match.selectionRange.start.line, character: match.selectionRange.start.character };
+			return {
+				line: match.selectionRange.start.line,
+				character: match.selectionRange.start.character,
+			};
 		}
 	} catch {
 		// Fall through to source-line scan.
@@ -183,7 +212,10 @@ export async function resolveSymbolSelStart(
 export function findDocSymbolByNameRange(
 	syms: DocumentSymbol[],
 	name: string,
-	within: { start?: { line: number; character: number }; end?: { line: number; character: number } },
+	within: {
+		start?: { line: number; character: number };
+		end?: { line: number; character: number };
+	},
 ): DocumentSymbol | undefined {
 	for (const s of syms) {
 		if (s.name === name && rangeContains(s.range, within)) return s;
@@ -210,12 +242,19 @@ export function findDocSymbolBySelStart(
 }
 
 export function rangeContains(
-	outer: { start?: { line: number; character: number }; end?: { line: number; character: number } } | undefined,
-	inner: { start?: { line: number; character: number }; end?: { line: number; character: number } },
+	outer:
+		| { start?: { line: number; character: number }; end?: { line: number; character: number } }
+		| undefined,
+	inner: {
+		start?: { line: number; character: number };
+		end?: { line: number; character: number };
+	},
 ): boolean {
 	if (!outer?.start || !outer?.end || !inner?.start || !inner?.end) return false;
-	const a = posKey(outer.start), b = posKey(outer.end);
-	const c = posKey(inner.start), d = posKey(inner.end);
+	const a = posKey(outer.start),
+		b = posKey(outer.end);
+	const c = posKey(inner.start),
+		d = posKey(inner.end);
 	return a <= c && b >= d;
 }
 
@@ -242,11 +281,16 @@ export function renderLocation(loc: Location): string {
 /** LSP DiagnosticSeverity (1-based) → short label. */
 export function severityName(sev: number | undefined): string {
 	switch (sev) {
-		case 1: return "error";
-		case 2: return "warning";
-		case 3: return "info";
-		case 4: return "hint";
-		default: return "message";
+		case 1:
+			return "error";
+		case 2:
+			return "warning";
+		case 3:
+			return "info";
+		case 4:
+			return "hint";
+		default:
+			return "message";
 	}
 }
 
@@ -303,7 +347,8 @@ export async function resolveDefBodyRange(
 		const syms = await client.documentSymbols(path, text);
 		// Hierarchical DocumentSymbol[] has selectionRange; flat SymbolInformation[]
 		// does not — bail (no enclosing extent to resolve).
-		const flat = syms.length > 0 && "selectionRange" in syms[0] ? (syms as DocumentSymbol[]) : [];
+		const flat =
+			syms.length > 0 && "selectionRange" in syms[0] ? (syms as DocumentSymbol[]) : [];
 		const m = findDocSymbolBySelStart(flat, idStart);
 		if (m?.range?.start && m?.range?.end) {
 			return { startLine: m.range.start.line, endLine: m.range.end.line };
@@ -322,7 +367,10 @@ export interface AppliedFile {
 }
 
 export type TextEditShape = {
-	range?: { start?: { line?: number; character?: number }; end?: { line?: number; character?: number } };
+	range?: {
+		start?: { line?: number; character?: number };
+		end?: { line?: number; character?: number };
+	};
 	newText?: string;
 };
 
@@ -408,17 +456,30 @@ export async function applyTextEdits(path: string, edits: TextEditShape[]): Prom
 /** File extension → language. Shared by index.ts and the CLI. */
 export const EXT_LANG: Record<string, Lang> = {
 	".py": "python",
-	".c": "cpp", ".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp",
-	".h": "cpp", ".hh": "cpp", ".hpp": "cpp", ".hxx": "cpp",
-	".m": "cpp", ".mm": "cpp",
-	".sh": "bash", ".bash": "bash",
+	".c": "cpp",
+	".cc": "cpp",
+	".cpp": "cpp",
+	".cxx": "cpp",
+	".h": "cpp",
+	".hh": "cpp",
+	".hpp": "cpp",
+	".hxx": "cpp",
+	".m": "cpp",
+	".mm": "cpp",
+	".sh": "bash",
+	".bash": "bash",
 	// TypeScript/JavaScript — one LSP server (typescript-language-server)
 	// serves all of these; tree-sitter uses distinct grammars for the JSX
 	// variants (see tsLangForFile). .mts/.cts/.mjs/.cjs are TS/JS module
 	// variants that parse identically for our role-classification purposes.
-	".ts": "typescript", ".mts": "typescript", ".cts": "typescript",
-	".tsx": "typescript", ".jsx": "typescript", ".js": "typescript",
-	".mjs": "typescript", ".cjs": "typescript",
+	".ts": "typescript",
+	".mts": "typescript",
+	".cts": "typescript",
+	".tsx": "typescript",
+	".jsx": "typescript",
+	".js": "typescript",
+	".mjs": "typescript",
+	".cjs": "typescript",
 };
 
 /** Map a file path to its LSP language, or null if unknown. */

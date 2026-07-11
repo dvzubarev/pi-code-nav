@@ -48,37 +48,42 @@ test("tsLangToLspLang maps both typescript and tsx to the typescript LSP", async
 });
 
 test("named import specifier → import (import { readFile })", async () => {
-	const m = await parseMap("typescript",
-		`import { readFile } from "node:fs/promises";\n`,
-		{ startLine: 1, endLine: 1 });
+	const m = await parseMap("typescript", `import { readFile } from "node:fs/promises";\n`, {
+		startLine: 1,
+		endLine: 1,
+	});
 	assertEntry(m, "import", "readFile", 1, 10);
 });
 
 test("type-only named import → import (import type { Lang })", async () => {
-	const m = await parseMap("typescript",
-		`import type { Lang } from "./lsp-client";\n`,
-		{ startLine: 1, endLine: 1 });
+	const m = await parseMap("typescript", `import type { Lang } from "./lsp-client";\n`, {
+		startLine: 1,
+		endLine: 1,
+	});
 	assertEntry(m, "import", "Lang", 1, 15);
 });
 
 test("namespace import → import (import * as fs)", async () => {
-	const m = await parseMap("typescript",
-		`import * as fs from "node:fs";\n`,
-		{ startLine: 1, endLine: 1 });
+	const m = await parseMap("typescript", `import * as fs from "node:fs";\n`, {
+		startLine: 1,
+		endLine: 1,
+	});
 	assertEntry(m, "import", "fs", 1, 13);
 });
 
 test("default import → import (import foo)", async () => {
-	const m = await parseMap("typescript",
-		`import foo from "./mod";\n`,
-		{ startLine: 1, endLine: 1 });
+	const m = await parseMap("typescript", `import foo from "./mod";\n`, {
+		startLine: 1,
+		endLine: 1,
+	});
 	assertEntry(m, "import", "foo", 1, 8);
 });
 
 test("re-export specifier → import (export { bar })", async () => {
-	const m = await parseMap("typescript",
-		`export { bar } from "./mod";\n`,
-		{ startLine: 1, endLine: 1 });
+	const m = await parseMap("typescript", `export { bar } from "./mod";\n`, {
+		startLine: 1,
+		endLine: 1,
+	});
 	assertEntry(m, "import", "bar", 1, 10);
 });
 
@@ -128,8 +133,10 @@ test("enum member → member", async () => {
 });
 
 test("bare identifier call → call (compute(42))", async () => {
-	const m = await parseMap("typescript", `const x = compute(42);\n`,
-		{ startLine: 1, endLine: 1 });
+	const m = await parseMap("typescript", `const x = compute(42);\n`, {
+		startLine: 1,
+		endLine: 1,
+	});
 	assertEntry(m, "call", "compute", 1, 11);
 	// `x` is the declaration name → var (default drops it).
 	assertNoEntry(m, "var", "x");
@@ -151,8 +158,7 @@ test("optional chaining member access → member (obj?.maybe?.deep)", async () =
 });
 
 test("new expression constructor → call (new Foo())", async () => {
-	const m = await parseMap("typescript", `const t = new Foo();\n`,
-		{ startLine: 1, endLine: 1 });
+	const m = await parseMap("typescript", `const t = new Foo();\n`, { startLine: 1, endLine: 1 });
 	assertEntry(m, "call", "Foo", 1, 15);
 });
 
@@ -168,8 +174,11 @@ test("default role set drops var (declaration names, params, locals)", async () 
 	assertNoEntry(def, "var", "a");
 	assertNoEntry(def, "var", "b");
 	// With var explicitly included, the declaration name is at its position.
-	const withVar = await parseMap("typescript", text,
-		{ startLine: 1, endLine: 1, roles: ["type", "call", "member", "import", "var"] });
+	const withVar = await parseMap("typescript", text, {
+		startLine: 1,
+		endLine: 1,
+		roles: ["type", "call", "member", "import", "var"],
+	});
 	assertEntry(withVar, "var", "f", 1, 10);
 });
 
@@ -189,8 +198,11 @@ test("tsx grammar parses JSX attributes as member", async () => {
 
 test("tsx JSX element name is var (not type), includable via roles", async () => {
 	const text = `const el = <Card>{value}</Card>;\n`;
-	const withVar = await parseMap("tsx", text,
-		{ startLine: 1, endLine: 1, roles: ["type", "call", "member", "import", "var"] });
+	const withVar = await parseMap("tsx", text, {
+		startLine: 1,
+		endLine: 1,
+		roles: ["type", "call", "member", "import", "var"],
+	});
 	assertEntry(withVar, "var", "Card", 1, 13);
 	assertEntry(withVar, "var", "value", 1, 19);
 	// And it is never a type.

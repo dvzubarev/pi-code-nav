@@ -40,7 +40,8 @@ test("var is omitted by default but includable via roles", async () => {
 	const text = "x = 1\ny = 2\n";
 	const def = await parseMap("python", text, { startLine: 1, endLine: 2 });
 	const withVar = await parseMap("python", text, {
-		startLine: 1, endLine: 2,
+		startLine: 1,
+		endLine: 2,
 		roles: ["type", "call", "member", "import", "var"],
 	});
 	// `x` and `y` are assignment targets → role var.
@@ -53,7 +54,9 @@ test("var is omitted by default but includable via roles", async () => {
 test("roles narrows the emitted set", async () => {
 	const text = "import cbor2\nx = cbor2.load(data)\n";
 	const onlyImport = await parseList("python", text, {
-		startLine: 1, endLine: 2, roles: ["import"],
+		startLine: 1,
+		endLine: 2,
+		roles: ["import"],
 	});
 	// Only the import row remains (cbor2 on line 1 at the import statement).
 	assert.deepEqual(onlyImport, ["import\tcbor2\t1:8"]);
@@ -64,7 +67,9 @@ test("dedup keeps the FIRST occurrence position per (name, role)", async () => {
 	// Pad blank lines so the content genuinely sits at lines 10-12.
 	const text = "\n".repeat(9) + "load(x)\nload(y)\nload(z)\n";
 	const m = await parseMap("python", text, {
-		startLine: 10, endLine: 12, roles: ["call"],
+		startLine: 10,
+		endLine: 12,
+		roles: ["call"],
 	});
 	assertEntry(m, "call", "load", 10, 1);
 	assert.equal(m.size, 1, `expected 1 call entry, got ${m.size}: ${[...m.keys()]}`);
@@ -101,7 +106,12 @@ test("unsupported language is reported via tsLangForFile (the real gate)", async
 
 test("renderSymbolTable format is the documented header + rows", async () => {
 	const { parseSymbols, renderSymbolTable } = await loadParse();
-	const entries = await parseSymbols("python", { text: "import cbor2\n", startLine: 1, endLine: 1, roles: ["import"] });
+	const entries = await parseSymbols("python", {
+		text: "import cbor2\n",
+		startLine: 1,
+		endLine: 1,
+		roles: ["import"],
+	});
 	const out = renderSymbolTable("widget.py", 1, 1, entries);
 	assert.match(out, /^Symbols in widget\.py:1-1 \(1-based, reusable as code_\* input\):/);
 	// The row layout: "  <role pad6> <name>  <path>:<line>:<col>"
@@ -143,7 +153,9 @@ test("tree-sitter parses raw function-body fragments without wrapping", async ()
 	// statement, not at a usage site).
 	const body = "    result = cbor2.load(data)\n    return result\n";
 	const m = await parseMap("python", body, {
-		startLine: 1, endLine: 2, roles: ["member", "var"],
+		startLine: 1,
+		endLine: 2,
+		roles: ["member", "var"],
 	});
 	assertEntry(m, "var", "result", 1, 5);
 	assertEntry(m, "var", "cbor2", 1, 14);
@@ -158,12 +170,14 @@ test("comment and string noise is excluded (the regex-killer case)", async () =>
 	//   x = cbor2.load(data)  # use load not loads
 	// `load`/`sort`/`size`/`function` in comments/strings must NOT appear.
 	const text = [
-		'# TODO: fix the load function',
+		"# TODO: fix the load function",
 		'msg = "sort the data and check size"',
-		'x = cbor2.load(data)  # use load not loads',
+		"x = cbor2.load(data)  # use load not loads",
 	].join("\n");
 	const m = await parseMap("python", text, {
-		startLine: 1, endLine: 3, roles: ["type", "call", "member", "import", "var"],
+		startLine: 1,
+		endLine: 3,
+		roles: ["type", "call", "member", "import", "var"],
 	});
 	// The real identifiers: msg, x, cbor2 (var — usage, not import), load (member), data.
 	assertEntry(m, "var", "msg", 2, 1);

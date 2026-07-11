@@ -85,18 +85,33 @@ export function tsLangForFile(path: string): TsLang | null {
 	const ext = path.slice(dot).toLowerCase();
 	if (ext === ".py") return "python";
 	if (
-		ext === ".c" || ext === ".cc" || ext === ".cpp" || ext === ".cxx" ||
-		ext === ".h" || ext === ".hh" || ext === ".hpp" || ext === ".hxx" ||
-		ext === ".m" || ext === ".mm"
-	) return "cpp";
+		ext === ".c" ||
+		ext === ".cc" ||
+		ext === ".cpp" ||
+		ext === ".cxx" ||
+		ext === ".h" ||
+		ext === ".hh" ||
+		ext === ".hpp" ||
+		ext === ".hxx" ||
+		ext === ".m" ||
+		ext === ".mm"
+	)
+		return "cpp";
 	if (ext === ".sh" || ext === ".bash") return "bash";
 	// TypeScript and TSX get distinct tree-sitter grammars: the `typescript`
 	// grammar mis-parses JSX (`<div>` becomes type_arguments, `{x}` an object),
 	// so .tsx must use the `tsx` grammar. .js/.jsx/.mjs/.cjs parse with the
 	// typescript grammar (JavaScript is a strict subset for our role purposes —
 	// call/member/type/import classification is identical).
-	if (ext === ".ts" || ext === ".mts" || ext === ".cts" ||
-		ext === ".js" || ext === ".mjs" || ext === ".cjs") return "typescript";
+	if (
+		ext === ".ts" ||
+		ext === ".mts" ||
+		ext === ".cts" ||
+		ext === ".js" ||
+		ext === ".mjs" ||
+		ext === ".cjs"
+	)
+		return "typescript";
 	if (ext === ".tsx" || ext === ".jsx") return "tsx";
 	return null;
 }
@@ -230,8 +245,7 @@ function classifyRole(node: TSNode, lang: TsLang): SymbolRole | null {
 		// `union_type`, or `type_parameter`). The inner identifiers (Callable,
 		// CBOREncoder, Any) are still emitted individually below as `var`.
 		if (t === "type") {
-			if (pt === "type" || pt === "union_type" || pt === "type_parameter")
-				return null; // nested subtype — covered by the outer `type` node
+			if (pt === "type" || pt === "union_type" || pt === "type_parameter") return null; // nested subtype — covered by the outer `type` node
 			return "type";
 		}
 		if (t === "identifier") {
@@ -245,8 +259,12 @@ function classifyRole(node: TSNode, lang: TsLang): SymbolRole | null {
 			// `dotted_name` also appears in expressions as `os.path`, but there the
 			// parent is `attribute`, not `dotted_name`, so no false match.
 			if (pt === "aliased_import") return "import"; // the alias name (np, CE)
-			if (pt === "dotted_name" &&
-			    (gp === "import_statement" || gp === "import_from_statement" || gp === "aliased_import"))
+			if (
+				pt === "dotted_name" &&
+				(gp === "import_statement" ||
+					gp === "import_from_statement" ||
+					gp === "aliased_import")
+			)
 				return "import";
 			if (pt === "attribute") {
 				// `cbor2.load`: field "attribute" = the member; field "object" = base.
@@ -276,9 +294,12 @@ function classifyRole(node: TSNode, lang: TsLang): SymbolRole | null {
 			if (pt === "call_expression") return "call";
 			// Declaration / parameter names.
 			if (
-				pt === "declaration" || pt === "init_declarator" ||
-				pt === "parameter_declaration" || pt === "parameter_list"
-			) return "var";
+				pt === "declaration" ||
+				pt === "init_declarator" ||
+				pt === "parameter_declaration" ||
+				pt === "parameter_list"
+			)
+				return "var";
 			// An identifier passed as an argument.
 			if (pt === "argument_list") return "var";
 			return "var";
@@ -329,9 +350,14 @@ function classifyRole(node: TSNode, lang: TsLang): SymbolRole | null {
 			//   import foo from "..."             → import_clause (default)
 			//   export { bar } from "..."         → export_specifier (re-export)
 			//   import type { Lang } from "..."   → same import_specifier path
-			if (pt === "import_specifier" || pt === "namespace_import" ||
-			    pt === "import_clause" || pt === "export_specifier" ||
-			    pt === "aliased_export" || pt === "aliased_import") {
+			if (
+				pt === "import_specifier" ||
+				pt === "namespace_import" ||
+				pt === "import_clause" ||
+				pt === "export_specifier" ||
+				pt === "aliased_export" ||
+				pt === "aliased_import"
+			) {
 				return "import";
 			}
 			// A name being called: `compute(...)`. field `function` of a
@@ -370,9 +396,7 @@ function classifyRole(node: TSNode, lang: TsLang): SymbolRole | null {
  * primary entry points for third-party discovery (the whole reason this tool
  * exists). Callers wanting locals pass `roles` including `var`.
  */
-export const DEFAULT_SYMBOL_ROLES: readonly SymbolRole[] = [
-	"type", "call", "member", "import",
-];
+export const DEFAULT_SYMBOL_ROLES: readonly SymbolRole[] = ["type", "call", "member", "import"];
 
 export interface ParseSymbolsOptions {
 	/** The real file's text (full file — we slice to [startLine, endLine]). */
@@ -477,7 +501,9 @@ export function renderSymbolTable(
 	if (entries.length === 0) {
 		return `Symbols in ${path}:${startLine}-${endLine} (1-based, reusable as code_* input):\n  (no identifiers found)`;
 	}
-	const lines: string[] = [`Symbols in ${path}:${startLine}-${endLine} (1-based, reusable as code_* input):`];
+	const lines: string[] = [
+		`Symbols in ${path}:${startLine}-${endLine} (1-based, reusable as code_* input):`,
+	];
 	// Column widths for alignment: role is max 6 chars ("member"), name varies.
 	const nameWidth = Math.max(...entries.map((e) => e.name.length));
 	for (const e of entries) {

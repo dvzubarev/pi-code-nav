@@ -25,7 +25,9 @@ test("variable_name → var (filtered by default, includable)", async () => {
 	const text = 'echo "${HOME}"\n';
 	const def = await parseMap("bash", text, { startLine: 1, endLine: 1 });
 	const withVar = await parseMap("bash", text, {
-		startLine: 1, endLine: 1, roles: ["call", "var"],
+		startLine: 1,
+		endLine: 1,
+		roles: ["call", "var"],
 	});
 	assertEntry(def, "call", "echo", 1, 1);
 	assertNoEntry(def, "var", "HOME");
@@ -36,7 +38,9 @@ test("variable_name → var (filtered by default, includable)", async () => {
 test("bare word arguments are skipped (not call, not var)", async () => {
 	const text = "ls -la /tmp\n";
 	const m = await parseMap("bash", text, {
-		startLine: 1, endLine: 1, roles: ["call", "var"],
+		startLine: 1,
+		endLine: 1,
+		roles: ["call", "var"],
 	});
 	assertEntry(m, "call", "ls", 1, 1);
 	// `-la` and `/tmp` are bare words → no rows.
@@ -49,7 +53,9 @@ test("bare word arguments are skipped (not call, not var)", async () => {
 test("assignment target is var (x=1)", async () => {
 	const text = "x=1\n";
 	const withVar = await parseMap("bash", text, {
-		startLine: 1, endLine: 1, roles: ["var"],
+		startLine: 1,
+		endLine: 1,
+		roles: ["var"],
 	});
 	// `x` is a variable_name (the assignment target) → var.
 	assertEntry(withVar, "var", "x", 1, 1);
@@ -58,9 +64,11 @@ test("assignment target is var (x=1)", async () => {
 test("subscript index is skipped", async () => {
 	// `arr[0]` — the index `0` is a subscript child; bare words/numbers in
 	// subscripts are skipped per the conservative contract.
-	const text = "echo \"${arr[0]}\"\n";
+	const text = 'echo "${arr[0]}"\n';
 	const m = await parseMap("bash", text, {
-		startLine: 1, endLine: 1, roles: ["call", "var"],
+		startLine: 1,
+		endLine: 1,
+		roles: ["call", "var"],
 	});
 	assertEntry(m, "call", "echo", 1, 1);
 	assertEntry(m, "var", "arr", 1, 9);
@@ -69,7 +77,9 @@ test("subscript index is skipped", async () => {
 test("string contents are skipped (not misread as commands)", async () => {
 	const text = 'echo "rm -rf /"\n';
 	const m = await parseMap("bash", text, {
-		startLine: 1, endLine: 1, roles: ["call", "var"],
+		startLine: 1,
+		endLine: 1,
+		roles: ["call", "var"],
 	});
 	assertEntry(m, "call", "echo", 1, 1);
 	// `rm` is inside a string literal — must NOT become a call.

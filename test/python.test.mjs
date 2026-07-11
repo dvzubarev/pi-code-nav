@@ -21,7 +21,10 @@ test("import: module name (import cbor2)", async () => {
 });
 
 test("import: from-import symbol (from cbor2 import CBOREncoder)", async () => {
-	const m = await parseMap("python", "from cbor2 import CBOREncoder\n", { startLine: 1, endLine: 1 });
+	const m = await parseMap("python", "from cbor2 import CBOREncoder\n", {
+		startLine: 1,
+		endLine: 1,
+	});
 	assertEntry(m, "import", "cbor2", 1, 6);
 	assertEntry(m, "import", "CBOREncoder", 1, 19);
 });
@@ -34,7 +37,9 @@ test("import: alias (import numpy as np)", async () => {
 
 test("attribute access: base is var, member is the attribute (cbor2.load)", async () => {
 	const m = await parseMap("python", "x = cbor2.load(data)\n", {
-		startLine: 1, endLine: 1, roles: ["type", "call", "member", "import", "var"],
+		startLine: 1,
+		endLine: 1,
+		roles: ["type", "call", "member", "import", "var"],
 	});
 	// cbor2 is the `object` field of the attribute → var; load is `attribute` → member.
 	assertEntry(m, "var", "x", 1, 1);
@@ -46,7 +51,9 @@ test("attribute access: base is var, member is the attribute (cbor2.load)", asyn
 
 test("bare-name call (compute(...)) → call", async () => {
 	const m = await parseMap("python", "compute(a, b)\n", {
-		startLine: 1, endLine: 1, roles: ["call", "var"],
+		startLine: 1,
+		endLine: 1,
+		roles: ["call", "var"],
 	});
 	assertEntry(m, "call", "compute", 1, 1);
 	assertEntry(m, "var", "a", 1, 9);
@@ -68,13 +75,18 @@ test("type annotation: union/generic emits only the outermost type, inner names 
 	// (Callable, CBOREncoder, Any, None) are emitted as var.
 	const text = "x: Callable[[CBOREncoder, Any], None] | None = None\n";
 	const m = await parseMap("python", text, {
-		startLine: 1, endLine: 1,
+		startLine: 1,
+		endLine: 1,
 		roles: ["type", "var", "call", "member", "import"],
 	});
 	// Exactly ONE `type` row (the outermost) — the union type node whose text
 	// is the whole annotation. We assert by name (the full annotation string).
 	const typeRows = [...m.values()].filter((e) => e.role === "type");
-	assert.equal(typeRows.length, 1, `expected 1 type row, got ${typeRows.length}: ${typeRows.map((r) => r.name)}`);
+	assert.equal(
+		typeRows.length,
+		1,
+		`expected 1 type row, got ${typeRows.length}: ${typeRows.map((r) => r.name)}`,
+	);
 	// The inner identifiers still surface as var so they remain hoverable.
 	assertEntry(m, "var", "Callable", 1, 4);
 	assertEntry(m, "var", "CBOREncoder", 1, 14);
@@ -89,7 +101,9 @@ test("type annotation: union/generic emits only the outermost type, inner names 
 
 test("assignment target is var; value is var", async () => {
 	const m = await parseMap("python", "result = thing\n", {
-		startLine: 1, endLine: 1, roles: ["var"],
+		startLine: 1,
+		endLine: 1,
+		roles: ["var"],
 	});
 	assertEntry(m, "var", "result", 1, 1);
 	assertEntry(m, "var", "thing", 1, 10);
@@ -100,7 +114,9 @@ test("dotted_name in expression is attribute access, not import", async () => {
 	// The `dotted_name`-under-`attribute` shape must NOT be misread as an import
 	// (the import classifier checks grandparent is import_statement etc.).
 	const m = await parseMap("python", "x = os.path.join(a)\n", {
-		startLine: 1, endLine: 1, roles: ["var", "member", "import"],
+		startLine: 1,
+		endLine: 1,
+		roles: ["var", "member", "import"],
 	});
 	assertEntry(m, "var", "os", 1, 5);
 	assertEntry(m, "member", "path", 1, 8);

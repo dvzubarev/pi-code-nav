@@ -27,7 +27,9 @@ test("type_identifier → type (std::vector v)", async () => {
 	assertNoEntry(m, "var", "std");
 	// `v` is the declaration name → var (default drops it, so request var).
 	const withVar = await parseMap("cpp", "std::vector<int> v;\n", {
-		startLine: 1, endLine: 1, roles: ["type", "var"],
+		startLine: 1,
+		endLine: 1,
+		roles: ["type", "var"],
 	});
 	assertEntry(withVar, "var", "v", 1, 18);
 });
@@ -88,7 +90,9 @@ test("declaration names are var (filtered by default)", async () => {
 test("argument passed by identifier name → var", async () => {
 	const text = "f(other);\n";
 	const m = await parseMap("cpp", text, {
-		startLine: 1, endLine: 1, roles: ["call", "var"],
+		startLine: 1,
+		endLine: 1,
+		roles: ["call", "var"],
 	});
 	assertEntry(m, "call", "f", 1, 1);
 	assertEntry(m, "var", "other", 1, 3);
@@ -97,7 +101,9 @@ test("argument passed by identifier name → var", async () => {
 test("namespace_identifier is skipped (std in std::sort)", async () => {
 	const text = "std::sort(v.begin(), v.end());\n";
 	const m = await parseMap("cpp", text, {
-		startLine: 1, endLine: 1, roles: ["type", "call", "member", "var"],
+		startLine: 1,
+		endLine: 1,
+		roles: ["type", "call", "member", "var"],
 	});
 	// No row for `std` at all — neither type, var, nor call.
 	for (const e of m.values()) assert.notEqual(e.name, "std");
@@ -122,7 +128,9 @@ test("C++ statement fragment parses without wrapping (un-indented)", async () =>
 	// by startLine/endLine, so startLine must refer to the line within `text`).
 	const text = "\n".repeat(9) + "v.push_back(x);\nreturn v.size();\n";
 	const m = await parseMap("cpp", text, {
-		startLine: 10, endLine: 11, roles: ["member", "var"],
+		startLine: 10,
+		endLine: 11,
+		roles: ["member", "var"],
 	});
 	assertEntry(m, "member", "push_back", 10, 3);
 	assertEntry(m, "member", "size", 11, 10);
@@ -135,7 +143,9 @@ test("C++ INDENTED fragment also parses (dedented method body)", async () => {
 	// because it would be a real regression if a grammar bump broke it.
 	const text = "\n".repeat(9) + "    v.push_back(x);\n    return v.size();\n";
 	const m = await parseMap("cpp", text, {
-		startLine: 10, endLine: 11, roles: ["member", "var"],
+		startLine: 10,
+		endLine: 11,
+		roles: ["member", "var"],
 	});
 	assertEntry(m, "member", "push_back", 10, 7);
 	assertEntry(m, "member", "size", 11, 14);
