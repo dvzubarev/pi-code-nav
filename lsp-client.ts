@@ -310,6 +310,43 @@ async function requestWithTimeout(
     }
 }
 
+/**
+ * sendNotification with a bounded deadline. Same rationale as
+ * requestWithTimeout, but for notifications. Critical because a notification
+ * write that never completes holds StreamMessageWriter's writeSemaphore
+ * (capacity 1) forever — every subsequent sendRequest/sendNotification then
+ * queues behind it and never reaches its own Promise.race, so the per-request
+ * timeout never starts and the tool hangs indefinitely.
+ *
+ * The wedged-write scenario: a server that stops draining stdin after
+ * `initialize` (alive-but-silent on its INPUT pipe — distinct from the
+ * alive-but-silent-on-OUTPUT case requestWithTimeout covers). The `initialized`
+ * ack and `didOpen` payloads are normally small enough to fit in the OS pipe
+ * buffer, but a large didOpen (a big source file) or a buffer already partly
+ * full will exceed the high-water mark and block `writable.write()` forever.
+ *
+ * On timeout we dispose the connection (same as a wedged request): the
+ * notification is worthless if it couldn't be written, and dispose rejects
+ * any other in-flight writes on the same dead transport. Throws
+ * RequestTimeoutError so the caller can attribute the failure.
+ */
+async function notifyWithTimeout(
+    conn: MessageConnection,
+    method: string,
+    params: unknown,
+    ms: number = resolveRequestTimeoutMs(),
+): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new RequestTimeoutError(method, ms)), ms);
+    });
+    try {
+        await Promise.race([conn.sendNotification(method, params), timeout]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
 export class LspClient {
     readonly lang: Lang;
     readonly rootUri: string;
@@ -543,8 +580,12 @@ export class LspClient {
         // whole server with: "expected initialized notification, got:
         // <next request>" — which presents as the tool hanging because the
         // process dies after initialize but before answering the request.
-        // Awaiting guarantees initialized is on the wire first.
-        await conn.sendNotification("initialized", {});
+        // Awaiting guarantees initialized is on the wire first. Wrapped in
+        // notifyWithTimeout: if the server's stdin is wedged (alive-but-silent
+        // on its INPUT pipe — e.g. ty stalled mid-handshake), the write never
+        // completes and would otherwise hold the writer semaphore forever,
+        // hanging every subsequent request without ever starting its timeout.
+        await notifyWithTimeout(conn, "initialized", {});
     }
 
     /** Open or refresh a document on the server (didOpen). */
@@ -563,7 +604,11 @@ export class LspClient {
             version,
             text,
         };
-        this.conn!.sendNotification("textDocument/didOpen", {
+        // Awaited under a timeout: a fire-and-forget didOpen whose write never
+        // completes (server stopped draining stdin) would hold the writer
+        // semaphore forever and hang every following request without its
+        // timeout ever starting. See notifyWithTimeout.
+        await notifyWithTimeout(this.conn!, "textDocument/didOpen", {
             textDocument: doc,
         });
         this.openDocs.set(uri, version);
