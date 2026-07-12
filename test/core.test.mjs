@@ -114,16 +114,16 @@ test("renderSymbolTable format is the documented header + rows", async () => {
     });
     const out = renderSymbolTable("widget.py", 1, 1, entries);
     // Header carries the full path once + a role legend; rows emit only
-    // `:line:col` (the header path + row line:col reconstructs the position).
+    // `(line:col)` (the header path + row line:col reconstructs the position).
     assert.match(
         out,
         /^Symbols in widget\.py:1-1 \(roles: type\|call\|member\|import\|var, 1-based, reusable as code_\* input\):/,
     );
-    // The row layout: "  <role pad6> <name>  :<line>:<col>" — path is NOT
+    // The row layout: "  <role pad6> <name>  (<line>:<col>)" — path is NOT
     // repeated per row (it's in the header).
-    assert.match(out, /  import cbor2\s+:1:8/);
+    assert.match(out, /  import cbor2\s+\(1:8\)/);
     // The full path must NOT appear on the data row (only in the header).
-    assert.ok(!/import cbor2\s+widget\.py:1:8/.test(out), `row should not repeat the path:\n${out}`);
+    assert.ok(!/import cbor2\s+widget\.py\(1:8\)/.test(out), `row should not repeat the path:\n${out}`);
 });
 
 test("renderSymbolTable empty case", async () => {
@@ -137,8 +137,8 @@ test("renderSymbolTable with docs label column", async () => {
     const entries = [{ role: "call", name: "load", line: 2, column: 5 }];
     const docs = new Map([["load|call", "(load) -> Any"]]);
     const out = renderSymbolTable("x.py", 1, 2, entries, docs);
-    // Row carries only `:line:col` (path is in the header), then the docs label.
-    assert.match(out, /load\s+:2:5  \(load\) -> Any/);
+    // Row carries only `(line:col)` (path is in the header), then the docs label.
+    assert.match(out, /load\s+\(2:5\)  \(load\) -> Any/);
 });
 
 test("hoverFirstLine skips fences and blanks, truncates", async () => {

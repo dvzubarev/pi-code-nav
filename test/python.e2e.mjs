@@ -106,7 +106,8 @@ runOrSkip("code_search_symbol 'tempc' finds TempC with its identifier position",
         const out = await nav.symbol({ query: "tempc", language: "python" }, ws.root, ws.clientOf);
         // ty matches case-insensitively on the query prefix; the result row must
         // name TempC as a Class and point at its identifier (col 7 of its line).
-        assert.match(out, /\[python\] Class TempC  .*second\.py:\d+:7/);
+        // renderSymbolInfo now emits `<path> (<line>:<col>)` (path-space-parens).
+        assert.match(out, /\[python\] Class TempC  .*second\.py \(\d+:7\)/);
         // There must be no other-symbol rows (only TempC should match "tempc").
         const rows = out.split("\n").filter((l) => l.trim());
         for (const r of rows) assert.match(r, /TempC/, `unexpected row for "tempc" query: ${r}`);
@@ -192,9 +193,11 @@ runOrSkip("code_references on Point class lists __init__ usages", async () => {
         // reference row should be present (the def itself, plus the default-arg
         // usage and the call in TempC.__init__).
         assert.match(out, /# \d+ references$/, `trailing count comment missing:\n${out}`);
+        // renderLocation now emits `<path> (<line>:<col>)` (path-space-parens,
+        // single position instead of a start - end range).
         const rows = out
             .split("\n")
-            .filter((l) => /second\.py:\d+:\d+ - \d+:\d+/.test(l));
+            .filter((l) => /second\.py \(\d+:\d+\)/.test(l));
         assert.ok(rows.length >= 1, `no reference rows:\n${out}`);
     } finally {
         await ws.cleanup();
