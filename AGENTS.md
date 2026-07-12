@@ -37,6 +37,11 @@ layer.
 - `lsp-client.ts` — `LspClient` class: spawn, initialize handshake, per-method
   wrappers, shutdown. Pure transport, no pi dependency. Imports from
   `vscode-languageserver-protocol/node` (NOT the bare package — see below).
+  An optional 4th ctor arg `logDir?` (set by the extension to
+  `~/.pi/agent/logs/code-nav`, unset by the CLI harness/tests) tees each
+  spawned server's stderr to `<logDir>/<lang>-<pid>.log` and removes the file
+  on shutdown/exit (`closeLog()`). Named by PID so concurrent pi instances
+  never collide.
 - `tree-sitter-parse.ts` — `parseSymbols()` parses a line range with WASM
   tree-sitter, returns a deduplicated symbol table. No pi or LSP dependency.
 - `test/` — unit tests for `tree-sitter-parse.ts` (pure tree-sitter, no

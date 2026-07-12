@@ -32,11 +32,12 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { resolve, join } from "node:path";
 import { LspClient, resolveConfig, type Lang, type ServerConfig } from "./lsp-client";
 import * as nav from "./nav";
 
@@ -81,10 +82,22 @@ class ServerPool {
     private cwd: string;
     private overrides: Partial<Record<Lang, Partial<ServerConfig>>>;
     private toolsEnabled = false;
+    /**
+     * Directory where per-server stderr log files are written (one file per
+     * spawned server, named <lang>-<pid>.log, removed on shutdown). Under
+     * ~/.pi/agent/logs/code-nav so the user can inspect server output without
+     * access to the agent's temp files. Forwarded to each LspClient.
+     */
+    private logDir: string;
 
-    constructor(cwd: string, overrides: Partial<Record<Lang, Partial<ServerConfig>>>) {
+    constructor(
+        cwd: string,
+        overrides: Partial<Record<Lang, Partial<ServerConfig>>>,
+        logDir: string,
+    ) {
         this.cwd = cwd;
         this.overrides = overrides;
+        this.logDir = logDir;
     }
 
     enabled(): boolean {
@@ -94,7 +107,7 @@ class ServerPool {
     async client(lang: Lang): Promise<LspClient> {
         let c = this.clients.get(lang);
         if (!c) {
-            c = new LspClient(lang, this.cwd, resolveConfig(lang, this.overrides));
+            c = new LspClient(lang, this.cwd, resolveConfig(lang, this.overrides), this.logDir);
             this.clients.set(lang, c);
         }
         await c.ensureReady();
@@ -488,7 +501,23 @@ export default function codeNavExtension(pi: ExtensionAPI) {
     async function ensureState(ctx: ExtensionContext): Promise<State> {
         if (state) return state;
         const overrides = await loadConfig(ctx);
-        const pool = new ServerPool(ctx.cwd, overrides);
+        // Per-server stderr logs live under ~/.pi/agent/logs/code-nav so the
+        // user can inspect language-server output without access to the agent's
+        // temp files. One file per spawned server (<lang>-<pid>.log), removed on
+        // shutdown/exit (see LspClient.closeLog). mkdirSync is idempotent and
+        // cheap; created once per pool (i.e. once per /code-nav enable).
+        const logDir = join(getAgentDir(), "logs", "code-nav");
+        try {
+            mkdirSync(logDir, { recursive: true });
+        } catch (e) {
+            // If we can't create the log dir (read-only home, etc.) proceed
+            // without logging — LspClient tolerates a logDir that's missing or
+            // unwritable (the write stream's error handler drops it). But we'd
+            // rather pass the intended path and let per-file creation fail
+            // gracefully than silently disable logging for everyone.
+            console.error(`[code-nav] could not create log dir ${logDir}: ${e}`);
+        }
+        const pool = new ServerPool(ctx.cwd, overrides, logDir);
         state = { pool };
         return state;
     }

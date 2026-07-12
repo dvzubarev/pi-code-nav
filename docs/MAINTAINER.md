@@ -166,7 +166,17 @@ when hierarchical support isn't advertised, in which case there is no
 - `shutdown()` is safe to call multiple times (guards on `conn`/`proc` null).
   It sends LSP `shutdown` request + `exit` notification, then SIGTERM as
   fallback. Race conditions on shutdown are tolerated (try/catch around the
-  request — server may already be gone).
+  request — server may already be gone). It also calls `closeLog()` to remove
+  the per-server stderr log file; the `proc.on("exit")` handler calls it
+  too, and `closeLog()` is idempotent so the double-call is safe.
+- **Per-server stderr logs.** When `LspClient` is constructed with a `logDir`
+  (the extension passes `~/.pi/agent/logs/code-nav`; the CLI harness and tests
+  omit it), each spawned server's stderr is teed to
+  `<logDir>/<lang>-<pid>.log` and the file is removed on shutdown/exit. Named
+  by PID so concurrent pi instances never collide. Stderr is ALSO surfaced
+  via `console.error` (prefixed `[code-nav <lang>]`), so omitting `logDir`
+  (the CLI/tests) is unchanged behavior. The log dir is created once per
+  pool (`ensureState`) with `mkdirSync({ recursive: true })`.
 - **No idle timeout.** The user explicitly said: "maybe shutdown it when
   session and extension is closed?" — so servers live for the whole session,
   not a 10-minute idle window. Do not add an idle timer "for resource

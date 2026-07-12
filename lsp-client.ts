@@ -8,8 +8,9 @@
 
 import { spawn, execSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { readdir, readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { readdir, readFile, unlink } from "node:fs/promises";
+import { createWriteStream, type WriteStream } from "node:fs";
+import { resolve, join } from "node:path";
 import {
     createMessageConnection,
     StreamMessageReader,
@@ -295,7 +296,15 @@ async function requestWithTimeout(
         timer = setTimeout(() => reject(new RequestTimeoutError(method, ms)), ms);
     });
     try {
-        return await Promise.race([conn.sendRequest(method, params), timeout]);
+        // When params is undefined, call sendRequest with NO params argument so
+        // the jsonrpc layer omits `params` on the wire. Passing `null` (or
+        // even `undefined` as an explicit arg) makes vscode-jsonrpc's auto
+        // parameter-structure logic wrap it as `params: [null]` (a sequence).
+        // Strict servers (ty, using serde) reject that for param-less
+        // methods like `shutdown` with "invalid type: sequence, expected unit".
+        const req =
+            params === undefined ? conn.sendRequest(method) : conn.sendRequest(method, params);
+        return await Promise.race([req, timeout]);
     } finally {
         if (timer) clearTimeout(timer);
     }
@@ -323,13 +332,26 @@ export class LspClient {
      */
     private diagnosticsByUri = new Map<string, Diagnostic[]>();
 
-    constructor(lang: Lang, rootPath: string, cfg: ServerConfig) {
+    constructor(lang: Lang, rootPath: string, cfg: ServerConfig, logDir?: string) {
         this.lang = lang;
         this.rootUri = pathToFileURL(rootPath).href;
         this.cfg = cfg;
+        this.logDir = logDir;
     }
 
     private cfg: ServerConfig;
+    /**
+     * Optional directory for per-server log files. When set (the pi extension
+     * passes ~/.pi/agent/logs/code-nav), each spawned server's stderr is teed
+     * to <logDir>/<lang>-<pid>.log and the file is removed on shutdown/exit.
+     * When unset (CLI harness, tests), stderr is only surfaced via
+     * console.error — unchanged behavior.
+     */
+    private logDir?: string;
+    /** Absolute path of the open log file, or undefined when no log is open. */
+    private logPath?: string;
+    /** Open write stream for the per-server log file, or undefined. */
+    private logStream?: WriteStream;
 
     /** Spawn the server and complete the LSP initialize handshake. */
     async ensureReady(): Promise<void> {
@@ -346,11 +368,46 @@ export class LspClient {
         });
         this.proc = proc;
 
+        // Open a per-server log file when a logDir was provided (the pi
+        // extension passes ~/.pi/agent/logs/code-nav so the user can inspect
+        // server stderr without access to the agent's temp files). Named by
+        // PID so concurrent pi instances — each spawning its own server with a
+        // distinct PID — never collide. The file is removed on shutdown/exit
+        // (see closeLog). Stderr is still surfaced via console.error too, so
+        // the CLI harness and tests (which pass no logDir) are unaffected.
+        if (this.logDir) {
+            try {
+                const logPath = join(this.logDir, `${this.lang}-${proc.pid}.log`);
+                this.logStream = createWriteStream(logPath, { flags: "ax" });
+                this.logStream.on("error", () => {
+                    // Couldn't open/write the log (e.g. disk full, permission).
+                    // Don't let a logging failure take down the server — drop
+                    // the stream and keep going without a log file.
+                    this.logStream = undefined;
+                    this.logPath = undefined;
+                });
+                this.logPath = logPath;
+            } catch {
+                this.logStream = undefined;
+                this.logPath = undefined;
+            }
+        }
+
         // Drain stderr so the pipe doesn't block; surface fatal lines via console.
         proc.stderr.setEncoding("utf8");
         proc.stderr.on("data", (chunk: string) => {
             const line = chunk.trim();
             if (line) console.error(`[code-nav ${this.lang}] ${line}`);
+            // Tee to the per-server log file when one is open. write() on a
+            // closing/errored stream can throw synchronously — guard it so a
+            // logging problem never breaks the LSP transport.
+            if (this.logStream && !this.logStream.destroyed) {
+                try {
+                    this.logStream.write(chunk);
+                } catch {
+                    /* ignore — see comment above */
+                }
+            }
         });
         proc.on("exit", (code, signal) => {
             if (this.proc) {
@@ -382,6 +439,9 @@ export class LspClient {
             this.ready = null;
             this.openDocs.clear();
             this.diagnosticsByUri.clear();
+            // Remove the per-server log file — the server is gone, its log is
+            // no longer interesting. Fire-and-forget; closeLog is idempotent.
+            this.closeLog();
         });
 
         // StreamMessageReader/Writer accept NodeJS streams directly (node RAL).
@@ -715,7 +775,10 @@ export class LspClient {
             // forever (the silent-fake regression test hits this in its
             // finally). 1s is generous for a well-behaved server's shutdown;
             // a wedged server won't honor it anyway and we SIGTERM below.
-            await requestWithTimeout(conn, "shutdown", null, 1000);
+            // Pass undefined (not null): shutdown takes no params. null would
+            // be wrapped as `params: [null]` on the wire and rejected by
+            // strict servers (ty: "invalid type: sequence, expected unit").
+            await requestWithTimeout(conn, "shutdown", undefined, 1000);
         } catch {
             // Server may have already exited, be wedged, or reject the request.
             // shutdown() is best-effort; we proceed to kill the process below.
@@ -736,5 +799,40 @@ export class LspClient {
         try {
             proc.kill("SIGTERM");
         } catch {}
+        // Remove the per-server log file on graceful shutdown, mirroring the
+        // exit handler. The server is being killed; its log is no longer
+        // interesting. closeLog is idempotent so a double-call (exit handler
+        // then shutdown, or vice versa) is safe.
+        this.closeLog();
+    }
+
+    /**
+     * Close and remove the per-server log file, if one is open. Idempotent:
+     * safe to call from both the exit handler and shutdown(). Tolerates an
+     * already-deleted file (ENOENT) and a never-opened log (no logDir). The
+     * stream is end()ed (flushes buffered writes) before unlink so the file
+     * isn't removed while data is still pending. Errors are swallowed — a
+     // logging cleanup failure must never break the LSP teardown path.
+     */
+    private closeLog(): void {
+        const stream = this.logStream;
+        const path = this.logPath;
+        this.logStream = undefined;
+        this.logPath = undefined;
+        if (stream && !stream.destroyed) {
+            try {
+                stream.end();
+            } catch {
+                /* ignore */
+            }
+        }
+        if (path) {
+            // Fire-and-forget: unlink is async and we don't want to block
+            // teardown on it. The exit handler (synchronous) and shutdown()
+            // both tolerate the file lingering briefly.
+            unlink(path).catch(() => {
+                /* ENOENT or permission error — already gone or not ours */
+            });
+        }
     }
 }
