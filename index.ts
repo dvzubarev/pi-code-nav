@@ -599,13 +599,31 @@ Prefer code_* over the grep/read reflex:
 - rename a symbol                 → code_rename (not sed -i across files)
 - check a file for errors         → code_diagnostics (not a hand-written paren/quote checker)
 - learn a symbol's type or docs   → code_hover (not reading the file and eyeballing)
+- read a third-party API's source → code_definition at its position (not
+  \`python -c "import inspect; inspect.getsource(...)"\` or other hacks for various languages)
 
-Third-party docs/source (site-packages, node_modules, nix store, system
-headers): code_search_symbol is workspace-scoped and will NOT find them, but
-code_definition/code_hover DO resolve them at a known position. Two-step
-workflow — scan the snippet for the identifier, then hover/define that row:
-  1. code_scan(path, startLine, endLine, pattern="<name>")
-     → returns a row like:  call  <name>  path:line:col
-  2. code_hover / code_definition at that (path, line, column)
-     → signature/docstring, or the full source body (jumps into the third-party tree)
-Third-party symbol from a NAME only (no position): (1) resolve the package root. If the project uses nix (the common case), every third-party path is exposed via an environment variable — grep the right one for your language: python \`echo $PYTHONPATH | tr ':' '\\n' | grep <name>\`, C++ (cmake, the usual case) \`echo $CMAKE_INCLUDE_PATH | tr ':' '\\n' | grep <name>\`, C++ (no cmake) \`echo $NIX_CFLAGS_COMPILE | tr ' ' '\\n' | grep <name>\`; (2) \`rg -n --column <name> <root>\` — the output is \`line:column:content\`, and on ASCII lines the 1-based line and column match what code_definition/code_hover expect, so pass the hit straight in as (path, line, column); (3) call code_definition/code_hover on that position (they accept absolute paths, including nix store / site-packages / node_modules / system headers). Do NOT rg the whole /nix/store (millions of entries, many versions) — always scope to one resolved package root.`;
+Third-party docs/source (site-packages, node_modules, nix store, system headers) workflows:
+1. Shortcut when you ALREADY have a position for the third-party symbol — e.g. a
+   row from the symbol table that code_definition(..., list_symbols=true)
+   appended to a body you just read (members/calls/types inside it are
+   third-party positions too): call code_definition /
+   code_hover directly on that (path, line, column). They accept absolute
+   third-party paths (nix store / site-packages / node_modules / system
+   headers). The returned body comes with its OWN symbol table, so you can
+   chain — define a member it calls, then a member THAT body calls — each hop a
+   single code_definition call, no grep/inspect.getsource involved.
+2. Two-step workflow — scan the source code for the identifier, then code_definition/code_hover that row:
+     (1). code_scan(path, startLine, endLine, pattern="<name>")
+        → returns a row like:  call  <name>  path:line:col
+     (2). code_hover / code_definition at that (path, line, column)
+        → signature/docstring, or the full source body (jumps into the third-party tree)
+3. Third-party symbol from a NAME only (no position):
+     (1). resolve the package root.
+        If the project uses nix (the common case), every third-party path is exposed via an environment variable — grep the right one for your language:
+        python \`echo $PYTHONPATH | tr ':' '\\n' | grep <name>\`,
+        C++ (cmake, the usual case) \`echo $CMAKE_INCLUDE_PATH | tr ':' '\\n' | grep <name>\`,
+        C++ (no cmake) \`echo $NIX_CFLAGS_COMPILE | tr ' ' '\\n' | grep <name>\`;
+     (2). \`rg -n --column <name> <root>\` — the output is \`line:column:content\`, and on ASCII lines the 1-based line and column match what code_definition/code_hover expect,
+          so pass the hit straight in as (path, line, column);
+     (3). call code_definition/code_hover on that position (they accept absolute paths, including nix store / site-packages / node_modules / system headers).
+    Do NOT rg the whole /nix/store (millions of entries, many versions) — always scope to one resolved package root.`;
