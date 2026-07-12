@@ -28,6 +28,18 @@ export const nav = await jiti.import("./nav.ts");
 
 export const SHOULD_RUN_E2E = !process.env.CODE_NAV_SKIP_E2E;
 
+// Language servers (ccls/ty/tsserver) can throw an unhandled EPIPE or
+// ERR_STREAM_DESTROYED rejection during shutdown: the fire-and-forget `exit`
+// JSON-RPC notification races the child process exiting, and the socket write
+// rejects after the stream is already closed. This is a teardown race, not a
+// test failure — swallow just those two codes at the process level so node:test
+// reports the actual assertion results instead of crashing the whole file.
+// (Every e2e file imports from this module, so registering it here covers all.)
+process.on("unhandledRejection", (err) => {
+	if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
+	throw err;
+});
+
 /**
  * Create an isolated temp workspace, copy the named fixture files into it,
  * and return a { root, clientOf, cleanup } bundle. `clientOf` is a

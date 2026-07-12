@@ -617,9 +617,21 @@ export class LspClient {
 		this.diagnosticsByUri.clear();
 		try {
 			await conn.sendRequest("shutdown");
-			conn.sendNotification("exit", null);
 		} catch {
 			// Server may have already exited.
+		}
+		// Send the `exit` notification fire-and-forget, but attach a rejection
+		// handler: the underlying socket write can reject with EPIPE/
+		// ERR_STREAM_DESTROYED if the server has already closed its stdio (ccls
+		// exits fast), and jsonrpc's sendNotification returns a Promise<void>
+		// whose rejection would otherwise be unhandled. The try/catch above only
+		// catches synchronous throws, not this async rejection. Tolerating it is
+		// consistent with shutdown()'s race-tolerance contract (see MAINTAINER.md).
+		try {
+			const p = conn.sendNotification("exit", null) as unknown as Promise<void> | undefined;
+			if (p && typeof p.catch === "function") p.catch(() => {});
+		} catch {
+			// Synchronous throw (e.g. connection already disposed) — tolerate.
 		}
 		try {
 			proc.kill("SIGTERM");

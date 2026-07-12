@@ -7,6 +7,7 @@
  * third-party symbol discovery:
  *
  *   code_outline     — file structure (functions, classes, methods, signatures)
+ *   code_scan        — pattern-driven symbol scan with signatures (parallel hover)
  *   code_definition  — location + source of a symbol's definition
  *   code_references  — list of references for a symbol
  *   code_symbol      — ranked workspace-wide symbol lookup by name
@@ -132,10 +133,11 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		name: "code_outline",
 		label: "Code Outline",
 		description:
-			"Retrieve the structure of a source file: functions, classes, methods, with signatures and positions. Use for a compact overview before reading full files.",
+			"Retrieve the structure of a source file: functions, classes, methods, with signatures and positions. Use for a compact overview before reading full files. Only structural kinds are kept (class, method, function, property/field, constructor, interface, struct) — constants, variables, and other leaf bindings are dropped. No arguments, no hover round-trips: a single documentSymbol request, with the server's `detail` (where populated, e.g. ccls declarations like 'int main()') rendered inline. For signature-enriched, pattern-scoped results use code_scan.",
 		promptSnippet: "List functions/classes/methods (with signatures) in a file via LSP",
 		promptGuidelines: [
-			"Use code_outline to get a compact structure of a file (functions, classes, methods, signatures) before reading the full file.",
+			"Use code_outline to get a compact structure of a file (functions, classes, methods, signatures) before reading the full file. It takes only a path — no arguments — and keeps only structural kinds (class/method/function/property/field/constructor/interface/struct); constants and variables are dropped.",
+			"When you need signatures for a specific subset of symbols (by name pattern), use code_scan instead — it scopes by a regexp and fetches signatures via parallel LSP hover for rows the server didn't pre-populate.",
 		],
 		parameters: Type.Object({
 			path: Type.String({ description: "File path (absolute or relative to cwd)" }),
@@ -144,6 +146,35 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 			try {
 				return text_result(
 					await nav.outline(params, ctx.cwd, (lang) => state.pool.client(lang)),
+				);
+			} catch (e) {
+				return err(e instanceof Error ? e.message : String(e));
+			}
+		},
+	});
+
+	// 1b. code_scan
+	pi.registerTool({
+		name: "code_scan",
+		label: "Code Scan",
+		description:
+			"Scan a source file for symbols whose name matches a regexp and return each match with its position and signature. Unlike code_outline (which is a bloat-free structural overview), code_scan is pattern-driven: pass a regexp matched against symbol names; it prints the matches plus their ancestors (for hierarchy context) and the matched node's entire subtree (so you see what's inside a matched class/function). Signatures come from the server's `detail` where populated (ccls), or from parallel LSP hover calls for rows where detail is empty (tsserver/ty). Lines/columns are 1-based and reusable as input to code_hover/code_definition/code_references. No constant/variable filtering — the pattern scopes the candidate set.",
+		promptGuidelines: [
+			"Use code_scan to find symbols by name pattern in a file and get their signatures in one call — e.g. scan a class name to see it and all its members, or scan `^get_|^set_` to list accessors. The pattern is a regexp (JavaScript) tested against the symbol name.",
+			"Output keeps ancestors of a match for hierarchy context, and the matched node's entire subtree (its members/locals) — siblings with no match in their subtree are pruned. Only matched nodes are hovered for signatures; ancestors and subtree members are shown as context without a signature label (use code_hover on their position if you need it).",
+			"Prefer code_outline for a full-file structural overview (one round-trip, no hovers). Use code_scan when you want a targeted, signature-enriched view of specific symbols.",
+		],
+		parameters: Type.Object({
+			path: Type.String({ description: "File path (absolute or relative to cwd)" }),
+			pattern: Type.String({
+				description:
+					"A JavaScript regexp source (e.g. 'Service', '^get_|^set_', 'id$') tested against each symbol's name. An invalid regexp is a hard error — escape/anchor as needed.",
+			}),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			try {
+				return text_result(
+					await nav.scan(params, ctx.cwd, (lang) => state.pool.client(lang)),
 				);
 			} catch (e) {
 				return err(e instanceof Error ? e.message : String(e));
@@ -433,7 +464,7 @@ export default function codeNavExtension(pi: ExtensionAPI) {
 		registerTools(pi, s);
 		s.pool.setEnabled(true);
 		ctx.ui.notify(
-			"code-nav enabled — tools: code_outline, code_definition, code_references, code_symbol, code_rename, code_hover, code_symbols_in, code_diagnostics",
+			"code-nav enabled — tools: code_outline, code_scan, code_definition, code_references, code_symbol, code_rename, code_hover, code_symbols_in, code_diagnostics",
 			"info",
 		);
 	}
@@ -452,7 +483,7 @@ export default function codeNavExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("code-nav", {
 		description:
-			"Enable LSP-backed code navigation tools (code_outline, code_definition, code_references, code_symbol, code_rename, code_hover, code_symbols_in, code_diagnostics)",
+			"Enable LSP-backed code navigation tools (code_outline, code_scan, code_definition, code_references, code_symbol, code_rename, code_hover, code_symbols_in, code_diagnostics)",
 		handler: async (_args, ctx) => {
 			await enable(ctx);
 		},

@@ -42,6 +42,56 @@ runOrSkip("code_outline on second.py shows Point and TempC classes", async () =>
 			lines.some((l) => /^  Method punintend  \(\d+:\d+\)$/.test(l)),
 			`punintend missing:\n${out}`,
 		);
+		// code_outline keeps only structural kinds (class/method/function/...).
+		// The module-level Constant GLOB (second.py:8) is dropped — no opt-out.
+		// See docs/outline-constants.md.
+		assert.ok(
+			!lines.some((l) => /Constant GLOB/.test(l)),
+			`GLOB should be hidden (not a structural kind):\n${out}`,
+		);
+	} finally {
+		await ws.cleanup();
+	}
+});
+
+runOrSkip("code_scan on second.py matches TempC and its members", async () => {
+	const ws = await withWorkspace(["second.py"]);
+	try {
+		// Pattern-driven scan: TempC matches → the class row (with a hover
+		// signature, since ty leaves detail empty) PLUS its whole subtree as
+		// context. Point (no match, no matching descendant) is pruned.
+		const out = await nav.scan({ path: "second.py", pattern: "TempC" }, ws.root, ws.clientOf);
+		const lines = out.split("\n");
+		// TempC itself is matched.
+		assert.ok(
+			lines.some((l) => /^Class TempC  .+\(\d+:\d+\)$/.test(l)),
+			`TempC match row with signature missing:\n${out}`,
+		);
+		// Its members are kept as context (indented, no signature label since
+		// they're not themselves matches — only the matched node is hovered).
+		assert.ok(
+			lines.some((l) => /^  Method punintend  \(\d+:\d+\)$/.test(l)),
+			`punintend (context member) missing:\n${out}`,
+		);
+		// Point is pruned (no match in its subtree).
+		assert.ok(
+			!lines.some((l) => /Class Point/.test(l)),
+			`Point should be pruned (no match):\n${out}`,
+		);
+	} finally {
+		await ws.cleanup();
+	}
+});
+
+runOrSkip("code_scan with a bad regexp reports an error", async () => {
+	const ws = await withWorkspace(["second.py"]);
+	try {
+		// An invalid regexp is a hard error (isError) — the agent learns the
+		// syntax contract fast, no silent substring fallback.
+		await assert.rejects(
+			nav.scan({ path: "second.py", pattern: "(" }, ws.root, ws.clientOf),
+			/Invalid regexp/,
+		);
 	} finally {
 		await ws.cleanup();
 	}

@@ -46,6 +46,8 @@ import {
 	toAbs,
 	uriToPath,
 	hoverText,
+	hoverSignature,
+	symbolKindName,
 	renderDocSymbol,
 	renderSymbolInfo,
 	renderLocation,
@@ -76,6 +78,65 @@ export interface OutlineParams {
 	path: string;
 }
 
+/**
+ * LSP SymbolKind values `code_outline` keeps. The tool's stated purpose is
+ * "functions, classes, methods" — an allowlist is more honest than a
+ * denylist of noisy kinds: it says exactly what the overview shows rather
+ * than what it happens to hide. Kept:
+ *
+ *   5  Class        9  Constructor  12 Function       23 Struct
+ *   6  Method       11 Interface
+ *
+ * Property(7)/Field(8) are deliberately DROPPED. They sound structural but
+ * aren't reliably so: tsserver emits `Property` for object-literal keys
+ * (e.g. every field of a `registerTool({...})` call or a returned object
+ * literal), which floods the outline with non-structural noise. ty/ccls use
+ * Field(8) only for real class/struct fields, but even there a field list is
+ * rarely what a "compact overview" wants — the agent can `code_scan` a class
+ * name to see its members, or read the file. Dropping 7/8 keeps the outline
+ * to the callable/type-declaration surface. Constructor is a kind of method.
+ * Dropped: Variable(13), Constant(14), Property(7), Field(8), and everything
+ * else (Enum/Namespace/etc. — none appear in practice for our servers; if
+ * one ever does, dropping it is the safe default for a "compact overview").
+ * See docs/outline-constants.md.
+ */
+const OUTLINE_KEEP_KINDS = new Set([5, 6, 9, 11, 12, 23]);
+
+/**
+ * Prune a DocumentSymbol tree to nodes whose kind is in `keep`, recursing
+ * into kept nodes' children. Returns a new top-level array; may rewrite a
+ * kept node's `.children` to its filtered sublist (the input comes from a
+ * fresh `documentSymbol` call and is rendered once, so this in-place rewrite
+ * is safe and avoids a deep clone). A dropped node's children are NOT lifted
+ * to the parent — they're structural subordinates (a constant's locals, a
+ * method's temps), and lifting them would distort the tree.
+ */
+function pruneDocSymbolTree(
+	syms: DocumentSymbol[],
+	keep: Set<number>,
+): DocumentSymbol[] {
+	const out: DocumentSymbol[] = [];
+	for (const s of syms) {
+		const kind = (s as unknown as { kind?: number }).kind ?? 0;
+		if (!keep.has(kind)) continue;
+		const children = (s as unknown as { children?: DocumentSymbol[] }).children;
+		if (children && children.length > 0) {
+			(s as unknown as { children?: DocumentSymbol[] }).children =
+				pruneDocSymbolTree(children, keep);
+		}
+		out.push(s);
+	}
+	return out;
+}
+
+/** Keep only rows whose kind is in `keep` from a flat SymbolInformation[]. */
+function filterSymbolInfoList(
+	syms: SymbolInformation[],
+	keep: Set<number>,
+): SymbolInformation[] {
+	return syms.filter((s) => keep.has(s.kind ?? 0));
+}
+
 export async function outline(
 	params: OutlineParams,
 	cwd: string,
@@ -95,11 +156,197 @@ export async function outline(
 	if (syms.length === 0) return `(no symbols found in ${params.path})`;
 	const lines: string[] = [];
 	// Hierarchical (DocumentSymbol[]) vs flat (SymbolInformation[]).
+	// Only structural kinds (class/method/function/field/...) are kept — the
+	// outline is a bloat-free structural overview. No arguments, no hovers,
+	// no opt-out. Server-provided `detail` is rendered inline where present
+	// (ccls fills it; tsserver/ty leave it empty).
 	if ("range" in syms[0] && "selectionRange" in syms[0]) {
-		for (const s of syms as DocumentSymbol[]) renderDocSymbol(s, 0, lines);
+		const tree = pruneDocSymbolTree(syms as DocumentSymbol[], OUTLINE_KEEP_KINDS);
+		for (const s of tree) renderDocSymbol(s, 0, lines);
 	} else {
-		for (const s of syms as SymbolInformation[]) lines.push(renderSymbolInfo(s));
+		const flat = filterSymbolInfoList(syms as SymbolInformation[], OUTLINE_KEEP_KINDS);
+		for (const s of flat) lines.push(renderSymbolInfo(s));
 	}
+	return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// 1b. code_scan
+// ---------------------------------------------------------------------------
+
+export interface ScanParams {
+	path: string;
+	/** RegExp source tested against each symbol's name. */
+	pattern: string;
+}
+
+/**
+ * One row of the scan result: the symbol, its tree depth (for indentation),
+ * and whether this node itself matched the pattern (descendants-matched nodes
+ * are kept as context but are not themselves hovers/hovered).
+ */
+interface ScanRow {
+	sym: DocumentSymbol;
+	depth: number;
+	matched: boolean;
+}
+
+/**
+ * Prune a DocumentSymbol tree to matches, returning a flat list of rows
+ * with depth + a `matched` flag. Semantics (per docs/outline-constants.md):
+ *
+ *   1. A node whose name matches the pattern is a match. A match's ENTIRE
+ *      subtree is kept (children, grandchildren, …) as context — the agent
+ *      asked about this entry, so it wants to see what's inside. Those
+ *      descendants are kept with `matched: false` (they're context, not
+ *      matches themselves, so they're not hovered).
+ *   2. A node with a matching descendant is kept as an ancestor for context
+ *      (so the agent sees where the match sits in the hierarchy), but its
+ *      non-matching sibling subtrees are pruned.
+ *
+ * The two rules compose: a self-match pulls in its whole subtree; a
+ * descendant match pulls in its ancestors. Siblings with no match in their
+ * subtree are dropped. Output is in pre-order (parents before children) so
+ * indentation renders the hierarchy correctly.
+ */
+function collectScanRows(syms: DocumentSymbol[], re: RegExp): ScanRow[] {
+	const out: ScanRow[] = [];
+	// `forceKeep`: when true, emit this node and ALL descendants unconditionally
+	// (matched=false for everyone). This is set on the subtree of a self-match
+	// (rule 1's descendant side).
+	const walk = (nodes: DocumentSymbol[], depth: number, forceKeep: boolean): boolean => {
+		let anyMatchInSubtree = false;
+		for (const s of nodes) {
+			const selfMatch = re.test(s.name);
+			const children =
+				(s as unknown as { children?: DocumentSymbol[] }).children ?? [];
+			if (forceKeep) {
+				// Rule 1 (descendant side): an ancestor self-matched; emit this whole
+				// subtree as context, none of it "matched".
+				out.push({ sym: s, depth, matched: false });
+				walk(children, depth + 1, true);
+				anyMatchInSubtree = true;
+				continue;
+			}
+			if (selfMatch) {
+				// Rule 1 (root side): self-match — emit (matched: true) and
+				// force-keep the whole subtree below as context.
+				out.push({ sym: s, depth, matched: true });
+				walk(children, depth + 1, true);
+				anyMatchInSubtree = true;
+				continue;
+			}
+			// Rule 2: no self-match — keep this node only if a descendant matched.
+			// We don't yet know whether a descendant matches, so reserve a slot now
+			// (pre-order: parent before children) and fill/evict it after recursing.
+			const slot = out.length;
+			out.push({ sym: s, depth, matched: false }); // tentative
+			const childMatch = walk(children, depth + 1, false);
+			if (childMatch) {
+				anyMatchInSubtree = true; // keep the slot
+			} else {
+				out.splice(slot, 1); // no match below — evict the tentative ancestor
+			}
+		}
+		return anyMatchInSubtree;
+	};
+	walk(syms, 0, false);
+	return out;
+}
+
+/**
+ * Render one scan row as an indented line mirroring `renderDocSymbol`'s shape,
+ * but with an appended signature label (from `detail` or a hover).
+ * Format: `<pad><Kind> <name>  <signature>  (line:col)` where the signature
+ * is the server `detail` when present, otherwise the provided hover signature.
+ */
+function renderScanRow(
+	row: ScanRow,
+	signature: string | undefined,
+): string {
+	const pad = "  ".repeat(row.depth);
+	const sym = row.sym;
+	const kind = (sym as unknown as { kind?: number }).kind;
+	const kindName = symbolKindName(kind);
+	const sel = sym.selectionRange?.start;
+	const pos = sel ? `${sel.line + 1}:${sel.character + 1}` : "";
+	// `detail` (server-provided, e.g. ccls declarations) takes precedence — it's
+	// free and authoritative. The hover signature fills in where detail is empty
+	// (tsserver/ty). Both never apply simultaneously.
+	const detail = (sym as unknown as { detail?: string | null }).detail;
+	const label = detail ? detail : signature ?? "";
+	const l = label ? `  ${label}` : "";
+	return `${pad}${kindName} ${sym.name}${l}  (${pos})`;
+}
+
+export async function scan(
+	params: ScanParams,
+	cwd: string,
+	clientOf: ClientProvider,
+): Promise<string> {
+	const lang = langForFile(params.path);
+	if (lang === null) throw new UnknownLanguageError(params.path);
+	const abs = toAbs(params.path, cwd);
+	let text: string;
+	try {
+		text = await readFile(abs, "utf8");
+	} catch (e) {
+		return `Cannot read ${abs}: ${e}`;
+	}
+	// Compile the pattern as a regexp. No substring fallback — the agent is
+	// told this is a regexp and can escape/anchor as needed. A bad pattern is
+	// a hard error (isError) so the agent learns the syntax contract fast.
+	let re: RegExp;
+	try {
+		re = new RegExp(params.pattern);
+	} catch (e) {
+		throw new Error(`Invalid regexp /${params.pattern}/: ${e instanceof Error ? e.message : e}`);
+	}
+	const client = await clientOf(lang);
+	const syms = await client.documentSymbols(abs, text);
+	if (syms.length === 0) return `(no symbols found in ${params.path})`;
+	// code_scan is pattern-driven and does NOT drop constants/variables — the
+	// pattern scopes the candidate set, so noise filtering would only hide
+	// symbols the agent explicitly asked for. Requires a hierarchical tree
+	// (DocumentSymbol[]); the flat SymbolInformation[] case has no nesting to
+	// prune and is reported as unsupported (no current server hits it for
+	// documentSymbol, but we guard rather than crash).
+	if (!("range" in syms[0] && "selectionRange" in syms[0])) {
+		return `(code_scan requires hierarchical documentSymbol; ${params.path} returned flat SymbolInformation)`;
+	}
+	const rows = collectScanRows(syms as DocumentSymbol[], re);
+	if (rows.length === 0) {
+		return `(no symbols matching /${params.pattern}/ in ${params.path})`;
+	}
+	// Hover the MATCHED rows whose `detail` is empty, in parallel (JSON-RPC
+	// over stdio supports concurrent in-flight requests; measured ~4ms for 10
+	// hovers). Ancestors kept for context are not hovered (they're just there to
+	// show the path; their own signature is rarely interesting and hovering them
+	// would balloon the candidate set when the match is deep). Skip rows that
+	// already have a non-empty `detail` (ccls fills these for free) — no point
+	// paying a hover to duplicate the server's own declaration string.
+	const hoverTargets = rows.filter(
+		(r) =>
+			r.matched &&
+			!(r.sym as unknown as { detail?: string | null }).detail,
+	);
+	const signatures = new Map<DocumentSymbol, string>();
+	if (hoverTargets.length > 0) {
+		const hovers = await Promise.all(
+			hoverTargets.map((r) => {
+				const sel = r.sym.selectionRange?.start;
+				if (!sel) return Promise.resolve(null);
+				return client.hover(abs, sel.line, sel.character, text);
+			}),
+		);
+		hoverTargets.forEach((r, i) => {
+			const sig = hoverSignature(hoverText(hovers[i]));
+			if (sig) signatures.set(r.sym, sig);
+		});
+	}
+	const lines = rows.map((r) =>
+		renderScanRow(r, signatures.get(r.sym)),
+	);
 	return lines.join("\n");
 }
 

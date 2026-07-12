@@ -4,13 +4,14 @@ pi extension providing LSP-backed code navigation tools for the LLM.
 
 ## What this is
 
-Eight tools the LLM can call after `/code-nav` enables them: `code_outline`,
-`code_definition`, `code_references`, `code_symbol`, `code_rename`,
-`code_hover`, `code_symbols_in` (tree-sitter), `code_diagnostics` (LSP
-pull-first, push-fallback). Six are backed by real language servers
-(ccls/ty/pyright/bash-language-server/typescript-language-server), one by
-in-process WASM tree-sitter, one is a diagnostic reporter. Tool params are 1-based; LSP is
-0-based — translation happens in the tool layer.
+Nine tools the LLM can call after `/code-nav` enables them: `code_outline`,
+`code_scan`, `code_definition`, `code_references`, `code_symbol`,
+`code_rename`, `code_hover`, `code_symbols_in` (tree-sitter),
+`code_diagnostics` (LSP pull-first, push-fallback). Seven are backed by real
+language servers (ccls/ty/pyright/bash-language-server/typescript-language-
+server), one by in-process WASM tree-sitter, one is a diagnostic reporter.
+Tool params are 1-based; LSP is 0-based — translation happens in the tool
+layer.
 
 ## Files
 
@@ -22,11 +23,11 @@ in-process WASM tree-sitter, one is a diagnostic reporter. Tool params are 1-bas
 - `render.ts` — pure rendering + small helpers (no pi, no LSP, no fs beyond
   readFile/writeFile in the WorkspaceEdit applier): `symbolKindName`,
   `renderDocSymbol`, `renderSymbolInfo`, `renderLocation`, `renderDiagnostic`,
-  `hoverText`, `resolveDefBodyRange`, `resolveSymbolSelStart`,
+  `hoverText`, `hoverSignature`, `resolveDefBodyRange`, `resolveSymbolSelStart`,
   `applyWorkspaceEdit`, `langForFile`, `EXT_LANG`. Shared verbatim by
   `index.ts`, the CLI harness, and the e2e tests — this is what killed the
   old "keep nav-cli.mjs in sync with index.ts by hand" landmine.
-- `nav.ts` — the eight tool implementations (`outline`, `definition`,
+- `nav.ts` — the nine tool implementations (`outline`, `scan`, `definition`,
   `references`, `symbol`, `rename`, `hover`, `symbolsIn`, `diagnostics`) as
   plain async functions `(params, cwd, clientOf) => text`. No pi dependency;
   takes a `ClientProvider` (`(lang) => LspClient`) instead of `ServerPool`.

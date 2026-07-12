@@ -72,6 +72,52 @@ export function hoverText(h: Hover | null): string {
 	return (c as { value?: string }).value?.trim() ?? "(empty hover)";
 }
 
+/**
+ * Collapse a hover body into a one-line "signature" for the code_scan label
+ * column. Handles the multi-line fenced signatures servers return (ty wraps
+ * function signatures across several lines inside a ```python block):
+ *
+ *   ```python
+ *   def alpha(
+ *       a: int,
+ *       b: str
+ *   ) -> bool
+ *   ```
+ *
+ * becomes `def alpha(a: int, b: str) -> bool`. The rule: take the first
+ * fenced code block (or, if there's no fence, the first non-blank line), join
+ * its inner lines collapsing runs of whitespace into single spaces, and cap
+ * the length. Returns "" for an empty hover so the caller can omit the label.
+ *
+ * Distinct from `hoverFirstLine` (in tree-sitter-parse.ts), which returns only
+ * the FIRST physical line of the hover — that's fine for code_symbols_in's
+ * include_docs label but truncates multi-line signatures mid-paren. This
+ * helper exists for code_scan, where the signature IS the point.
+ */
+export function hoverSignature(hoverText: string): string {
+	const lines = hoverText.split(/\r?\n/);
+	let inFence = false;
+	const buf: string[] = [];
+	for (const raw of lines) {
+		const line = raw.trim();
+		if (/^```/.test(line)) {
+			if (inFence) break; // closing fence → signature complete
+			inFence = true; // opening fence → start collecting
+			continue;
+		}
+		if (inFence) {
+			if (line) buf.push(line);
+			continue;
+		}
+		// No fence: take the first non-blank line as the signature.
+		if (line) {
+			return trunc(line, 100);
+		}
+	}
+	if (buf.length === 0) return "";
+	return trunc(buf.join(" ").replace(/\s+/g, " ").trim(), 100);
+}
+
 // ---------------------------------------------------------------------------
 // Symbol kind naming + DocumentSymbol / SymbolInformation rendering
 // ---------------------------------------------------------------------------

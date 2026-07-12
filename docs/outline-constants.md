@@ -1,7 +1,23 @@
 # `code_outline` Constant/Variable verbosity — investigation notes
 
-Status: **investigated, not yet decided/fixed.** This file records the
-findings so we can pick the fix later without re-deriving the behavior.
+Status: **implemented** — but not via the `brief` flag this file originally
+proposed. The shipped design split the concern across TWO tools:
+
+- **`code_outline`** — a bloat-free structural overview. Takes only a path;
+  keeps an **allowlist** of structural SymbolKinds (Class, Method, Function,
+  Property, Field, Constructor, Interface, Struct — kinds 5,6,7,8,9,11,12,23);
+  drops everything else (including Constant 14 and Variable 13). No
+  arguments, no hover round-trips. The server's `detail` is rendered inline
+  where present (ccls fills it; tsserver/ty leave it empty).
+- **`code_scan`** — a NEW pattern-driven tool. Takes a path + a regexp matched
+  against symbol names; prints matches with their ancestors (hierarchy
+  context) and the matched node's entire subtree. Fetches signatures via
+  **parallel LSP hover** for matched rows whose `detail` is empty (tsserver/ty).
+  No constant/variable filtering — the pattern scopes the candidate set.
+
+The investigation below is kept for history; the "Decision (implemented)"
+section records the reasoning, including why the original `brief` flag was
+abandoned in favor of the allowlist + two-tool split.
 
 ## The symptom
 
@@ -114,7 +130,127 @@ reason: its default role set is `[type, call, member, import]` — **omitting
 `code_outline` is the same product decision waiting to happen, applied to
 `Constant`/`Variable` SymbolKinds instead of the tree-sitter `var` role.
 
-## Candidate fix (not implemented)
+## Decision (implemented)
+
+The shipped design split the concern across TWO tools rather than adding a
+flag to `code_outline`:
+
+### `code_outline` — allowlist, no arguments
+
+`code_outline` keeps an **allowlist** of structural SymbolKinds:
+`{5 Class, 6 Method, 9 Constructor, 11 Interface, 12 Function, 23 Struct}`.
+Everything else is dropped, with **no opt-out**. Property(7)/Field(8) are
+**deliberately dropped**: they sound structural but aren't reliably so —
+tsserver emits `Property` for object-literal keys (every field of a
+`registerTool({...})` call or a returned object literal becomes a `Property`
+row), which floods the outline with non-structural noise. ty/ccls use Field(8)
+only for real class/struct fields, but even there a field list is rarely what a
+"compact overview" wants — the agent can `code_scan` a class name to see its
+members. An allowlist is more honest than a denylist of noisy kinds: it states
+what the overview shows rather than what it happens to hide, and it's robust to
+servers returning kinds we didn't anticipate (dropped by default, the safe
+choice for a "compact overview"). This also drops the alphabetical-sort noise
+the original symptom complained about (tsserver returned `count`/`ROOT` out of
+source order — now they're just gone).
+
+Constructor is a kind of method. Enum(10)/EnumMember(22)/Namespace(3) are
+dropped; none appeared in practice for our servers (verified across
+tsserver/ty/ccls), so no special-casing.
+
+`detail` (the server-populated signature/declaration string) is rendered
+inline after the name where present — this is **already valuable for C++**
+(ccls fills `detail` with declarations like `int main()`,
+`void Widget::method()`, `constexpr int MAX`), so the C++ outline is an
+annotated overview for free. tsserver and ty leave `detail` empty, so TS/Python
+outlines show no signature column. Getting one there requires LSP hover per
+row — which `code_outline` deliberately does NOT do (it stays a single
+`documentSymbol` round-trip). That job is `code_scan`'s.
+
+### `code_scan` — pattern + parallel hover signatures
+
+`code_scan(path, pattern)` takes a **regexp** matched against symbol names
+and returns matches with their signatures. Tree semantics:
+1. A node whose name matches → keep it AND its entire subtree (members,
+   locals) as context.
+2. A node with a matching descendant → keep as an ancestor for context
+   (so the agent sees where the match sits); prune non-matching sibling
+   subtrees.
+
+Signatures come from `detail` where populated (ccls — no hover needed), or
+from **parallel LSP hover** (`Promise.all`) for matched rows whose `detail`
+is empty (tsserver/ty). Only matched nodes are hovered; ancestor/subtree
+context rows are not (use `code_hover` on their position if needed).
+
+**Why parallel hover is acceptable here but not in `code_outline`:** measured
+~4ms for 10 hovers parallel vs 29ms sequential (JSON-RPC over stdio supports
+concurrent in-flight requests). The pattern scopes the candidate set to a
+small number of matched nodes, so the hover cost is bounded and tiny. In
+`code_outline` there's no pattern → the candidate set is the whole file → N
+hovers on every call, defeating "bloat-free, speedy."
+
+`code_scan` does **NOT** apply the outline allowlist — the pattern is the
+scoping mechanism, so filtering by kind would hide symbols the agent
+explicitly asked for (e.g. scanning for a constant by name).
+
+### Why not the `brief` flag
+
+The original proposal was a `brief?: boolean` (default true) on `code_outline`
+that dropped 13/14, with `brief=false` to restore everything. That was built
+and tested, then superseded: the allowlist is simpler and more honest, and the
+pattern-driven `code_scan` absorbs the "I want signatures for specific symbols"
+use case that `brief=false` + manual `code_hover` was a poor fit for. Two
+tools with clear jobs beat one tool with a flag that changes its output shape.
+
+### Implementation notes
+
+- The allowlist filter (`pruneDocSymbolTree` / `filterSymbolInfoList`) lives
+  in `nav.ts` `outline()`, operating on the `DocumentSymbol[]` tree / flat
+  `SymbolInformation[]` **before** rendering — NOT in the shared
+  `renderDocSymbol` / `renderSymbolInfo` (also used by `code_symbol`, which
+  must NOT be filtered).
+- `code_scan`'s `collectScanRows` prunes the tree to matches+ancestors+subtree
+  in pre-order (parents before children), returning rows with depth + a
+  `matched` flag. A tentative-slot-then-evict technique keeps ancestors before
+  their children without a two-pass design.
+- `hoverSignature` (in `render.ts`, next to `hoverText`) collapses a hover
+  body into a one-line signature — handles the multi-line fenced signatures ty
+  returns (`def alpha(\n    a: int,\n    b: str\n) -> bool` →
+  `def alpha(a: int, b: str) -> bool`). Distinct from `hoverFirstLine`
+  (in tree-sitter-parse.ts), which returns only the first physical line and
+  truncates multi-line signatures mid-paren.
+- CLI: `outline <file>` (no flags) and `scan <file> <pattern>`.
+
+### Verification commands
+
+```sh
+# outline: structural kinds only, constants/variables dropped.
+CODE_NAV_ROOT=$(pwd) node scripts/nav-cli.mjs outline test/fixtures/second.py
+# scan: pattern-driven, signatures via parallel hover (TS/Python) or detail (C++).
+CODE_NAV_ROOT=$(pwd) node scripts/nav-cli.mjs scan test/fixtures/second.py "TempC"
+CODE_NAV_ROOT=/tmp node scripts/nav-cli.mjs scan /tmp/many.ts "^get|^set"
+# C++ outline carries ccls detail signatures on kept rows.
+CODE_NAV_ROOT=/tmp node scripts/nav-cli.mjs outline /tmp/sample.cpp
+```
+
+[The "Rejected: hover-based signatures" section below is superseded by
+`code_scan`; retained for the reasoning trail.]
+
+### Rejected: hover-based signatures as a default in `code_outline`
+
+A `include_docs?: boolean` flag (mirroring `code_symbols_in`) was
+considered for `code_outline`: when true, hover each kept row and append a
+signature label. Rejected as a default because it is N LSP hover round-trips
+and the whole point of `code_outline`'s default path is a single
+`documentSymbol` call. `detail` already gives C++ signatures for free, and the
+user explicitly said "no need for include_docs, since it is already working
+for ccls. Let's include details by default." The hover-enriched-signatures
+job instead became `code_scan`, where the pattern bounds N to a small set and
+parallel hover makes it cheap — so the capability exists, just not in
+`code_outline`.
+
+## Original investigation (kept for history)
+
+
 
 Default-drop `Constant` (14) and `Variable` (13) from the outline, keep an
 opt-in:
@@ -184,11 +320,15 @@ node /tmp/inspect.mjs python     /tmp/sample.py
 CODE_NAV_ROOT=/tmp node scripts/nav-cli.mjs outline sample.ts
 ```
 
-## Decision needed
+## Decision needed (resolved — see "Decision (implemented)" at top)
 
 - Drop both top-level AND nested constants/variables, or only top-level?
-- Cross-language default, or TS/JS-only?
+  → both (drop by kind, not by depth).
+- Cross-language default, or TS/JS-only? → cross-language (drop 13 and 14
+  everywhere).
 - Check ccls behavior for C++ constants before deciding the cross-language
-  default.
+  default. → ccls returns Variable (13) for `const`/`constexpr`/`static`,
+  confirmed (so the filter covers 13 AND 14).
 - Confirm the `include_variables` opt-in name/shape (mirror `code_symbols_in`
-  `roles`, or a simpler boolean?).
+  `roles`, or a simpler boolean?). → simpler boolean: `brief` (default true),
+  mirroring `code_symbols_in`'s default-drop-of-noisy-rows precedent.

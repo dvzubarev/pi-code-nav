@@ -18,6 +18,7 @@
 //
 // Usage:
 //   node nav-cli.mjs outline <file>
+//   node nav-cli.mjs scan <file> <pattern>
 //   node nav-cli.mjs hover <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
 //   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [<file> <line> <col> ...] [--list-symbols]
 //   node nav-cli.mjs references <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
@@ -61,6 +62,7 @@ const [cmd, ...rest] = process.argv.slice(2);
 function usage() {
 	console.error(`usage (root: ${ROOT}):
   node nav-cli.mjs outline <file>
+  node nav-cli.mjs scan <file> <pattern>
   node nav-cli.mjs hover <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [<file> <line> <col> ...] [--list-symbols]
   node nav-cli.mjs references <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
@@ -70,6 +72,12 @@ function usage() {
   node nav-cli.mjs diagnostics <file>
 
 hover/definition/references accept one or more (file line col) triples.
+outline prints a bloat-free structural overview (classes, methods, functions,
+  properties/fields) — constants/variables are dropped, no arguments.
+scan takes a regexp matched against symbol names; it prints matches (with
+  ancestors for context) and fetches signatures via parallel LSP hover calls
+  for rows whose server detail is empty (tsserver/ty). No constant/variable
+  filtering — the pattern scopes the candidate set.
 definition accepts --list-symbols to also append a tree-sitter symbol table
   per returned snippet (mirrors code_definition's list_symbols parameter).
 symbols-in parses a line range with tree-sitter and lists identifiers with
@@ -111,6 +119,11 @@ async function main() {
 		const [path] = rest;
 		if (!path) usage();
 		console.log(await nav.outline({ path }, ROOT, clientOf));
+	} else if (cmd === "scan") {
+		// scan <file> <pattern> — pattern is a regexp tested against symbol names.
+		const [path, pattern] = rest;
+		if (!path || !pattern) usage();
+		console.log(await nav.scan({ path, pattern }, ROOT, clientOf));
 	} else if (cmd === "hover" || cmd === "definition" || cmd === "references") {
 		// Accept one or more (file line col) triples. Each triple is batched
 		// through one LSP client per language (mirroring the `positions` array

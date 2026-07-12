@@ -92,3 +92,58 @@ runOrSkip(
 		}
 	},
 );
+
+runOrSkip(
+	"code_scan on a .ts file fetches signatures via parallel hover (detail empty)",
+	async () => {
+		// tsserver leaves DocumentSymbol.detail empty, so code_scan falls back to
+		// one LSP hover per matched row (fired in parallel via Promise.all —
+		// JSON-RPC over stdio supports concurrent in-flight requests). The
+		// hover-first-line is appended as a signature label. This is the path
+		// code_outline does NOT take (it stays a single documentSymbol call);
+		// code_scan is where the hover cost lives, scoped by the pattern.
+		const ws = await withWorkspace([]);
+		try {
+			const file = resolve(ws.root, "svc.ts");
+			await writeFile(
+				file,
+				[
+					`const NOISE = 1;`,
+					`export function greet(name: string): string { return name; }`,
+					`export class Service {`,
+					`  constructor(private id: number) {}`,
+					`  getId(): number { return this.id; }`,
+					`}`,
+					``,
+				].join("\n"),
+				"utf8",
+			);
+			// Match Service → class row (hovered, since detail is empty) + its
+			// members as context (NOT hovered — they're context, not matches).
+			const out = await nav.scan(
+				{ path: "svc.ts", pattern: "Service" },
+				ws.root,
+				ws.clientOf,
+			);
+			// The matched class row carries a hover-derived signature.
+			assert.match(
+				out,
+				/^Class Service  .+\(\d+:\d+\)$/m,
+				`Service match row with signature missing:\n${out}`,
+			);
+			// Its members are kept as context (indented), without signatures.
+			assert.match(
+				out,
+				/^  Method getId  \(\d+:\d+\)$/m,
+				`getId (context member) missing:\n${out}`,
+			);
+			// NOISE (Constant, no match, not under a match) is pruned — and even
+			// if it had matched, code_scan does NOT apply the outline allowlist.
+			assert.ok(!/NOISE/.test(out), `NOISE should be pruned:\n${out}`);
+			// greet (Function, no match, not under a match) is pruned too.
+			assert.ok(!/greet/.test(out), `greet should be pruned:\n${out}`);
+		} finally {
+			await ws.cleanup();
+		}
+	},
+);
