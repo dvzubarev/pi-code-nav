@@ -472,8 +472,19 @@ export class LspClient {
         };
         this.capabilities = result.capabilities;
 
-        // Send initialized notification (required by the spec).
-        conn.sendNotification("initialized", {});
+        // Send initialized notification (required by the spec) and AWAIT it.
+        // sendNotification returns a Promise<void> that resolves once the
+        // message is written to the transport. If we fire-and-forget it,
+        // the next request from the caller (e.g. workspace/symbol, sent as
+        // soon as ensureReady() returns) can be queued on the wire BEFORE
+        // the initialized notification is flushed, or land at the server
+        // before it has processed initialized and flipped its state machine.
+        // ty (Astral) is strict about the LSP handshake and crashes the
+        // whole server with: "expected initialized notification, got:
+        // <next request>" — which presents as the tool hanging because the
+        // process dies after initialize but before answering the request.
+        // Awaiting guarantees initialized is on the wire first.
+        await conn.sendNotification("initialized", {});
     }
 
     /** Open or refresh a document on the server (didOpen). */
