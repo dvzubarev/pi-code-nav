@@ -198,3 +198,55 @@ test(
         }
     }),
 );
+
+test(
+    // Regression: spawn() with a missing binary (ENOENT) emits an asynchronous
+    // 'error' event on the ChildProcess. With no listener, Node treats it as an
+    // UNCAUGHT exception and kills the whole pi process — the original crash
+    // when a project detected bash as a language but bash-language-server
+    // wasn't on PATH. The proc 'error' handler in LspClient.start() must
+    // catch it, log it, and reject the in-flight ensureReady() promise so
+    // nav.ts symbol()'s per-language soft-failure catch turns it into an
+    // "ERROR  [lang]  server unavailable: ..." row. Two assertions matter:
+    //   1. ensureReady() REJECTS (not hangs, not crashes the test process).
+    //   2. The rejection surfaces the original errno (ENOENT), not a timeout.
+    "ensureReady rejects (not crashes) when binary is missing (ENOENT)",
+    withDeadline(8000, "spawn-enoent", async () => {
+        const root = await mkdtemp(resolve(tmpdir(), "code-nav-fake-"));
+        const c = new LspClient("bash", root, {
+            // A binary that cannot exist on any PATH: spawn() will emit
+            // 'error' with code ENOENT.
+            command: "definitely-missing-language-server-xyz",
+            args: ["start"],
+            initOptions: {},
+        });
+        try {
+            await assert.rejects(
+                c.ensureReady(),
+                (err) => {
+                    const msg = String(err?.message ?? err);
+                    // The original errno must surface so the ERROR row names
+                    // the real cause (ENOENT), not a generic timeout.
+                    assert.match(
+                        msg,
+                        /ENOENT/,
+                        `should surface the ENOENT, not a generic error; got: ${msg}`,
+                    );
+                    // And it must NOT be the request timeout — that would
+                    // mean the 'error' handler didn't reject and we waited
+                    // the full file-wide 300ms for the reader-close path.
+                    assert.ok(
+                        !/timed out/.test(msg),
+                        `should reject via the 'error' handler, not the timeout; got: ${msg}`,
+                    );
+                    return true;
+                },
+            );
+        } finally {
+            try {
+                await c.shutdown();
+            } catch {}
+            await rm(root, { recursive: true, force: true });
+        }
+    }),
+);

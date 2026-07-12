@@ -399,11 +399,85 @@ export class LspClient {
 
     private async start(): Promise<void> {
         const { command, args, initOptions } = this.cfg;
+        // rejectReady lets the proc 'error' handler reject the outer
+        // start()/ensureReady() promise. start() is async and awaits
+        // initialize on the spawned process; without a way to reject the
+        // outer promise from an async event, a proc 'error' (spawn-time
+        // ENOENT, or a later transport error) would be swallowed and the
+        // await would never settle — ensureReady() would hang forever.
+        // Set just after the promise is created.
+        let rejectReady: ((err: Error) => void) | undefined;
+        // Set by the proc 'error' handler on spawn failure (ENOENT/EACCES).
+        // Checked (after a microtask yield to let the async 'error' event
+        // fire) before we call conn.sendRequest("initialize") — so that on a
+        // spawn failure we never queue the initialize write on a dead stdin.
+        // vscode-jsonrpc's sendRequest re-throws after rejecting its promise
+        // when the underlying write throws ERR_STREAM_DESTROYED; that stray
+        // rejection is unawaited and surfaces as an unhandledRejection. By
+        // not calling sendRequest at all when spawn already failed, we avoid
+        // the stray entirely (the error handler rejects rejectReady instead).
+        let spawnError: Error | undefined;
         const proc = spawn(command, args, {
             stdio: ["pipe", "pipe", "pipe"],
             cwd: undefined,
         });
         this.proc = proc;
+
+        // Attach the 'error' handler BEFORE anything else. spawn() does NOT
+        // throw synchronously on ENOENT (missing binary on PATH) — it emits
+        // an asynchronous 'error' event on the ChildProcess. With no
+        // listener, Node treats that as an uncaught exception and kills the
+        // whole process (the exact crash that took down pi when a project
+        // detected bash as a language but bash-language-server wasn't on
+        // PATH: the per-language try/catch in nav.ts symbol() never saw it,
+        // because the event has no awaiter by the time it fires). Catching
+        // it here turns the failure into a rejected ensureReady() promise,
+        // which the caller's soft-failure catch converts to an
+        // "ERROR  [lang]  server unavailable: ..." row — the intended
+        // behavior. The handler is attached before the log-file setup
+        // because an ENOENT can fire extremely early (proc.pid is undefined
+        // for a never-spawned child); if the log stream happens to be open
+        // by then we tee to it, but console.error is the guaranteed
+        // surface.
+        proc.on("error", (err: NodeJS.ErrnoException) => {
+            const msg = `server spawn failed: ${err.code ?? "UNKNOWN"} ${err.message}`;
+            console.error(`[code-nav ${this.lang}] ${msg}`);
+            if (this.logStream && !this.logStream.destroyed) {
+                try {
+                    this.logStream.write(`${msg}\n`);
+                } catch {
+                    /* ignore — logging failure must not break teardown */
+                }
+            }
+            // Dispose the connection if one was started (defensive: on a
+            // spawn-time ENOENT there is no conn yet, but a later 'error'
+            // — e.g. EACCES after a partial start — could have one).
+            if (this.conn) {
+                try {
+                    this.conn.dispose();
+                } catch {
+                    /* already disposed/ended */
+                }
+            }
+            this.proc = null;
+            this.conn = null;
+            this.capabilities = null;
+            this.openDocs.clear();
+            this.diagnosticsByUri.clear();
+            this.closeLog();
+            // Record the spawn failure so the body's post-listen guard can
+            // throw it (and skip the initialize write) instead of letting
+            // vscode-jsonrpc leak an unawaited ERR_STREAM_DESTROYED.
+            spawnError = err;
+            // Reject the in-flight ensureReady()/start() promise so the
+            // caller's await throws instead of hanging forever. Without
+            // this, the 'error' is swallowed and the initialize await in
+            // the body below never settles. Clear this.ready first so a
+            // later ensureReady() retry attempts a fresh spawn instead of
+            // re-awaiting the (about-to-be-rejected) promise.
+            this.ready = null;
+            if (rejectReady) rejectReady(err);
+        });
 
         // Open a per-server log file when a logDir was provided (the pi
         // extension passes ~/.pi/agent/logs/code-nav so the user can inspect
@@ -445,6 +519,25 @@ export class LspClient {
                     /* ignore — see comment above */
                 }
             }
+        });
+        // Swallow stream-level 'error' events on stdin/stdout. The proc
+        // 'error' handler above already catches spawn-time failures (ENOENT)
+        // and disposes the connection; but the JSON-RPC transport wraps
+        // proc.stdin/proc.stdout in its own reader/writer, and a buffered
+        // write to a stdin that has already been destroyed (e.g. after an
+        // ENOENT, where the process never existed but the writer queued an
+        // initialize write before the stream closed) rejects as an
+        // ERR_STREAM_DESTROYED. Without a listener on these streams that
+        // rejection would surface as an unhandledRejection and abort the
+        // test/process. Log it at debug level and move on — the connection
+        // is being torn down anyway.
+        proc.stdin.on("error", (err: NodeJS.ErrnoException) => {
+            const msg = `stdin stream error: ${err.code ?? "UNKNOWN"} ${err.message}`;
+            console.error(`[code-nav ${this.lang}] ${msg}`);
+        });
+        proc.stdout.on("error", (err: NodeJS.ErrnoException) => {
+            const msg = `stdout stream error: ${err.code ?? "UNKNOWN"} ${err.message}`;
+            console.error(`[code-nav ${this.lang}] ${msg}`);
         });
         proc.on("exit", (code, signal) => {
             if (this.proc) {
@@ -511,6 +604,16 @@ export class LspClient {
         conn.listen();
         this.conn = conn;
 
+        // Yield one microtask so the async proc 'error' event (ENOENT fires
+        // on the next tick) has a chance to run before we queue the
+        // initialize write. If spawn already failed, bail out here — calling
+        // sendRequest on a dead stdin leaks an unawaited ERR_STREAM_DESTROYED
+        // rejection from vscode-jsonrpc's sendRequest (it re-throws after
+        // rejecting its own promise). The error handler already rejected
+        // rejectReady, so ensureReady() rejects cleanly.
+        await new Promise<void>((r) => setImmediate(r));
+        if (spawnError) throw spawnError;
+
         const initParams: InitializeParams = {
             processId: process.pid,
             rootUri: this.rootUri,
@@ -564,7 +667,16 @@ export class LspClient {
         ] as unknown as InitializeParams["workspaceFolders"];
         initParams.workspaceFolders = wf;
 
-        const result = (await requestWithTimeout(conn, "initialize", initParams)) as {
+        const result = (await Promise.race([
+            requestWithTimeout(conn, "initialize", initParams),
+            // Reject the handshake immediately if the spawn failed (ENOENT,
+            // EACCES, …) rather than waiting for requestWithTimeout's own
+            // timeout — the proc 'error' handler calls rejectReady with the
+            // original errno so the surfaced message is specific.
+            new Promise<never>((_, reject) => {
+                rejectReady = reject;
+            }),
+        ])) as {
             capabilities: ServerCapabilities;
         };
         this.capabilities = result.capabilities;
