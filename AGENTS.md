@@ -16,10 +16,11 @@ layer.
 ## Files
 
 - `index.ts` — extension entry. Registers 3 slash commands
-  (`/code-nav`, `/code-nav:off`, `/code-nav:status`) + `session_shutdown`
-  hook at load; `registerTools()` (only called by `/code-nav`) is now a thin
-  shim around the tool implementations in `nav.ts`. `ServerPool` manages
-  per-language `LspClient` instances.
+  (`/code-nav`, `/code-nav:off`, `/code-nav:status`), the `session_shutdown`
+  hook, and a `before_agent_start` system-prompt hook (appends a grouped tool
+  overview while enabled) at load; `registerTools()` (only called by
+  `/code-nav`) is now a thin shim around the tool implementations in `nav.ts`.
+  `ServerPool` manages per-language `LspClient` instances.
 - `render.ts` — pure rendering + small helpers (no pi, no LSP, no fs beyond
   readFile/writeFile in the WorkspaceEdit applier): `symbolKindName`,
   `renderDocSymbol`, `renderSymbolInfo`, `renderLocation`, `renderDiagnostic`,

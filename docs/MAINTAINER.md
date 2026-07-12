@@ -192,6 +192,27 @@ and invisible to the LLM. Re-running `/code-nav` re-registers them (the
 `registeredToolNames` dedup pattern from `dynamic-tools.ts` isn't needed here
 because we null `state`; re-enable creates a fresh pool).
 
+### System-prompt block: `before_agent_start` (gated on enabled)
+
+A `before_agent_start` handler is registered at load (always present) and
+appends `CODE_NAV_PROMPT_BLOCK` to the system prompt — but **only when
+`state.pool.enabled()` is true AND a `code_*` tool is in the active set.**
+Otherwise it returns `{}` (no-op). This is the one place the agent gets a
+*grouped* view of the tools (entry points vs detail tools) plus the
+"prefer code_* over grep/read" reframing.
+
+Why `before_agent_start` and not `promptGuidelines`? `promptGuidelines` are
+appended **flat** to the Guidelines section with no tool-name grouping (see
+pi docs), so they can't express the two-group framing or the old-vs-new table.
+Per-tool `promptGuidelines` stay for tool-specific gotchas (the third-party rg
+workflow in `code_scan`, batching in `code_definition`, etc.); the system-prompt
+block carries the *structural* overview that flat bullets can't. The block is
+~30 lines — acceptable because it's gated on `/code-nav` (the user opted in).
+
+Do not ungate it (no appending when `enabled()` is false — that would spam
+every session). Do not move it into `registerTools()` — the handler must be
+registered at load so it's present before the first turn after `/code-nav`.
+
 ### The `applyWorkspaceEdit` function — handle with care
 
 This applies LSP `WorkspaceEdit` results to disk. It handles both
@@ -511,9 +532,11 @@ spawn time (`process.env.HOME`) — keep that dynamic, don't hardcode.
   wins per URI); `getPushedDiagnostics(absPath)` reads a snapshot of it for the
   `code_diagnostics` push fallback. See "code_diagnostics — design notes" above.
 - `index.ts` — `codeNavExtension(pi)`: registers the 3 slash commands + the
-  `session_shutdown` hook at load; `registerTools()` (called only by
-  `/code-nav`) registers the 8 LLM tools (6 LSP + `code_scan` +
-  `code_diagnostics`). `ServerPool` manages the per-language clients.
+  `session_shutdown` hook + the `before_agent_start` system-prompt hook at
+  load; `registerTools()` (called only by `/code-nav`) registers the 8 LLM
+  tools (6 LSP + `code_scan` + `code_diagnostics`). `ServerPool` manages the
+  per-language clients. `CODE_NAV_PROMPT_BLOCK` is the grouped tool overview
+  the `before_agent_start` hook appends to the system prompt while enabled.
   `applyWorkspaceEdit` / `applyTextEdits` apply rename results to disk.
   Rendering helpers (`renderDocSymbol`, `renderSymbolInfo`, `renderLocation`,
   `hoverText`, `symbolKindName`, `renderDiagnostic` / `severityName` /

@@ -4,18 +4,21 @@
  * Provides eight LLM-callable tools backed by real LSP servers (ccls for C++,
  * ty/pyright for Python, bash-language-server for bash,
  * typescript-language-server for TypeScript & JavaScript) plus tree-sitter for
- * third-party symbol discovery:
+ * third-party symbol discovery. They split into two groups:
  *
- *   code_outline     — file structure (functions, classes, methods, signatures)
- *   code_tree        — pattern-driven pruned DocumentSymbol tree with signatures (parallel hover)
- *   code_definition  — location + full source body of a symbol's definition
- *   code_references  — list of references for a symbol
- *   code_search_symbol — ranked workspace-wide symbol lookup by name
- *   code_rename      — rename a symbol, edits applied to disk
- *   code_hover       — hover/documentation for a symbol
- *   code_scan        — identifier scan of a file or line range (positions + roles)
- *                     (the third-party entry point; see MAINTAINER.md)
- *   code_diagnostics — errors/warnings for a file (LSP pull model, on demand)
+ *   ENTRY POINTS (produce a position):
+ *   code_outline        — file structure (functions, classes, methods, signatures)
+ *   code_tree           — pattern-driven pruned DocumentSymbol tree with signatures (parallel hover)
+ *   code_search_symbol  — ranked workspace-wide symbol lookup by name
+ *   code_scan           — identifier scan of a file or line range (positions + roles)
+ *                         (the third-party entry point; see MAINTAINER.md)
+ *
+ *   DETAIL TOOLS (consume path + 1-based line + column):
+ *   code_definition     — location + full source body of a symbol's definition
+ *   code_references     — list of references for a symbol
+ *   code_hover          — hover/documentation for a symbol
+ *   code_rename         — rename a symbol, edits applied to disk
+ *   code_diagnostics    — errors/warnings for a file (LSP pull model, on demand)
  *
  * Servers are scoped by (ctx.cwd, language): one server per language per
  * workspace, spawned lazily on first tool call, shut down on session close.
@@ -543,4 +546,72 @@ export default function codeNavExtension(pi: ExtensionAPI) {
             state = null;
         }
     });
+
+    // Inject a grouped "entry points vs detail tools" overview + old-vs-new
+    // pattern table into the system prompt, but ONLY while code-nav tools are
+    // active. promptGuidelines (per-tool) are flat with no grouping, so they
+    // cannot express the two-group framing or the "prefer code_* over grep/read"
+    // reframing that steers the agent away from its default grep/read reflex.
+    // This handler is always registered; it no-ops when /code-nav hasn't run.
+    pi.on("before_agent_start", async (event) => {
+        if (!state?.pool.enabled()) return {};
+        const active = pi.getActiveTools();
+        if (!active.some((t) => t.startsWith("code_"))) return {};
+        const block = CODE_NAV_PROMPT_BLOCK;
+        return { systemPrompt: event.systemPrompt + "\n\n" + block };
+    });
 }
+
+/**
+ * The grouped tool overview injected into the system prompt while code-nav is
+ * active. Two purposes the flat per-tool promptGuidelines cannot serve:
+ *   1. Group the nine tools into ENTRY POINTS (produce positions) vs DETAIL
+ *      TOOLS (consume positions), making the round-trip obvious.
+ *   2. Reframe common grep/read/sed reflexes as code_* calls.
+ * Kept tight — this is appended to every system prompt while enabled.
+ */
+const CODE_NAV_PROMPT_BLOCK = `## code-nav tools (LSP-backed code navigation)
+
+The code_* tools are backed by real language servers (ccls/ty/pyright/
+bash-language-server/typescript-language-server) plus tree-sitter. They index
+the workspace, so prefer them over grep/read/sed for code tasks — they are
+faster, semantic, and return 1-based positions that round-trip between tools.
+
+Two groups — ENTRY POINTS produce a position; DETAIL TOOLS consume one.
+
+ENTRY POINTS (you don't have a precise position yet):
+- code_search_symbol — find a symbol by name across the workspace
+- code_outline       — list functions/classes/methods (with signatures) in a file
+- code_tree          — list symbols matching a name pattern in a file
+- code_scan          — list every identifier (with role: type/call/member/import) in a file or range
+
+DETAIL TOOLS (take path + 1-based line + column — reuse a position an entry point printed):
+- code_definition    — jump to a symbol's definition; returns the FULL source body
+- code_references    — all call sites of a symbol
+- code_hover         — docstring / signature / type info
+- code_rename        — rename a symbol across the workspace; edits applied to disk
+- code_diagnostics   — errors/warnings a language server reports for a file
+
+Prefer code_* over the grep/read reflex:
+- find a symbol by name           → code_search_symbol (not rg + read)
+- read a function's source body   → code_outline to find it, then code_definition (not grep -n + read)
+- list identifiers in a snippet   → code_scan (not rg -o '\b\w+\b' — code_scan gives roles + reusable positions)
+- find all call sites of a symbol → code_references (not rg)
+- rename a symbol                 → code_rename (not sed -i across files)
+- check a file for errors         → code_diagnostics (not a hand-written paren/quote checker)
+- learn a symbol's type or docs   → code_hover (not reading the file and eyeballing)
+
+Third-party docs/source (site-packages, node_modules, nix store, system
+headers): code_search_symbol is workspace-scoped and will NOT find them, but
+code_definition/code_hover DO resolve them at a known position. Two-step
+workflow — scan the snippet for the identifier, then hover/define that row:
+  1. code_scan(path, startLine, endLine, pattern="<name>")
+     → returns a row like:  call  <name>  path:line:col
+  2. code_hover / code_definition at that (path, line, column)
+     → signature/docstring, or the full source body (jumps into the third-party tree)
+The row's position is 1-based and reusable as-is. For a name-only lookup (no
+file/position at all), see code_scan's guidelines: resolve the package root,
+rg it, feed the hit into code_definition.
+
+Positions are 1-based throughout. An entry point's printed line:col feeds
+straight into a detail tool's line/column params — no conversion.`;

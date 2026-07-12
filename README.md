@@ -47,6 +47,89 @@ identifier position so the coordinates resolve in `code_hover`/`code_definition`
 
 This makes `code_search_symbol` / `code_outline` / `code_scan` → `code_hover` / `code_definition` / `code_references` a clean round-trip: take the printed `line:col` and pass it straight back as `line` and `column`.
 
+## Two groups: entry points → detail tools
+
+The nine tools split into two groups. **Entry points** are what you call when
+you don't yet have a precise position — they produce one. **Detail tools**
+consume a position (from an entry point, from a diagnostic, or from anywhere a
+symbol's identifier sits) and tell you something about that symbol. Every
+entry point prints 1-based `line:col` that feeds straight into a detail tool's
+`line`/`column` params.
+
+**Entry points** (no precise position yet):
+
+| Tool | Use when |
+|------|----------|
+| `code_search_symbol` | you know a symbol **name** and want to find it across the workspace |
+| `code_outline` | you have a **file** and want its structure (functions/classes/methods + signatures) |
+| `code_tree` | you have a file and want symbols **matching a name pattern** (e.g. a class's members) |
+| `code_scan` | you have a file/range and want **every identifier** with its role (calls, imports, members) |
+
+**Detail tools** (take `path` + 1-based `line` + `column`):
+
+| Tool | Returns |
+|------|---------|
+| `code_definition` | the definition's location + **full source body** |
+| `code_references` | all call sites of the symbol |
+| `code_hover` | docstring / signature / type info |
+| `code_rename` | renames the symbol across the workspace (edits applied to disk) |
+| `code_diagnostics` | errors/warnings the language server reports for a file |
+
+### Prefer `code_*` over grep/read
+
+The language servers index the workspace, so for code tasks these tools are
+faster, semantic, and return positions that round-trip. Common reflexes and
+their `code_*` replacement:
+
+| Task | Old (grep/read/sed) | New (`code_*`) |
+|------|---------------------|----------------|
+| find a symbol by name | `rg` then `read` each hit | `code_search_symbol` |
+| read a function's source body | `grep -n "^def foo\|^function foo"` then `read` | `code_outline` to locate it, then `code_definition` |
+| list every identifier in a snippet | `rg -o '\b\w+\b'` (no roles, no positions you can reuse) | `code_scan` |
+| find all call sites of a symbol | `rg symbolname` | `code_references` |
+| rename a symbol | `sed -i` across files | `code_rename` |
+| check a file for errors | write a paren/quote-matching script | `code_diagnostics` |
+| learn a symbol's type or docs | `read` the file and eyeball | `code_hover` |
+
+The same grouping and table are injected into the agent's system prompt while
+`/code-nav` is enabled, so the LLM is steered toward the `code_*` tools instead
+of its default grep/read reflex.
+
+### Worked example: third-party docs/source via `code_scan`
+
+`code_search_symbol` is workspace-scoped, so it cannot find symbols in
+`site-packages`, `node_modules`, nix store, or system headers. But
+`code_definition`/`code_hover` **do** resolve third-party symbols at a known
+position. `code_scan` bridges the gap: it parses a snippet's syntax (no LSP
+index needed) and returns each identifier with a reusable 1-based position.
+Feed a row straight into a detail tool.
+
+Example — you're reading a function body that calls `cbor2.loads` and want to
+see `loads`'s signature/source, but `cbor2` is in `site-packages`:
+
+```
+1) code_scan(path="app.py", startLine=42, endLine=58, pattern="loads")
+     →
+   Symbols in app.py:42-58 (1-based, reusable as code_* input):
+     call   loads   app.py:44:18
+
+2) code_hover(positions=[{path:"app.py", line:44, column:18}])
+     →
+   app.py:44:18 — loads
+   def loads(data: bytes, /) -> Any: ...
+
+   # or, to read the full source body instead of just the signature:
+   code_definition(positions=[{path:"app.py", line:44, column:18}])
+     → jumps into cbor2/_decoder.py and returns the complete function body
+```
+
+The `pattern` arg narrows the scan to `loads` (a regexp on symbol names);
+without it, `code_scan` returns every identifier in the range. The row's
+`(path, line, column)` is what you pass to the detail tool — no manual
+conversion. For the name-only case (you have a third-party name from docs but
+no file/position at all), see `code_scan`'s guidelines for the
+resolve-package-root → rg → `code_definition` workflow.
+
 ## Why `code_diagnostics` (LSP pull model)
 
 `code_diagnostics` reports the errors/warnings a language server computes for
