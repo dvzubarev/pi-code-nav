@@ -153,7 +153,7 @@ function languageIdFor(absPath: string, lang: Lang): string {
  * Extensions that count as source files for each language, used by
  * findFirstSourceFile to locate a representative file to open.
  */
-const SOURCE_EXTS: Record<Lang, readonly string[]> = {
+export const SOURCE_EXTS: Record<Lang, readonly string[]> = {
     typescript: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"],
     cpp: [".cpp", ".cc", ".cxx", ".c", ".hpp", ".hh", ".hxx", ".h"],
     python: [".py"],

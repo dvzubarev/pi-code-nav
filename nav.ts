@@ -27,7 +27,9 @@
  * `column - 1` before calling LSP. All output positions are 1-based.
  */
 
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import type {
     DocumentSymbol,
     SymbolInformation,
@@ -35,6 +37,7 @@ import type {
     Diagnostic,
 } from "vscode-languageserver-protocol";
 import type { Lang, LspClient } from "./lsp-client";
+import { SOURCE_EXTS } from "./lsp-client";
 import {
     parseSymbols,
     renderSymbolTable,
@@ -68,6 +71,158 @@ export interface Position {
     path: string;
     line: number; // 1-based
     column: number; // 1-based
+}
+
+// ---------------------------------------------------------------------------
+// Project language detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Root-level marker files that signal a language is in use. Checked first
+ * (instant existsSync, no recursion) — the primary signal for languages with
+ * a real build/dependency manifest. Source-extension scan (below) is the
+ * fallback for languages whose projects often have no marker (e.g. a dir of
+ * .sh scripts, or a bare .cpp playground).
+ */
+const ROOT_MARKERS: Partial<Record<Lang, readonly string[]>> = {
+    python: [
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "requirements.txt",
+        "Pipfile",
+        "poetry.lock",
+        "uv.lock",
+        ".python-version",
+    ],
+    typescript: [
+        "package.json",
+        "tsconfig.json",
+        "jsconfig.json",
+        "deno.json",
+    ],
+    cpp: [
+        "CMakeLists.txt",
+        "Makefile",
+        "meson.build",
+        "compile_commands.json",
+        "CMakeCache.txt",
+        "Makefile.am",
+        "configure.ac",
+    ],
+    bash: ["shell.nix"],
+};
+
+/** Directories never descended into during the source-file scan. */
+const SCAN_SKIP = new Set([
+    "node_modules",
+    ".git",
+    ".",
+    "build",
+    "dist",
+    "out",
+    ".next",
+    ".cache",
+    ".direnv",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".ruff_cache",
+    ".pytest_cache",
+    "target",
+]);
+
+/**
+ * Detect which languages are present in a project root, so code_search_symbol
+ * (which iterates languages when the caller didn't pin one) only spawns
+ * servers that can actually find a project here. Without this, a pure-Python
+ * project still spawns typescript-language-server, whose workspace/symbol
+ * throws "No Project." (tsserver loads its project lazily on the first didOpen
+ * of a .ts/.js file; if none exists, it has no project) and aborts the whole
+ * multi-language query — discarding results already collected from python.
+ *
+ * Two tiers, short-circuiting per language as soon as it's confirmed present:
+ *   1. Root-level marker files (existsSync — no I/O recursion).
+ *   2. A bounded breadth-first source-file scan: descend one directory at a
+ *      time, checking every file's extension against SOURCE_EXTS. The scan
+ *      stops as soon as every language is either confirmed or ruled out, and
+ *      is capped at SCAN_MAX_DIRS visited directories so a huge tree (e.g.
+ *      node_modules leaking in) can't make the first symbol query slow.
+ *
+ * Returns the full language set (never empty — falls back to all four so a
+ * mis-detection never silently hides results; the caller still pays the cost
+ * but gets correct answers).
+ */
+const SCAN_MAX_DIRS = 2000;
+/**
+ * Memoized detection results, keyed by resolved absolute root path. A
+ * project's language set is stable for the session (servers are likewise
+ * kept alive for the whole session — see AGENTS.md), so the filesystem scan
+ * runs at most once per workspace. Subsequent code_search_symbol calls hit
+ * the cache and skip both the marker checks and the BFS source scan.
+ */
+const detectedLanguagesCache = new Map<string, Lang[]>();
+export async function detectProjectLanguages(rootPath: string): Promise<Lang[]> {
+    const key = resolve(rootPath);
+    const cached = detectedLanguagesCache.get(key);
+    if (cached) return cached;
+    const result = await detectProjectLanguagesUncached(key);
+    detectedLanguagesCache.set(key, result);
+    return result;
+}
+
+async function detectProjectLanguagesUncached(rootPath: string): Promise<Lang[]> {
+    const found = new Set<Lang>();
+    // Tier 1: root markers.
+    for (const lang of ["cpp", "python", "bash", "typescript"] as Lang[]) {
+        const markers = ROOT_MARKERS[lang];
+        if (markers?.some((m) => existsSync(resolve(rootPath, m)))) {
+            found.add(lang);
+        }
+    }
+    if (found.size === 4) return [...found];
+
+    // Tier 2: bounded breadth-first source-extension scan. Build the set of
+    // languages still unconfirmed so we can stop early once all resolve.
+    const wanted = new Set<Lang>(["cpp", "python", "bash", "typescript"]);
+    for (const l of found) wanted.delete(l);
+    let dirsVisited = 0;
+    let queue: string[] = [rootPath];
+    while (queue.length > 0 && wanted.size > 0 && dirsVisited < SCAN_MAX_DIRS) {
+        const dir = queue.shift()!;
+        dirsVisited++;
+        let entries;
+        try {
+            entries = await readdir(dir, { withFileTypes: true });
+        } catch {
+            continue;
+        }
+        for (const e of entries) {
+            if (e.isDirectory()) {
+                if (SCAN_SKIP.has(e.name)) continue;
+                queue.push(resolve(dir, e.name));
+            } else if (e.isFile() && wanted.size > 0) {
+                const dot = e.name.lastIndexOf(".");
+                if (dot < 0) continue;
+                const ext = e.name.slice(dot).toLowerCase();
+                for (const lang of wanted) {
+                    if (SOURCE_EXTS[lang].includes(ext)) {
+                        found.add(lang);
+                        wanted.delete(lang);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (found.size === 0) return ["cpp", "python", "bash", "typescript"];
+    return [...found];
+}
+
+/** Clear the detection cache. Tests call this between cases so results from
+ * one temp-dir root don't leak into another through the shared module. */
+export function clearDetectedLanguagesCache(): void {
+    detectedLanguagesCache.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -536,7 +691,7 @@ export async function symbol(
 ): Promise<string> {
     const langs: Lang[] = params.language
         ? [params.language as Lang]
-        : ["cpp", "python", "bash", "typescript"];
+        : await detectProjectLanguages(cwd);
     const out: string[] = [];
     // Cache documentSymbol results per file so we don't re-fetch for every hit.
     const docCache = new Map<string, DocumentSymbol[]>();
@@ -557,9 +712,20 @@ export async function symbol(
         // tsserver loads its project lazily on the first didOpen of a file in
         // that project; workspace/symbol throws "No Project." before then.
         // ensureProjectLoaded opens one source file (a no-op for other
-        // servers, which index eagerly on initialize).
-        await client.ensureProjectLoaded();
-        const syms = await client.workspaceSymbol(params.query);
+        // servers, which index eagerly on initialize). If it returns false
+        // (no source file of this language exists in the workspace), skip the
+        // language entirely — calling workspace/symbol on a project-less
+        // tsserver throws "No Project." and would abort the whole query.
+        if (!(await client.ensureProjectLoaded())) continue;
+        let syms: SymbolInformation[];
+        try {
+            syms = await client.workspaceSymbol(params.query);
+        } catch (e) {
+            // One language failing must not discard results already
+            // collected from earlier languages.
+            out.push(`(${lang}: workspace/symbol failed: ${e})`);
+            continue;
+        }
         for (const s of syms) {
             const selStart = await resolveSymbolSelStart(client, s, docCache);
             out.push(`[${lang}] ${renderSymbolInfo(s, selStart)}`);
