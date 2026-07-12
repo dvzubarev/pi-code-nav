@@ -5,7 +5,7 @@
  * at this position," but they cannot answer "I'm looking at a snippet — what
  * are the symbols in it and where do they sit?" That gap matters most for
  * third-party / stdlib / system symbols, where `workspace/symbol`
- * (`code_symbol`) is useless because LSP `workspace/symbol` is
+ * (`code_search_symbol`) is useless because LSP `workspace/symbol` is
  * workspace-scoped by spec (it indexes your project tree, never site-packages
  * or /usr/include). See MAINTAINER.md "The problem the six tools do not solve".
  *

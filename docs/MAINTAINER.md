@@ -140,12 +140,12 @@ enclosing line and does NOT resolve in `hover`/`definition`/`references` on
 servers like ty (only the identifier position does). So:
 - `code_outline` (`documentSymbol`) prints `selectionRange.start` (the
   identifier span), not `range.start`.
-- `code_symbol` (`workspace/symbol`) resolves the identifier via a per-file
+- `code_search_symbol` (`workspace/symbol`) resolves the identifier via a per-file
   `documentSymbol` lookup (cached for the call via `resolveSymbolSelStart`),
   falling back to a source-line scan for the symbol name. `renderSymbolInfo`
   takes an optional resolved `selStart` (0-based LSP coords) and prints it.
 
-If a user reports that `code_symbol`/`code_outline` output doesn't round-trip
+If a user reports that `code_search_symbol`/`code_outline` output doesn't round-trip
 into `code_hover`/`code_definition`/`code_references`, check (a) that
 `renderDocSymbol` still uses `selectionRange` not `range`, and (b) that
 `resolveSymbolSelStart`'s `documentSymbol` lookup is matching (name + range
@@ -368,7 +368,7 @@ keeps the schema simple (one input shape, no XOR validation between a scalar
 triple and an array). (The logic lives in `nav.ts`; both `index.ts` and
 `scripts/nav-cli.mjs` call it.)
 
-`code_outline`, `code_symbol`, and `code_rename` are inherently
+`code_outline`, `code_search_symbol`, and `code_rename` are inherently
 single-symbol-per-call and do **not** take a `positions` array (rename is
 destructive; outline/symbol are already list-shaped).
 
@@ -420,7 +420,7 @@ auto-detection always fall back to pyright even when ty is installed. (This
 was a real bug; the ESM `require` issue is silent.)
 
 Why prefer ty: (1) ty implements `workspace/symbol` — pyright returns `[]` for
-it, which broke the `code_symbol` tool for Python until ty was added; (2) ty
+it, which broke the `code_search_symbol` tool for Python until ty was added; (2) ty
 reports standard LSP `SymbolKind` (12=Function, 5=Class) so `symbolKindName`
 labels correctly, whereas pyright's kinds are non-standard and mislabel. ty
 also uses the legacy `changes` field in `WorkspaceEdit` (not `documentChanges`)
@@ -440,7 +440,7 @@ Sending the right id is what makes tsserver apply JSX rules for `.tsx`.
 **tsserver loads projects lazily.** Unlike ccls/pyright/ty, which index the
 workspace eagerly on `initialize`, tsserver does not load a project until the
 first `didOpen` of a file in that project. `workspace/symbol` (tsserver's
-`navto`) throws `"No Project."` if called before then. `code_symbol` works
+`navto`) throws `"No Project."` if called before then. `code_search_symbol` works
 around this with `LspClient.ensureProjectLoaded()`: if no document has been
 opened yet, it scans the workspace root (skipping `node_modules`, `build`,
 `dist`, `.git`, hidden dirs) for the first source file of the server's

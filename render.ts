@@ -204,11 +204,11 @@ export function renderSymbolInfo(
  * SymbolInformation (from workspace/symbol) only carries `location.range` —
  * the full symbol extent, whose start is column 0 of the enclosing line and
  * does NOT resolve in hover/definition/references on servers like ty. We need
- * the identifier position so code_symbol output is directly reusable as input
+ * the identifier position so code_search_symbol output is directly reusable as input
  * to the other code_* tools.
  *
  * We fetch documentSymbol for the result's file (cached per uri within a
- * single code_symbol call) and find the child whose name matches and whose
+ * single code_search_symbol call) and find the child whose name matches and whose
  * range contains the SymbolInformation's range. If no match, fall back to
  * scanning the source line for the symbol name. Returns 0-based LSP coords.
  */

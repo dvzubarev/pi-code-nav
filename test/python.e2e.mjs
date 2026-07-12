@@ -99,7 +99,7 @@ runOrSkip("code_tree with a bad regexp reports an error", async () => {
     }
 });
 
-runOrSkip("code_symbol 'tempc' finds TempC with its identifier position", async () => {
+runOrSkip("code_search_symbol 'tempc' finds TempC with its identifier position", async () => {
     const ws = await withWorkspace(["second.py"]);
     try {
         // This is the exact workflow from the issue: `symbol tempc`.

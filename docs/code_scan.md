@@ -14,7 +14,7 @@ The six existing tools answer: "given a `(path, line, col)` position, tell me
 about the symbol there." They do **not** answer: "I'm looking at a code snippet
 and I want to know about a symbol in it — what's its position?" That position
 computation is the gap, and it matters most for **third-party / stdlib /
-system** symbols, where `code_symbol` (`workspace/symbol`) is useless because
+system** symbols, where `code_search_symbol` (`workspace/symbol`) is useless because
 LSP `workspace/symbol` is **workspace-scoped by spec** — it indexes files the
 server indexed at startup (your project tree), never `site-packages`, never
 `/usr/include`, never nix store headers. Verified empirically against all
@@ -30,7 +30,7 @@ ccls:     query="sort"        → 0
           query="std::sort"   → 0
 ```
 
-So `code_symbol` cannot serve as the entry point for third-party discovery.
+So `code_search_symbol` cannot serve as the entry point for third-party discovery.
 `code_outline` works on any file (including third-party) but needs a *path*
 the agent doesn't have until it has already done a lookup — chicken-and-egg.
 
@@ -436,9 +436,9 @@ path and line range across a turn.
   transitively-included-symbol scenario. The symbol is already in scope in
   the real file; synthesizing a fresh file to re-resolve it is fragile and
   unnecessary.
-- **No modification to `code_symbol` (workspace/symbol).** It's
+- **No modification to `code_search_symbol` (workspace/symbol).** It's
   workspace-scoped by spec; no client-side fix makes it index third-party.
-  `code_scan` is the third-party entry point; `code_symbol` remains the
+  `code_scan` is the third-party entry point; `code_search_symbol` remains the
   fuzzy in-workspace search tool. They coexist.
 - **No overload of `code_hover`/`code_definition` to accept a name instead of
   a column.** Considered (Option B in the design discussion); rejected because

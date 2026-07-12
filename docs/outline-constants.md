@@ -206,7 +206,7 @@ tools with clear jobs beat one tool with a flag that changes its output shape.
 - The allowlist filter (`pruneDocSymbolTree` / `filterSymbolInfoList`) lives
   in `nav.ts` `outline()`, operating on the `DocumentSymbol[]` tree / flat
   `SymbolInformation[]` **before** rendering — NOT in the shared
-  `renderDocSymbol` / `renderSymbolInfo` (also used by `code_symbol`, which
+  `renderDocSymbol` / `renderSymbolInfo` (also used by `code_search_symbol`, which
   must NOT be filtered).
 - `code_tree`'s `collectTreeRows` prunes the tree to matches+ancestors+subtree
   in pre-order (parents before children), returning rows with depth + a

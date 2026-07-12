@@ -11,7 +11,7 @@ plus one diagnostic reporter:
 | `code_outline`    | LSP `textDocument/documentSymbol`  | File structure: functions, classes, methods, sigs   |
 | `code_definition` | LSP `textDocument/definition`      | Location + full source body of a symbol's definition   |
 | `code_references`| LSP `textDocument/references`      | All references to a symbol                            |
-| `code_symbol`     | LSP `workspace/symbol`             | Ranked symbol search by name, workspace-wide         |
+| `code_search_symbol` | LSP `workspace/symbol`             | Ranked symbol search by name, workspace-wide         |
 | `code_rename`     | LSP `textDocument/rename`          | Rename, edits applied to disk                        |
 | `code_hover`      | LSP `textDocument/hover`           | Docstring / signature / type info                     |
 | `code_scan` | tree-sitter (WASM, in-process)     | Identifier table for a line range — the third-party entry point |
@@ -31,21 +31,21 @@ definition body and pass their coordinates to `code_hover`/
 
 Lines/columns in tool parameters are **1-based** (agent-friendly); the extension
 translates to the 0-based coords LSP uses. **Tool output is also 1-based**
-(`code_symbol`, `code_definition`, `code_references`, `code_outline`,
+(`code_search_symbol`, `code_definition`, `code_references`, `code_outline`,
 `code_scan`, `code_diagnostics` all print 1-based `line:col`), so a
 position printed by one tool can be fed directly into another tool's
 `line`/`column` params without manual conversion.
 
 **Positions point at the symbol's identifier, not the enclosing range.** The
-entry-point tools (`code_outline`, `code_symbol`, `code_scan`) print the
+entry-point tools (`code_outline`, `code_search_symbol`, `code_scan`) print the
 identifier position so the coordinates resolve in `code_hover`/`code_definition`/`code_references`.
 - `code_outline` uses the server's `selectionRange` (the identifier span).
-- `code_symbol` resolves the identifier via `documentSymbol` per file (cached
+- `code_search_symbol` resolves the identifier via `documentSymbol` per file (cached
   for the call), falling back to a source-line scan if unavailable.
 - `code_scan` parses the line range with tree-sitter and prints each
   identifier's absolute 1-based column (tree-sitter is 0-based; we add 1).
 
-This makes `code_symbol` / `code_outline` / `code_scan` → `code_hover` / `code_definition` / `code_references` a clean round-trip: take the printed `line:col` and pass it straight back as `line` and `column`.
+This makes `code_search_symbol` / `code_outline` / `code_scan` → `code_hover` / `code_definition` / `code_references` a clean round-trip: take the printed `line:col` and pass it straight back as `line` and `column`.
 
 ## Why `code_diagnostics` (LSP pull model)
 
@@ -86,7 +86,7 @@ fallback).
 The six LSP tools answer "tell me about the symbol at this position." They
 cannot answer "I'm looking at a snippet — what are the symbols in it and where
 do they sit?" That gap matters most for **third-party / stdlib / system**
-symbols: `code_symbol` (`workspace/symbol`) is useless because LSP
+symbols: `code_search_symbol` (`workspace/symbol`) is useless because LSP
 `workspace/symbol` is **workspace-scoped by spec** — it indexes your project
 tree, never `site-packages` or `/usr/include`.
 
@@ -195,7 +195,7 @@ tsserver which syntax + JSX rules to apply. The server implements
 `workspace/symbol`, hover, definition, references, and rename.
 
 Note: tsserver loads its project lazily on the first `didOpen` of a file in
-that project. `code_symbol` opens one source file first (scanning the
+that project. `code_search_symbol` opens one source file first (scanning the
 workspace root, skipping `node_modules`/`build`/`dist`) so `workspace/symbol`
 does not fail with "No Project.". `code_diagnostics` is unavailable for
 TypeScript — typescript-language-server does not implement the LSP 3.17 pull
@@ -284,5 +284,5 @@ End-to-end smoke-tested against **ty** (auto-detected default) and **pyright**:
 - skips comment/string noise and keywords (no regex false positives) ✓
 - absolute 1-position math round-trips into `code_hover`/`code_definition` ✓
 - third-party discovery: `code_scan` → `code_definition` jumps into
-  nix-store `site-packages` (e.g. `cbor2._decoder.py`) — `code_symbol` cannot ✓
+  nix-store `site-packages` (e.g. `cbor2._decoder.py`) — `code_search_symbol` cannot ✓
 - `code_definition {list_symbols: true}` appends the table per snippet ✓

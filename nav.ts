@@ -521,7 +521,7 @@ export async function references(
 }
 
 // ---------------------------------------------------------------------------
-// 4. code_symbol
+// 4. code_search_symbol
 // ---------------------------------------------------------------------------
 
 export interface SymbolParams {

@@ -101,8 +101,8 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
     ...]` array in the `.pi/lsp.json` merge loop so per-project overrides
     work for it.
 
-11. **`code_symbol` default `langs`** — add the language to the default list
-    so `code_symbol` with no `language` param searches it. If the server
+11. **`code_search_symbol` default `langs`** — add the language to the default list
+    so `code_search_symbol` with no `language` param searches it. If the server
     needs `ensureProjectLoaded` (step 4), the call is already there for all
     languages (no-op otherwise).
 
