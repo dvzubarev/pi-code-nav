@@ -92,7 +92,7 @@ export interface OutlineParams {
  * (e.g. every field of a `registerTool({...})` call or a returned object
  * literal), which floods the outline with non-structural noise. ty/ccls use
  * Field(8) only for real class/struct fields, but even there a field list is
- * rarely what a "compact overview" wants — the agent can `code_scan` a class
+ * rarely what a "compact overview" wants — the agent can `code_tree` a class
  * name to see its members, or read the file. Dropping 7/8 keeps the outline
  * to the callable/type-declaration surface. Constructor is a kind of method.
  * Dropped: Variable(13), Constant(14), Property(7), Field(8), and everything
@@ -111,18 +111,17 @@ const OUTLINE_KEEP_KINDS = new Set([5, 6, 9, 11, 12, 23]);
  * to the parent — they're structural subordinates (a constant's locals, a
  * method's temps), and lifting them would distort the tree.
  */
-function pruneDocSymbolTree(
-	syms: DocumentSymbol[],
-	keep: Set<number>,
-): DocumentSymbol[] {
+function pruneDocSymbolTree(syms: DocumentSymbol[], keep: Set<number>): DocumentSymbol[] {
 	const out: DocumentSymbol[] = [];
 	for (const s of syms) {
 		const kind = (s as unknown as { kind?: number }).kind ?? 0;
 		if (!keep.has(kind)) continue;
 		const children = (s as unknown as { children?: DocumentSymbol[] }).children;
 		if (children && children.length > 0) {
-			(s as unknown as { children?: DocumentSymbol[] }).children =
-				pruneDocSymbolTree(children, keep);
+			(s as unknown as { children?: DocumentSymbol[] }).children = pruneDocSymbolTree(
+				children,
+				keep,
+			);
 		}
 		out.push(s);
 	}
@@ -130,10 +129,7 @@ function pruneDocSymbolTree(
 }
 
 /** Keep only rows whose kind is in `keep` from a flat SymbolInformation[]. */
-function filterSymbolInfoList(
-	syms: SymbolInformation[],
-	keep: Set<number>,
-): SymbolInformation[] {
+function filterSymbolInfoList(syms: SymbolInformation[], keep: Set<number>): SymbolInformation[] {
 	return syms.filter((s) => keep.has(s.kind ?? 0));
 }
 
@@ -171,22 +167,22 @@ export async function outline(
 }
 
 // ---------------------------------------------------------------------------
-// 1b. code_scan
+// 1b. code_tree
 // ---------------------------------------------------------------------------
 
-export interface ScanParams {
+export interface TreeParams {
 	path: string;
 	/** RegExp source tested against each symbol's name. */
 	pattern: string;
 }
 
 /**
- * One row of the scan result: the symbol, its tree depth (for indentation),
+ * One row of the tree result: the symbol, its tree depth (for indentation),
  * whether this node itself matched the pattern, and whether it's a direct
  * child of a class/interface/struct match (in which case it's hovered for a
  * signature even though it isn't itself a match — see DWYM rule below).
  */
-interface ScanRow {
+interface TreeRow {
 	sym: DocumentSymbol;
 	depth: number;
 	matched: boolean;
@@ -199,7 +195,8 @@ const CLASS_LIKE_KINDS = new Set([5, 11, 23]); // Class, Interface, Struct
 
 /**
  * Prune a DocumentSymbol tree to matches, returning a flat list of rows
- * with depth + flags. Semantics (DWYM — do what the agent means):
+ * with depth + flags. Used by code_tree (pattern-driven). Semantics (DWYM —
+ * do what the agent means):
  *
  *   1. A node whose name matches the pattern is a match. The matched node is
  *      always emitted (matched: true).
@@ -209,7 +206,7 @@ const CLASS_LIKE_KINDS = new Set([5, 11, 23]); // Class, Interface, Struct
  *           wants the member list, not the deep locals of every method. Deep
  *           nesting (constants inside methods, properties inside those) is
  *           dropped; the agent can code_hover/code_definition a member to go
- *           deeper. Direct children are hovered for signatures (see scan).
+ *           deeper. Direct children are hovered for signatures (see tree).
  *        b. If the match is anything else (method/function/property/…), emit
  *           NOTHING from its subtree. The agent asked about this specific
  *           symbol; its body locals are noise. Ancestors still provide context.
@@ -220,14 +217,13 @@ const CLASS_LIKE_KINDS = new Set([5, 11, 23]); // Class, Interface, Struct
  * Output is in pre-order (parents before children) so indentation renders the
  * hierarchy correctly.
  */
-function collectScanRows(syms: DocumentSymbol[], re: RegExp): ScanRow[] {
-	const out: ScanRow[] = [];
+function collectTreeRows(syms: DocumentSymbol[], re: RegExp): TreeRow[] {
+	const out: TreeRow[] = [];
 	const walk = (nodes: DocumentSymbol[], depth: number): boolean => {
 		let anyMatchInSubtree = false;
 		for (const s of nodes) {
 			const selfMatch = re.test(s.name);
-			const children =
-				(s as unknown as { children?: DocumentSymbol[] }).children ?? [];
+			const children = (s as unknown as { children?: DocumentSymbol[] }).children ?? [];
 			const kind = (s as unknown as { kind?: number }).kind;
 			if (selfMatch) {
 				// Rule 1: self-match — emit (matched: true).
@@ -268,15 +264,12 @@ function collectScanRows(syms: DocumentSymbol[], re: RegExp): ScanRow[] {
 }
 
 /**
- * Render one scan row as an indented line mirroring `renderDocSymbol`'s shape,
+ * Render one tree row as an indented line mirroring `renderDocSymbol`'s shape,
  * but with an appended signature label (from `detail` or a hover).
  * Format: `<pad><Kind> <name>  <signature>  (line:col)` where the signature
  * is the server `detail` when present, otherwise the provided hover signature.
  */
-function renderScanRow(
-	row: ScanRow,
-	signature: string | undefined,
-): string {
+function renderTreeRow(row: TreeRow, signature: string | undefined): string {
 	const pad = "  ".repeat(row.depth);
 	const sym = row.sym;
 	const kind = (sym as unknown as { kind?: number }).kind;
@@ -287,13 +280,13 @@ function renderScanRow(
 	// free and authoritative. The hover signature fills in where detail is empty
 	// (tsserver/ty). Both never apply simultaneously.
 	const detail = (sym as unknown as { detail?: string | null }).detail;
-	const label = detail ? detail : signature ?? "";
+	const label = detail ? detail : (signature ?? "");
 	const l = label ? `  ${label}` : "";
 	return `${pad}${kindName} ${sym.name}${l}  (${pos})`;
 }
 
-export async function scan(
-	params: ScanParams,
+export async function tree(
+	params: TreeParams,
 	cwd: string,
 	clientOf: ClientProvider,
 ): Promise<string> {
@@ -313,21 +306,23 @@ export async function scan(
 	try {
 		re = new RegExp(params.pattern);
 	} catch (e) {
-		throw new Error(`Invalid regexp /${params.pattern}/: ${e instanceof Error ? e.message : e}`);
+		throw new Error(
+			`Invalid regexp /${params.pattern}/: ${e instanceof Error ? e.message : e}`,
+		);
 	}
 	const client = await clientOf(lang);
 	const syms = await client.documentSymbols(abs, text);
 	if (syms.length === 0) return `(no symbols found in ${params.path})`;
-	// code_scan is pattern-driven and does NOT drop constants/variables — the
+	// code_tree is pattern-driven and does NOT drop constants/variables — the
 	// pattern scopes the candidate set, so noise filtering would only hide
 	// symbols the agent explicitly asked for. Requires a hierarchical tree
 	// (DocumentSymbol[]); the flat SymbolInformation[] case has no nesting to
 	// prune and is reported as unsupported (no current server hits it for
 	// documentSymbol, but we guard rather than crash).
 	if (!("range" in syms[0] && "selectionRange" in syms[0])) {
-		return `(code_scan requires hierarchical documentSymbol; ${params.path} returned flat SymbolInformation)`;
+		return `(code_tree requires hierarchical documentSymbol; ${params.path} returned flat SymbolInformation)`;
 	}
-	const rows = collectScanRows(syms as DocumentSymbol[], re);
+	const rows = collectTreeRows(syms as DocumentSymbol[], re);
 	if (rows.length === 0) {
 		return `(no symbols matching /${params.pattern}/ in ${params.path})`;
 	}
@@ -336,7 +331,7 @@ export async function scan(
 	//   - matched rows (any kind) — the agent asked about these by name;
 	//   - direct children of a class/interface/struct match (DWYM rule 1a) —
 	//     the agent asked about the class, so its member list should carry
-	//     signatures, not just bare names. This is where code_scan earns its
+	//     signatures, not just bare names. This is where code_tree earns its
 	//     "signature-enriched" promise for tsserver/ty (which leave `detail`
 	//     empty); ccls fills `detail` for members, so they're skipped here.
 	// Ancestors kept for context (rule 2) are NOT hovered — they're just the
@@ -363,9 +358,7 @@ export async function scan(
 			if (sig) signatures.set(r.sym, sig);
 		});
 	}
-	const lines = rows.map((r) =>
-		renderScanRow(r, signatures.get(r.sym)),
-	);
+	const lines = rows.map((r) => renderTreeRow(r, signatures.get(r.sym)));
 	return lines.join("\n");
 }
 
@@ -440,7 +433,7 @@ export async function definition(
 				block.push(snippet);
 				block.push("```");
 				// Optional tree-sitter symbol table over the snippet. Reuses the
-				// same parseSymbols helper as code_symbols_in. The snippet's
+				// same parseSymbols helper as code_scan. The snippet's
 				// absolute line range is (sl+1 .. el+1) in 1-based coords (sl/el
 				// are 0-based LSP line numbers). Only run when requested: default
 				// false keeps code_definition's output focused and preserves its
@@ -658,19 +651,33 @@ export async function hover(
 }
 
 // ---------------------------------------------------------------------------
-// 7. code_symbols_in
+// 7. code_scan (tree-sitter identifier scan)
+//
+// This is the tree-sitter-backed identifier scanner (NOT the LSP documentSymbol
+// tree tool — that's code_tree above). It walks a source file's syntax tree
+// and emits every identifier-class node with its absolute 1-based position and
+// syntactic role (type/call/member/import/var). Because it parses syntax
+// directly (not the LSP symbol index), it sees third-party / stdlib / system
+// symbols the LSP workspace/symbol cannot find — that's the whole reason it
+// exists. See docs/code_scan.md.
 // ---------------------------------------------------------------------------
 
-export interface SymbolsInParams {
+export interface ScanParams {
 	path: string;
-	startLine: number; // 1-based
-	endLine: number; // 1-based
+	/** Optional 1-based inclusive start line; omitted → from start of file. */
+	startLine?: number;
+	/** Optional 1-based inclusive end line; omitted → to end of file. */
+	endLine?: number;
+	/** Optional regexp source; when set, only symbols whose name matches are kept. */
+	pattern?: string;
+	/** Which syntactic roles to emit. Default: type,call,member,import (no var). */
 	roles?: string[];
+	/** If true, hover each emitted symbol and append a one-line label. */
 	include_docs?: boolean;
 }
 
-export async function symbolsIn(
-	params: SymbolsInParams,
+export async function scan(
+	params: ScanParams,
 	cwd: string,
 	clientOf: ClientProvider,
 ): Promise<string> {
@@ -683,20 +690,46 @@ export async function symbolsIn(
 	} catch (e) {
 		return `Cannot read ${abs}: ${e}`;
 	}
-	if (params.endLine < params.startLine)
-		return `endLine (${params.endLine}) must be >= startLine (${params.startLine})`;
+	// Resolve the effective line range. Both optional → default to the whole
+	// file (1 .. last line). If only one is given, fill the other end. This
+	// keeps the contract simple: pass just a path for a full-file scan.
+	const lineCount = text.split(/\r?\n/).length;
+	const startLine = params.startLine ?? 1;
+	const endLine = params.endLine ?? lineCount;
+	if (!Number.isInteger(startLine) || startLine < 1)
+		return `startLine (${startLine}) must be a positive integer`;
+	if (!Number.isInteger(endLine) || endLine < 1)
+		return `endLine (${endLine}) must be a positive integer`;
+	if (endLine < startLine) return `endLine (${endLine}) must be >= startLine (${startLine})`;
+	// Optional name-pattern filter. Compiled as a regexp — no substring
+	// fallback, matching code_tree's contract. A bad pattern is a hard error
+	// (isError) so the agent learns the syntax fast.
+	let nameRe: RegExp | undefined;
+	if (params.pattern !== undefined && params.pattern !== "") {
+		try {
+			nameRe = new RegExp(params.pattern);
+		} catch (e) {
+			throw new Error(
+				`Invalid regexp /${params.pattern}/: ${e instanceof Error ? e.message : e}`,
+			);
+		}
+	}
 	let entries;
 	try {
 		entries = await parseSymbols(tsLang, {
 			text,
-			startLine: params.startLine,
-			endLine: params.endLine,
+			startLine,
+			endLine,
 			roles: params.roles as Parameters<typeof parseSymbols>[1]["roles"],
 		});
 	} catch (e) {
-		return `tree-sitter parse failed: ${e}`;
+		return `parse failed: ${e}`;
 	}
-	if (entries === null) return `No tree-sitter grammar for ${params.path}`;
+	if (entries === null) return `No grammar for ${params.path}`;
+	// Apply the optional name filter after parsing. Filtering here (rather than
+	// inside parseSymbols) keeps parseSymbols a pure syntax-walk and lets this
+	// tool own the "pattern scopes the candidate set" contract.
+	if (nameRe) entries = entries.filter((e) => nameRe!.test(e.name));
 	// Optional hover enrichment. One LSP hover call per unique (name, role);
 	// the LSP server for the file's language is spawned lazily here (and only
 	// when include_docs is true — the default path makes zero LSP calls).
@@ -718,7 +751,7 @@ export async function symbolsIn(
 			docs.set(key, first);
 		}
 	}
-	return renderSymbolTable(params.path, params.startLine, params.endLine, entries, docs);
+	return renderSymbolTable(params.path, startLine, endLine, entries, docs);
 }
 
 // ---------------------------------------------------------------------------

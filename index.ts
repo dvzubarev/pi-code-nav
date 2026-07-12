@@ -7,19 +7,19 @@
  * third-party symbol discovery:
  *
  *   code_outline     — file structure (functions, classes, methods, signatures)
- *   code_scan        — pattern-driven symbol scan with signatures (parallel hover)
+ *   code_tree        — pattern-driven pruned DocumentSymbol tree with signatures (parallel hover)
  *   code_definition  — location + full source body of a symbol's definition
  *   code_references  — list of references for a symbol
  *   code_symbol      — ranked workspace-wide symbol lookup by name
  *   code_rename      — rename a symbol, edits applied to disk
  *   code_hover       — hover/documentation for a symbol
- *   code_symbols_in  — tree-sitter symbol table for a line range of a file
+ *   code_scan        — identifier scan of a file or line range (positions + roles)
  *                     (the third-party entry point; see MAINTAINER.md)
  *   code_diagnostics — errors/warnings for a file (LSP pull model, on demand)
  *
  * Servers are scoped by (ctx.cwd, language): one server per language per
  * workspace, spawned lazily on first tool call, shut down on session close.
- * tree-sitter (for code_symbols_in) runs in-process via WASM — no LSP server.
+ * code_scan parses syntax in-process — no LSP server required for its default path.
  *
  * The tools are NOT registered at session_start. Run `/code-nav` to enable
  * them for the current session; `/code-nav:off` disables them and stops all
@@ -133,11 +133,11 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		name: "code_outline",
 		label: "Code Outline",
 		description:
-			"Retrieve the structure of a source file: functions, classes, methods, with signatures and positions. Use for a compact overview before reading full files. Only structural kinds are kept (class, method, function, property/field, constructor, interface, struct) — constants, variables, and other leaf bindings are dropped. No arguments, no hover round-trips: a single documentSymbol request, with the server's `detail` (where populated, e.g. ccls declarations like 'int main()') rendered inline. For signature-enriched, pattern-scoped results use code_scan.",
+			"Retrieve the structure of a source file: functions, classes, methods, with signatures and positions. Use for a compact overview before reading full files. Only structural kinds are kept (class, method, function, property/field, constructor, interface, struct) — constants, variables, and other leaf bindings are dropped. No arguments, no hover round-trips: a single documentSymbol request, with the server's `detail` (where populated, e.g. ccls declarations like 'int main()') rendered inline. For signature-enriched, pattern-scoped results use code_tree.",
 		promptSnippet: "List functions/classes/methods (with signatures) in a file via LSP",
 		promptGuidelines: [
 			"Use code_outline to get a compact structure of a file (functions, classes, methods, signatures) before reading the full file. It takes only a path — no arguments — and keeps only structural kinds (class/method/function/property/field/constructor/interface/struct); constants and variables are dropped.",
-			"When you need signatures for a specific subset of symbols (by name pattern), use code_scan instead — it scopes by a regexp and fetches signatures via parallel LSP hover for rows the server didn't pre-populate.",
+			"When you need signatures for a specific subset of symbols (by name pattern), use code_tree instead — it scopes by a regexp and fetches signatures via parallel LSP hover for rows the server didn't pre-populate. For a full identifier scan (calls, imports, members — not just declarations), use code_scan.",
 		],
 		parameters: Type.Object({
 			path: Type.String({ description: "File path (absolute or relative to cwd)" }),
@@ -153,16 +153,16 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		},
 	});
 
-	// 1b. code_scan
+	// 1b. code_tree (LSP documentSymbol tree, pattern-driven)
 	pi.registerTool({
-		name: "code_scan",
-		label: "Code Scan",
+		name: "code_tree",
+		label: "Code Tree",
 		description:
-			"Scan a source file for symbols whose name matches a regexp and return each match with its position and signature. Unlike code_outline (which is a bloat-free structural overview), code_scan is pattern-driven: pass a regexp matched against symbol names. DWYM: if the match is a class/interface/struct, it prints ONLY its direct children (methods/properties/fields) — each hovered for a signature when the server's `detail` is empty (tsserver/ty) — so you get the member list with signatures, not the deep locals of every method; if the match is anything else (method/function/property/…), it prints nothing from the subtree (just the matched node plus its ancestors for context). Signatures come from the server's `detail` where populated (ccls), or from parallel LSP hover calls for rows where detail is empty (tsserver/ty). Lines/columns are 1-based and reusable as input to code_hover/code_definition/code_references. No constant/variable filtering — the pattern scopes the candidate set.",
+			"Return a pruned view of a source file's DocumentSymbol tree, filtered to symbols whose name matches a regexp. Each row carries its kind, position, and signature. Unlike code_outline (a bloat-free structural overview of the whole file), code_tree is pattern-driven: pass a regexp matched against symbol names. DWYM: if the match is a class/interface/struct, it prints ONLY its direct children (methods/properties/fields) — each hovered for a signature when the server's `detail` is empty (tsserver/ty) — so you get the member list with signatures, not the deep locals of every method; if the match is anything else (method/function/property/…), it prints nothing from the subtree (just the matched node plus its ancestors for context). Signatures come from the server's `detail` where populated (ccls), or from parallel LSP hover calls for rows where detail is empty (tsserver/ty). Lines/columns are 1-based and reusable as input to code_hover/code_definition/code_references. No constant/variable filtering — the pattern scopes the candidate set.",
 		promptGuidelines: [
-			"Use code_scan to find symbols by name pattern in a file and get their signatures in one call — e.g. scan a class name to see it and all its members with signatures, or scan `^get_|^set_` to list accessors. The pattern is a regexp (JavaScript) tested against the symbol name.",
+			"Use code_tree to find symbols by name pattern in a file and get their signatures in one call — e.g. scan a class name to see it and all its members with signatures, or scan `^get_|^set_` to list accessors. The pattern is a regexp (JavaScript) tested against the symbol name.",
 			"DWYM output: a class/interface/struct match prints its DIRECT children only (methods/properties/fields), each enriched with a hover signature when the server leaves `detail` empty; a non-class match prints NO subtree (just the node + its ancestors for hierarchy context). Siblings with no match in their subtree are pruned. Use code_hover/code_definition on a member's position to go deeper.",
-			"Prefer code_outline for a full-file structural overview (one round-trip, no hovers). Use code_scan when you want a targeted, signature-enriched view of specific symbols.",
+			"Prefer code_outline for a full-file structural overview (one round-trip, no hovers). Use code_tree when you want a targeted, signature-enriched view of specific symbols by name. For a full identifier scan (including calls, imports, members — not just declarations) use code_scan.",
 		],
 		parameters: Type.Object({
 			path: Type.String({ description: "File path (absolute or relative to cwd)" }),
@@ -174,7 +174,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			try {
 				return text_result(
-					await nav.scan(params, ctx.cwd, (lang) => state.pool.client(lang)),
+					await nav.tree(params, ctx.cwd, (lang) => state.pool.client(lang)),
 				);
 			} catch (e) {
 				return err(e instanceof Error ? e.message : String(e));
@@ -189,7 +189,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		description:
 			"Find the definition of the symbol(s) at the given (path, line, column) position(s). Lines/columns are 1-based. Pass one or more positions to look up (batching multiple in one call is cheaper than N separate calls). Returns each definition's location and the FULL source body of the definition (the complete function/class/method body, not just the identifier) — resolved via DocumentSymbol when the server supports it, falling back to the definition range otherwise. Accepts absolute paths, including third-party locations (nix store, site-packages, node_modules, system headers). Set list_symbols=true to also append a tree-sitter symbol table for each returned body (so you can discover third-party/stdlib symbols used inside the body and pass their coordinates to code_hover/code_definition/code_references).",
 		promptGuidelines: [
-			"Use code_definition with 1-based line and column to jump to a symbol's definition and read its full source body. Pass an array of positions to batch several lookups in one call. It accepts absolute paths, so positions in third-party trees (nix store, site-packages, node_modules, system headers) work. Set list_symbols=true to also list the symbols used inside each returned body (useful for discovering third-party/stdlib APIs in the body); pass a symbol-table row straight into code_hover/code_definition. For third-party symbols you only have a NAME for, see code_symbols_in's guidelines for the rg workflow.",
+			"Use code_definition with 1-based line and column to jump to a symbol's definition and read its full source body. Pass an array of positions to batch several lookups in one call. It accepts absolute paths, so positions in third-party trees (nix store, site-packages, node_modules, system headers) work. Set list_symbols=true to also list the symbols used inside each returned body (useful for discovering third-party/stdlib APIs in the body); pass a symbol-table row straight into code_hover/code_definition. For third-party symbols you only have a NAME for, see code_scan's guidelines for the rg workflow.",
 		],
 		parameters: Type.Object({
 			positions: Type.Array(
@@ -208,7 +208,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 			list_symbols: Type.Optional(
 				Type.Boolean({
 					description:
-						'If true, append a tree-sitter symbol table for each returned body (default: false). The table lists identifiers with their absolute 1-based position and syntactic role (type/call/member/import), reusable as input to code_hover/code_definition/code_references. Local-variable rows (var) are omitted by default to keep the output focused on external APIs; use code_symbols_in with roles including "var" if you need locals.',
+						'If true, append a symbol table for each returned body (default: false). The table lists identifiers with their absolute 1-based position and syntactic role (type/call/member/import), reusable as input to code_hover/code_definition/code_references. Local-variable rows (var) are omitted by default to keep the output focused on external APIs; use code_scan with roles including "var" if you need locals.',
 				}),
 			),
 		}),
@@ -262,9 +262,9 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		name: "code_symbol",
 		label: "Code Symbol Lookup",
 		description:
-			"Workspace-wide symbol search by name. Given a query string, return a ranked list of matching symbols (kind, name, file:line:col). Scoped to the workspace root only — cannot find symbols in third-party trees (site-packages, nix store, node_modules, system headers) even though the LSP server resolves them; see code_symbols_in's guidelines for the third-party workflow (resolve package root, rg, then code_definition/code_hover).",
+			"Workspace-wide symbol search by name. Given a query string, return a ranked list of matching symbols (kind, name, file:line:col). Scoped to the workspace root only — cannot find symbols in third-party trees (site-packages, nix store, node_modules, system headers) even though the LSP server resolves them; see code_scan's guidelines for the third-party workflow (resolve package root, rg, then code_definition/code_hover).",
 		promptGuidelines: [
-			"Use code_symbol to find symbols by name across the workspace when you don't know which file they live in. It is workspace-scoped only: it will NOT find symbols in third-party trees (site-packages, nix store, node_modules, system headers) even though code_definition/code_hover DO resolve such symbols at a known position. For a third-party symbol you only have a NAME for (from docs or an error), see code_symbols_in's guidelines for the full workflow (resolve the package root via the project env, rg the root, then feed the hit into code_definition) including a best-effort synthesis fallback.",
+			"Use code_symbol to find symbols by name across the workspace when you don't know which file they live in. It is workspace-scoped only: it will NOT find symbols in third-party trees (site-packages, nix store, node_modules, system headers) even though code_definition/code_hover DO resolve such symbols at a known position. For a third-party symbol you only have a NAME for (from docs or an error), see code_scan's guidelines for the full workflow (resolve the package root via the project env, rg the root, then feed the hit into code_definition) including a best-effort synthesis fallback.",
 		],
 		parameters: Type.Object({
 			query: Type.String({ description: "Symbol name (or prefix) to search for" }),
@@ -316,7 +316,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		description:
 			"Retrieve hover/documentation for the symbol(s) at the given (path, line, column) position(s). Lines/columns are 1-based. Pass one or more positions to look up (batching multiple in one call is cheaper than N separate calls). Returns docstring, signature, and type info when available.",
 		promptGuidelines: [
-			"Use code_hover with 1-based line and column to read a symbol's documentation, docstring, or type signature. Pass multiple positions to batch several lookups in one call. It accepts absolute paths, so positions in third-party trees (nix store, site-packages, node_modules, system headers) work. For third-party symbols you only have a NAME for, see code_symbols_in's guidelines for the rg workflow.",
+			"Use code_hover with 1-based line and column to read a symbol's documentation, docstring, or type signature. Pass multiple positions to batch several lookups in one call. It accepts absolute paths, so positions in third-party trees (nix store, site-packages, node_modules, system headers) work. For third-party symbols you only have a NAME for, see code_scan's guidelines for the rg workflow.",
 		],
 		parameters: Type.Object({
 			positions: Type.Array(
@@ -340,28 +340,42 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		},
 	});
 
-	// 7. code_symbols_in
+	// 7. code_scan (identifier scan of a file or line range)
 	pi.registerTool({
-		name: "code_symbols_in",
-		label: "Code Symbols In Range",
+		name: "code_scan",
+		label: "Code Scan",
 		description:
-			"List every identifier in a line range of a file with its absolute 1-based (path, line, column) and syntactic role (type/call/member/import/var), parsed by tree-sitter. The output is a table whose rows can be passed directly as (path, line, column) into code_hover / code_definition / code_references. This is the entry point for discovering third-party, stdlib, or system symbols (which code_symbol/workspace-symbol cannot find, since workspace/symbol is workspace-scoped). Set include_docs=true to also hover each symbol and append a one-line label. For third-party symbols you only have a NAME for (from docs or an error) and have no position, see the workflow in the guidelines below (rg over the resolved package root, then feed the hit into code_definition).",
-		promptSnippet: "List identifiers (with positions + roles) in a file range via tree-sitter",
+			"Scan a source file for identifiers — type names, calls, member accesses, imports — and return each with its absolute 1-based (path, line, column) and syntactic role. Optionally filter by a name pattern and/or limit to a line range. The output is a table whose rows can be passed directly as (path, line, column) into code_hover / code_definition / code_references. This is the entry point for discovering third-party, stdlib, or system symbols (which code_symbol/workspace-symbol cannot find, since workspace/symbol is workspace-scoped — code_scan parses syntax directly, so it sees every identifier the file uses, not just declarations it indexes). Set include_docs=true to also hover each symbol and append a one-line label. For third-party symbols you only have a NAME for (from docs or an error) and have no position, see the workflow in the guidelines below (rg over the resolved package root, then feed the hit into code_definition).",
+		promptSnippet:
+			"List identifiers (with positions + roles) in a file or range; optionally filter by name pattern",
 		promptGuidelines: [
-			"Use code_symbols_in to discover identifiers in a code snippet or line range when you have a file path but not a precise position — e.g. after code_definition returns a body containing a third-party/stdlib symbol you want to learn about. Read the table, pick a row's (path, line, column), and pass it to code_hover / code_definition / code_references.",
-			"The default path (include_docs=false) makes no LSP calls — it is a pure tree-sitter parse, fast and cheap. Use it first; only set include_docs=true when you need hover labels and are willing to pay the LSP round-trips.",
+			"Use code_scan to discover identifiers in a file or line range when you have a file path but not a precise position — e.g. after code_definition returns a body containing a third-party/stdlib symbol you want to learn about. Read the table, pick a row's (path, line, column), and pass it to code_hover / code_definition / code_references.",
+			"Pass only `path` to scan the whole file. Add `pattern` (a regexp tested against symbol names) to narrow to e.g. a specific imported module or a method called in a body. Add `startLine`/`endLine` (1-based inclusive) to limit the range — useful for large files where a whole-file scan would be noisy.",
+			"The default path (include_docs=false) makes no LSP calls — it is a fast, cheap syntax parse. Use it first; only set include_docs=true when you need hover labels and are willing to pay the LSP round-trips (one hover per unique symbol).",
 			'Roles: type (a type name), call (a function/method being called), member (a field/attribute access like .push_back / .encode), import (a name brought into scope by an import — module names and imported symbols, the primary entry points for third-party discovery), var (a local variable, parameter, or assignment target — hoverable but rarely worth learning about). By default `var` is omitted (noisy locals); pass roles including "var" to include them. The table dedupes by (name, role) and keeps the first occurrence; pass a tighter startLine/endLine to reach a later occurrence.',
-			"Third-party symbol from a NAME only (no position): code_symbol is workspace-scoped and will NOT find it, but code_definition/code_hover DO resolve third-party at a known position. The workflow is: (1) resolve the package root via the project env — python: `python -c \"import cbor2; print(cbor2.__file__)\"`, node: `node -e \"console.log(require.resolve('typescript'))\"`, C++ stdlib: `g++ -E -Wp,-v - </dev/null` (prints the include search list), C++ project deps: the -I flags from compile_commands.json; (2) `rg -n --column <name> <root>` — the output is `line:column:content`, and on ASCII lines the 1-based line and column match what code_definition/code_hover expect, so pass the hit straight in as (path, line, column); (3) call code_definition/code_hover on that position (they accept absolute paths, including nix store / site-packages / node_modules / system headers). Do NOT rg the whole /nix/store (millions of entries, many versions) — always scope to one resolved package root.",
-			"If rg finds nothing and you have a NAME plus enough context to write a one-line use, you may try synthesis as a best-effort last resort: write a temp file inside the cwd containing a single line that names the symbol in-scope (e.g. `diagnosticsSupport` as a bare reference, or `import { Foo } from \"bar\"; Foo` when the docs give the module), open it on the server by calling code_hover/code_definition at that line, then delete the temp file. This works only when your one-liner resolves (the docs gave you the module/qualifier); it fails (returns \"no definition\"/unresolved) when it can't — then give up. It is a fallback for the name-from-docs case where rg failed, not a primary path.",
+			'Third-party symbol from a NAME only (no position): code_symbol is workspace-scoped and will NOT find it, but code_definition/code_hover DO resolve third-party at a known position. The workflow is: (1) resolve the package root via the project env — python: `python -c "import cbor2; print(cbor2.__file__)"`, node: `node -e "console.log(require.resolve(\'typescript\'))"`, C++ stdlib: `g++ -E -Wp,-v - </dev/null` (prints the include search list), C++ project deps: the -I flags from compile_commands.json; (2) `rg -n --column <name> <root>` — the output is `line:column:content`, and on ASCII lines the 1-based line and column match what code_definition/code_hover expect, so pass the hit straight in as (path, line, column); (3) call code_definition/code_hover on that position (they accept absolute paths, including nix store / site-packages / node_modules / system headers). Do NOT rg the whole /nix/store (millions of entries, many versions) — always scope to one resolved package root.',
+			'If rg finds nothing and you have a NAME plus enough context to write a one-line use, you may try synthesis as a best-effort last resort: write a temp file inside the cwd containing a single line that names the symbol in-scope (e.g. `diagnosticsSupport` as a bare reference, or `import { Foo } from "bar"; Foo` when the docs give the module), open it on the server by calling code_hover/code_definition at that line, then delete the temp file. This works only when your one-liner resolves (the docs gave you the module/qualifier); it fails (returns "no definition"/unresolved) when it can\'t — then give up. It is a fallback for the name-from-docs case where rg failed, not a primary path.',
 		],
 		parameters: Type.Object({
 			path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-			startLine: Type.Number({
-				description: "1-based inclusive start line of the range to scan",
-			}),
-			endLine: Type.Number({
-				description: "1-based inclusive end line of the range to scan",
-			}),
+			startLine: Type.Optional(
+				Type.Number({
+					description:
+						"1-based inclusive start line of the range to scan. Omit to scan from the start of the file.",
+				}),
+			),
+			endLine: Type.Optional(
+				Type.Number({
+					description:
+						"1-based inclusive end line of the range to scan. Omit to scan to the end of the file.",
+				}),
+			),
+			pattern: Type.Optional(
+				Type.String({
+					description:
+						"Optional JavaScript regexp source (e.g. 'Service', '^get_|^set_', 'id$') tested against each symbol's name. When set, only symbols whose name matches are kept. An invalid regexp is a hard error — escape/anchor as needed.",
+				}),
+			),
 			roles: Type.Optional(
 				Type.Array(
 					StringEnum(["type", "call", "member", "import", "var"] as const, {
@@ -380,7 +394,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			try {
 				return text_result(
-					await nav.symbolsIn(params, ctx.cwd, (lang) => state.pool.client(lang)),
+					await nav.scan(params, ctx.cwd, (lang) => state.pool.client(lang)),
 				);
 			} catch (e) {
 				return err(e instanceof Error ? e.message : String(e));
@@ -464,7 +478,7 @@ export default function codeNavExtension(pi: ExtensionAPI) {
 		registerTools(pi, s);
 		s.pool.setEnabled(true);
 		ctx.ui.notify(
-			"code-nav enabled — tools: code_outline, code_scan, code_definition, code_references, code_symbol, code_rename, code_hover, code_symbols_in, code_diagnostics",
+			"code-nav enabled — tools: code_outline, code_tree, code_definition, code_references, code_symbol, code_rename, code_hover, code_scan, code_diagnostics",
 			"info",
 		);
 	}
@@ -483,7 +497,7 @@ export default function codeNavExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("code-nav", {
 		description:
-			"Enable LSP-backed code navigation tools (code_outline, code_scan, code_definition, code_references, code_symbol, code_rename, code_hover, code_symbols_in, code_diagnostics)",
+			"Enable LSP-backed code navigation tools (code_outline, code_tree, code_definition, code_references, code_symbol, code_rename, code_hover, code_scan, code_diagnostics)",
 		handler: async (_args, ctx) => {
 			await enable(ctx);
 		},

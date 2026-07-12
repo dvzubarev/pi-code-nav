@@ -5,8 +5,8 @@ pi extension providing LSP-backed code navigation tools for the LLM.
 ## What this is
 
 Nine tools the LLM can call after `/code-nav` enables them: `code_outline`,
-`code_scan`, `code_definition`, `code_references`, `code_symbol`,
-`code_rename`, `code_hover`, `code_symbols_in` (tree-sitter),
+`code_tree`, `code_definition`, `code_references`, `code_symbol`,
+`code_rename`, `code_hover`, `code_scan` (tree-sitter),
 `code_diagnostics` (LSP pull-first, push-fallback). Seven are backed by real
 language servers (ccls/ty/pyright/bash-language-server/typescript-language-
 server), one by in-process WASM tree-sitter, one is a diagnostic reporter.
@@ -27,8 +27,8 @@ layer.
   `applyWorkspaceEdit`, `langForFile`, `EXT_LANG`. Shared verbatim by
   `index.ts`, the CLI harness, and the e2e tests — this is what killed the
   old "keep nav-cli.mjs in sync with index.ts by hand" landmine.
-- `nav.ts` — the nine tool implementations (`outline`, `scan`, `definition`,
-  `references`, `symbol`, `rename`, `hover`, `symbolsIn`, `diagnostics`) as
+- `nav.ts` — the nine tool implementations (`outline`, `tree`, `definition`,
+  `references`, `symbol`, `rename`, `hover`, `scan`, `diagnostics`) as
   plain async functions `(params, cwd, clientOf) => text`. No pi dependency;
   takes a `ClientProvider` (`(lang) => LspClient`) instead of `ServerPool`.
   `index.ts`'s `registerTools` and `scripts/nav-cli.mjs` both call these, so
@@ -45,7 +45,7 @@ layer.
   without pi/LLM. Thin argv-parser around `nav.ts` (no duplicated logic).
 - `docs/MAINTAINER.md` — the "why" behind every decision and the landmines.
   **Read before touching `index.ts` or `lsp-client.ts`.**
-- `docs/code_symbols_in.md` — deep-dive on the tree-sitter tool.
+- `docs/code_scan.md` — deep-dive on the tree-sitter tool.
 
 ## Critical landmines (do NOT "fix" these)
 

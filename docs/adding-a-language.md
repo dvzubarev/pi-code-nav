@@ -67,7 +67,7 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
    - **`member`** — the right of `.`, and declared field/method/property
      names (class fields, interface members, enum members, attributes).
    - **`import`** — names brought into scope by import/Export constructs.
-     This role is the **whole reason `code_symbols_in` exists** (third-party
+     This role is the **whole reason `code_scan` exists** (third-party
      discovery); get it right. Separated from `var` so the default "no var"
      filter keeps imports.
    - **`call`** — a name in call position (`call_expression`'s function
@@ -106,7 +106,7 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
     needs `ensureProjectLoaded` (step 4), the call is already there for all
     languages (no-op otherwise).
 
-12. **`code_symbols_in` `include_docs`** — if `TsLang` is a superset (step
+12. **`code_scan` `include_docs`** — if `TsLang` is a superset (step
     7), the LSP client is spawned via `tsLangToLspLang(tsLang)`, **not** a
     bare `tsLang as Lang` cast. That cast is only valid when `TsLang == Lang`.
 
@@ -154,7 +154,7 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
     relationship paragraph, the dependency note's grammar list, and add a
     server-specific subsection if the server has quirks (lazy project load,
     no pull diagnostics, non-standard SymbolKind, etc.). Update the
-    node-types table in `docs/code_symbols_in.md` with the new language's
+    node-types table in `docs/code_scan.md` with the new language's
     row.
 
 ## Final checks
@@ -167,9 +167,9 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
   against the real server via `nav.*`. Skip gracefully when the server isn't on
   PATH (see `serverAvailable` in `test/e2e-helpers.mjs`).
 - End-to-end (manual): run `node scripts/nav-cli.mjs` against a real file
-  of the new language for `outline`, `symbol`, `symbols-in --docs`,
+  of the new language for `outline`, `symbol`, `scan --docs`,
   `definition`, `references`, `hover`. The last three are the round-trip
-  that `code_symbols_in` positions must satisfy.
+  that `code_scan` positions must satisfy.
 
 ## Appendix: probing a tree-sitter grammar
 

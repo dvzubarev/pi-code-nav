@@ -2,7 +2,7 @@
 //
 // Asserts the role classification rules from tree-sitter-parse.ts
 // (classifyRole, lang === "python") and the node-types table in
-// code_symbols_in.md:
+// code_scan.md:
 //   - `type` annotation node (outermost only) → role "type"
 //   - `identifier` under `type` → skipped (covered by the type node)
 //   - `identifier` under `aliased_import` / `dotted_name`+import → "import"

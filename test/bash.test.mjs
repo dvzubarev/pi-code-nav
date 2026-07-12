@@ -1,7 +1,7 @@
 // Bash parseSymbols behavior.
 //
 // Bash is the deliberately-conservative language: the design doc
-// (code_symbols_in.md "Node types") finalized:
+// (code_scan.md "Node types") finalized:
 //   - `variable_name` → "var"        (e.g. $HOME, ${X})
 //   - `word` child of `command_name` → "call"   (the command being invoked)
 //   - everything else (bare `word` arguments, `string`, `subscript` indices)

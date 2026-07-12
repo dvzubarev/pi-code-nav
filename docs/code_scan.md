@@ -1,7 +1,7 @@
-# DESIGN (implemented): `code_symbols_in` — third-party symbol discovery via tree-sitter
+# DESIGN (implemented): `code_scan` — third-party symbol discovery via tree-sitter
 
 > This section records a design that was worked out in full and **has been
-> implemented** (`tree-sitter-parse.ts` + the `code_symbols_in` tool in
+> implemented** (`tree-sitter-parse.ts` + the `code_scan` tool in
 > `index.ts`, plus `list_symbols` integration into `code_definition`). It
 > exists because the user asked a real question the original six tools cannot
 > answer, and the path to the answer went through several dead ends that
@@ -111,14 +111,14 @@ existing six tools, which already work on third-party at known positions.
      advertisement" trap that already plagues `code_diagnostics` (see
      `lsp-client.ts` — pyright answers `textDocument/diagnostic` without
      advertising `diagnosticProvider`, bash rejects it with a JSON-RPC error).
-     Building `code_symbols_in` on it would give bash no implementation and
+     Building `code_scan` on it would give bash no implementation and
      put C++ at the mercy of ccls's token-type legend.
   2. **Breaks the zero-LSP-call default path.** `semanticTokens/range` is an
      LSP request: it requires `didOpen`, requires the server to have
      analyzed the document (ccls indexes the whole project on startup —
      *seconds to minutes for large C++*), and costs a round-trip. The
      `include_docs=false` default making **zero LSP calls** is a load-bearing
-     property — it is what makes `code_symbols_in` a cheap, always-available
+     property — it is what makes `code_scan` a cheap, always-available
      discovery tool rather than a seventh server-dependent one. tree-sitter
      runs in-process with no server, no `didOpen`, no indexing. (If you ever
      forget *why* the default is server-free, re-read the `include_docs`
@@ -127,7 +127,7 @@ existing six tools, which already work on third-party at known positions.
      token types are *semantic categories* (`namespace`, `type`, `class`,
      `function`, `method`, `variable`, `property`, …) with *modifiers*
      (`declaration`, `definition`, `readonly`, `static`, …). They say what a
-     name **is**, not how it is **used at this occurrence**. `code_symbols_in`'s
+     name **is**, not how it is **used at this occurrence**. `code_scan`'s
      role column (`type` / `call` / `member` / `import` / `var`) is
      occurrence-based and is not expressible in the standard legend:
        - **No `call` type or modifier.** `std::sort` is `function` whether
@@ -159,18 +159,21 @@ existing six tools, which already work on third-party at known positions.
   enrichment layer on top of tree-sitter, gated on `supports()` and server
   availability (like `include_docs` gates hover) — never a replacement.
 
-## The design: `code_symbols_in(path, startLine, endLine, roles?, include_docs?)`
+## The design: `code_scan(path, startLine?, endLine?, pattern?, roles?, include_docs?)`
 
-A **seventh tool** that, given a real file and a line range, parses the
-range with **tree-sitter** and returns a table of every identifier in it
-with its **absolute** 1-based `(path, line, col)` and its syntactic **role**
-(`type` / `call` / `member` / `import` / `var`). The agent reads a row and
-passes its coordinates straight into the existing `code_hover` /
-`code_definition` / `code_references` / `code_outline` — which already work
-on third-party at known positions.
+A **seventh tool** that, given a real file (and optionally a line range or
+a name pattern), parses the range with **tree-sitter** and returns a table of
+every identifier in it with its **absolute** 1-based `(path, line, col)` and
+its syntactic **role** (`type` / `call` / `member` / `import` / `var`). The
+agent reads a row and passes its coordinates straight into the existing
+`code_hover` / `code_definition` / `code_references` / `code_outline` — which
+already work on third-party at known positions. With no line range, the
+whole file is scanned. With `pattern` (a regexp), only symbols whose name
+matches are kept — useful for narrowing a large file to one imported module
+or one called method.
 
 ```
-code_symbols_in(path="widget.cpp", startLine=43, endLine=49)
+code_scan(path="widget.cpp", startLine=43, endLine=49)
   →
 Symbols in widget.cpp:43-49 (1-based, reusable as code_* input):
   type   vector      widget.cpp:43:11
@@ -251,7 +254,7 @@ unacceptable, since imports are the third-party discovery entry point. The
 
 The same default applies to `code_definition`'s `list_symbols` integration
 (snippet symbol tables omit `var`), so the two stay consistent. The agent
-can always use `code_symbols_in` directly with `roles` if it needs locals.
+can always use `code_scan` directly with `roles` if it needs locals.
 
 ## Why tree-sitter and not regex (the decisive evidence)
 
@@ -416,13 +419,13 @@ Notes for the maintainer:
 appends the symbol table. Default `false` keeps `code_definition`'s output
 focused and preserves its contract (the "do not break round-trip" guarantee
 in the README). The scan reuses the exact same `parseSymbols` helper as
-`code_symbols_in`, so the two share one implementation. The snippet's
+`code_scan`, so the two share one implementation. The snippet's
 absolute line range is computed from the `resolveDefBodyRange` result
 (`sl+1 .. el+1` in 1-based coords, where sl/el are the 0-based LSP line
 numbers), and the same `renderSymbolTable` formats the output.
 
-This integration was added alongside `code_symbols_in` (not deferred) because
-the two-step `code_definition` → `code_symbols_in` flow was the exact driving
+This integration was added alongside `code_scan` (not deferred) because
+the two-step `code_definition` → `code_scan` flow was the exact driving
 scenario (agent reads a definition snippet, sees a third-party symbol, wants
 its API). Doing it in one call removes the agent's need to hold the snippet's
 path and line range across a turn.
@@ -435,12 +438,12 @@ path and line range across a turn.
   unnecessary.
 - **No modification to `code_symbol` (workspace/symbol).** It's
   workspace-scoped by spec; no client-side fix makes it index third-party.
-  `code_symbols_in` is the third-party entry point; `code_symbol` remains the
+  `code_scan` is the third-party entry point; `code_symbol` remains the
   fuzzy in-workspace search tool. They coexist.
 - **No overload of `code_hover`/`code_definition` to accept a name instead of
   a column.** Considered (Option B in the design discussion); rejected because
   it forks the coordinate contract the MAINTAINER doc warns about, and because
-  `code_symbols_in` returns the column for the agent to pass verbatim, so the
+  `code_scan` returns the column for the agent to pass verbatim, so the
   existing tools stay position-only and clean.
 - **No hover in the default path.** Hover is opt-in (`include_docs`). The
   symbol table is correct without it (tree-sitter, not regex). Default = zero
@@ -450,9 +453,9 @@ path and line range across a turn.
 
 ## Testing this
 
-- A `symbols-in <file> <startLine:1> <endLine:1> [--docs] [--roles type,call,...]`
-  subcommand in `scripts/nav-cli.mjs` calls the same `nav.symbolsIn` the
-  `code_symbols_in` tool uses (no separate formatting to keep in sync).
+- A `scan <file> [<startLine:1-based> <endLine:1-based>] [--pattern <re>] [--docs] [--roles type,call,...]`
+  subcommand in `scripts/nav-cli.mjs` calls the same `nav.scan` the
+  `code_scan` tool uses (no separate formatting to keep in sync).
   `--roles` passes through to the tool's `roles` parameter (default:
   `type,call,member,import` — omit `var`).
   `definition ... --list-symbols` calls `nav.definition` with
@@ -466,7 +469,7 @@ path and line range across a turn.
 - Verify the absolute-position math: a symbol at snippet-relative `(row=2,
   col=10)` with `startLine=43` must print `path:45:11` (1-based). Off-by-one
   here silently breaks the round-trip into `code_hover`/`code_definition`.
-  Verified: `symbols-in /tmp/test_offset.py 3 5` correctly prints
+  Verified: `scan /tmp/test_offset.py 3 5` correctly prints
   `process` at `3:5`, `cbor2.loads` at `4:14`/`4:20`, and those positions
   round-trip into `code_hover` and `code_definition` (which jumps into the
   nix-store `site-packages/cbor2/_decoder.py`).

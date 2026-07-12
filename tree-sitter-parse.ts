@@ -1,5 +1,5 @@
 /**
- * tree-sitter-based symbol discovery for code_symbols_in.
+ * tree-sitter-based symbol discovery for code_scan.
  *
  * Why this module exists: the six LSP tools answer "tell me about the symbol
  * at this position," but they cannot answer "I'm looking at a snippet — what
@@ -124,7 +124,7 @@ export function tsLangForFile(path: string): TsLang | null {
  * tree-sitter grammar but are served by the single `typescript` LSP server
  * (typescript-language-server), which distinguishes .ts/.tsx via the
  * `languageId` it gets in didOpen. Callers that need an LSP client for a
- * `tsLang` (e.g. code_symbols_in's `include_docs` enrichment) MUST go through
+ * `tsLang` (e.g. code_scan's `include_docs` enrichment) MUST go through
  * this helper rather than casting `tsLang as Lang` — that cast is only valid
  * for python/cpp/bash/typescript and would break for `tsx`.
  */
@@ -140,7 +140,7 @@ export function tsLangToLspLang(lang: TsLang): LspLang {
 // web-tree-sitter's Parser.init() must run once before any Parser is
 // constructed; Language.load loads a grammar WASM into a Language object. We
 // cache both: the init promise and the per-language Language so repeated
-// code_symbols_in calls pay zero startup cost after the first.
+// code_scan calls pay zero startup cost after the first.
 // ---------------------------------------------------------------------------
 
 let initPromise: Promise<void> | null = null;
@@ -344,7 +344,7 @@ function classifyRole(node: TSNode, lang: TsLang): SymbolRole | null {
 		if (t === "identifier") {
 			// Imports — the names brought into scope. The TS grammar puts every
 			// imported/aliased identifier under an import/export construct; these
-			// are the third-party entry points `code_symbols_in` exists to find.
+			// are the third-party entry points `code_scan` exists to find.
 			//   import { readFile } from "..."   → import_specifier (field name)
 			//   import * as fs from "..."         → namespace_import
 			//   import foo from "..."             → import_clause (default)
@@ -482,7 +482,7 @@ export async function parseSymbols(
 
 /**
  * Render a symbol table as the text an agent reads. Mirrored exactly in
- * nav-cli.mjs's `symbols-in` subcommand — keep the two in sync (the harness's
+ * nav-cli.mjs's `scan` subcommand — keep the two in sync (the harness's
  * "precise mirror of index.ts output" rule).
  *
  * Output format (1-based, reusable as code_* input):

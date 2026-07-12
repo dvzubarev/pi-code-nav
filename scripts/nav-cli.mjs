@@ -18,13 +18,13 @@
 //
 // Usage:
 //   node nav-cli.mjs outline <file>
-//   node nav-cli.mjs scan <file> <pattern>
+//   node nav-cli.mjs tree <file> <pattern>
 //   node nav-cli.mjs hover <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
 //   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [<file> <line> <col> ...] [--list-symbols]
 //   node nav-cli.mjs references <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
 //   node nav-cli.mjs rename <file> <line:1-based> <col:1-based> <newName>
 //   node nav-cli.mjs symbol <query> [python|cpp|bash|typescript]
-//   node nav-cli.mjs symbols-in <file> <startLine:1-based> <endLine:1-based> [--docs] [--roles type,call,member,import,var]
+//   node nav-cli.mjs scan <file> [<startLine:1-based> <endLine:1-based>] [--pattern <regexp>] [--docs] [--roles type,call,member,import,var]
 //   node nav-cli.mjs diagnostics <file>
 //
 // hover/definition/references accept one or more (file line col) triples; the
@@ -35,6 +35,9 @@
 //
 // Examples:
 //   node nav-cli.mjs outline temp.py
+//   node nav-cli.mjs tree temp.py "TempC"
+//   node nav-cli.mjs scan temp.py                  # whole file
+//   node nav-cli.mjs scan temp.py --pattern load   # filter by name
 //   node nav-cli.mjs hover temp.py 5 5
 //   node nav-cli.mjs definition second.py 16 7 second.py 10 7
 //   node nav-cli.mjs references temp.py 5 5
@@ -62,31 +65,32 @@ const [cmd, ...rest] = process.argv.slice(2);
 function usage() {
 	console.error(`usage (root: ${ROOT}):
   node nav-cli.mjs outline <file>
-  node nav-cli.mjs scan <file> <pattern>
+  node nav-cli.mjs tree <file> <pattern>
   node nav-cli.mjs hover <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [<file> <line> <col> ...] [--list-symbols]
   node nav-cli.mjs references <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
   node nav-cli.mjs rename <file> <line:1-based> <col:1-based> <newName>
   node nav-cli.mjs symbol <query> [python|cpp|bash|typescript]
-  node nav-cli.mjs symbols-in <file> <startLine:1-based> <endLine:1-based> [--docs] [--roles type,call,member,import,var]
+  node nav-cli.mjs scan <file> [<startLine:1-based> <endLine:1-based>] [--pattern <regexp>] [--docs] [--roles type,call,member,import,var]
   node nav-cli.mjs diagnostics <file>
 
 hover/definition/references accept one or more (file line col) triples.
 outline prints a bloat-free structural overview (classes, methods, functions,
   properties/fields) — constants/variables are dropped, no arguments.
-scan takes a regexp matched against symbol names. DWYM: a class/interface/struct
+tree takes a regexp matched against symbol names. DWYM: a class/interface/struct
   match prints ONLY its direct children (methods/properties/fields), each
   enriched with a hover signature when the server detail is empty (tsserver/ty);
   any other match prints NO subtree (just the node + ancestors for context).
   No constant/variable filtering — the pattern scopes the candidate set.
-definition accepts --list-symbols to also append a tree-sitter symbol table
+definition accepts --list-symbols to also append a symbol table
   per returned snippet (mirrors code_definition's list_symbols parameter).
-symbols-in parses a line range with tree-sitter and lists identifiers with
-  their absolute 1-based position and syntactic role (type/call/member/import/var).
-  --docs enriches each row with a one-line hover label (LSP round-trips).
-  --roles limits which roles to emit (default: type,call,member,import — i.e.
-  all except var, which are noisy locals). Pass e.g. --roles var to see only
-  locals, or --roles type,call,member,import,var to see everything.
+scan lists identifiers with their absolute 1-based position and syntactic role
+  (type/call/member/import/var). With no line range it scans the whole file.
+  --pattern filters symbols by name regexp. --docs enriches each row with a
+  one-line hover label (LSP round-trips). --roles limits which roles to emit
+  (default: type,call,member,import — i.e. all except var, which are noisy
+  locals). Pass e.g. --roles var to see only locals, or
+  --roles type,call,member,import,var to see everything.
 diagnostics fetches errors/warnings for a file via the LSP pull model
   (textDocument/diagnostic, request/response — no push notifications). Output
   positions are 1-based and reusable as (file line col) input to the others.
@@ -120,11 +124,11 @@ async function main() {
 		const [path] = rest;
 		if (!path) usage();
 		console.log(await nav.outline({ path }, ROOT, clientOf));
-	} else if (cmd === "scan") {
-		// scan <file> <pattern> — pattern is a regexp tested against symbol names.
+	} else if (cmd === "tree") {
+		// tree <file> <pattern> — pattern is a regexp tested against symbol names.
 		const [path, pattern] = rest;
 		if (!path || !pattern) usage();
-		console.log(await nav.scan({ path, pattern }, ROOT, clientOf));
+		console.log(await nav.tree({ path, pattern }, ROOT, clientOf));
 	} else if (cmd === "hover" || cmd === "definition" || cmd === "references") {
 		// Accept one or more (file line col) triples. Each triple is batched
 		// through one LSP client per language (mirroring the `positions` array
@@ -161,7 +165,9 @@ async function main() {
 		const params = { query };
 		if (langArg) params.language = langArg;
 		console.log(await nav.symbol(params, ROOT, clientOf));
-	} else if (cmd === "symbols-in") {
+	} else if (cmd === "scan") {
+		// scan <file> [<startLine> <endLine>] [--pattern <re>] [--docs] [--roles ...]
+		// With no line range, scan the whole file. --pattern filters by name.
 		const wantDocs = rest.includes("--docs");
 		const rolesArg = rest.find((a) => a.startsWith("--roles"));
 		let roles;
@@ -176,19 +182,32 @@ async function main() {
 			if (roles.length === 0)
 				throw new Error(`--roles: expected a comma list from ${valid.join(",")}`);
 		}
-		const positional = rest.filter((a) => a !== "--docs" && !a.startsWith("--roles"));
-		if (positional.length !== 3) usage();
+		let pattern;
+		const patIdx = rest.indexOf("--pattern");
+		if (patIdx >= 0) {
+			pattern = rest[patIdx + 1];
+			if (!pattern) throw new Error("--pattern requires a regexp argument");
+		}
+		// Positional args: path, optionally startLine + endLine. Strip flags and
+		// the --pattern value from the positional set so they aren't parsed as
+		// path/line numbers.
+		const isFlaglike = (a) => a === "--docs" || a.startsWith("--roles") || a === "--pattern";
+		const positional = rest.filter((a, i) => {
+			if (a === "--pattern") return false;
+			if (i > 0 && rest[i - 1] === "--pattern") return false;
+			return !isFlaglike(a);
+		});
+		if (positional.length !== 1 && positional.length !== 3) usage();
 		const [path, startStr, endStr] = positional;
-		const startLine = parseInt(startStr, 10),
-			endLine = parseInt(endStr, 10);
-		if (!Number.isInteger(startLine) || !Number.isInteger(endLine)) usage();
-		console.log(
-			await nav.symbolsIn(
-				{ path, startLine, endLine, roles, include_docs: wantDocs },
-				ROOT,
-				clientOf,
-			),
-		);
+		const params = { path, roles, include_docs: wantDocs, pattern };
+		if (positional.length === 3) {
+			const startLine = parseInt(startStr, 10),
+				endLine = parseInt(endStr, 10);
+			if (!Number.isInteger(startLine) || !Number.isInteger(endLine)) usage();
+			params.startLine = startLine;
+			params.endLine = endLine;
+		}
+		console.log(await nav.scan(params, ROOT, clientOf));
 	} else if (cmd === "diagnostics") {
 		const [path] = rest;
 		if (!path) usage();

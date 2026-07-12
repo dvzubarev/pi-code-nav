@@ -2,7 +2,7 @@
 //
 // Asserts the role classification rules from tree-sitter-parse.ts
 // (classifyRole, lang === "cpp") and the cpp row of the node-types table in
-// code_symbols_in.md:
+// code_scan.md:
 //   - `type_identifier` → "type"
 //   - `field_identifier` → "member"
 //   - `namespace_identifier` → null (the `std` in `std::sort`; the meaningful

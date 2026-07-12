@@ -14,7 +14,7 @@ plus one diagnostic reporter:
 | `code_symbol`     | LSP `workspace/symbol`             | Ranked symbol search by name, workspace-wide         |
 | `code_rename`     | LSP `textDocument/rename`          | Rename, edits applied to disk                        |
 | `code_hover`      | LSP `textDocument/hover`           | Docstring / signature / type info                     |
-| `code_symbols_in` | tree-sitter (WASM, in-process)     | Identifier table for a line range — the third-party entry point |
+| `code_scan` | tree-sitter (WASM, in-process)     | Identifier table for a line range — the third-party entry point |
 | `code_diagnostics`| LSP `textDocument/diagnostic` (pull) | Errors/warnings for a file, fetched on demand       |
 
 `code_definition`, `code_hover`, and `code_references` accept an optional
@@ -32,20 +32,20 @@ definition body and pass their coordinates to `code_hover`/
 Lines/columns in tool parameters are **1-based** (agent-friendly); the extension
 translates to the 0-based coords LSP uses. **Tool output is also 1-based**
 (`code_symbol`, `code_definition`, `code_references`, `code_outline`,
-`code_symbols_in`, `code_diagnostics` all print 1-based `line:col`), so a
+`code_scan`, `code_diagnostics` all print 1-based `line:col`), so a
 position printed by one tool can be fed directly into another tool's
 `line`/`column` params without manual conversion.
 
 **Positions point at the symbol's identifier, not the enclosing range.** The
-entry-point tools (`code_outline`, `code_symbol`, `code_symbols_in`) print the
+entry-point tools (`code_outline`, `code_symbol`, `code_scan`) print the
 identifier position so the coordinates resolve in `code_hover`/`code_definition`/`code_references`.
 - `code_outline` uses the server's `selectionRange` (the identifier span).
 - `code_symbol` resolves the identifier via `documentSymbol` per file (cached
   for the call), falling back to a source-line scan if unavailable.
-- `code_symbols_in` parses the line range with tree-sitter and prints each
+- `code_scan` parses the line range with tree-sitter and prints each
   identifier's absolute 1-based column (tree-sitter is 0-based; we add 1).
 
-This makes `code_symbol` / `code_outline` / `code_symbols_in` → `code_hover` / `code_definition` / `code_references` a clean round-trip: take the printed `line:col` and pass it straight back as `line` and `column`.
+This makes `code_symbol` / `code_outline` / `code_scan` → `code_hover` / `code_definition` / `code_references` a clean round-trip: take the printed `line:col` and pass it straight back as `line` and `column`.
 
 ## Why `code_diagnostics` (LSP pull model)
 
@@ -81,7 +81,7 @@ not implement the pull model, so `code_diagnostics` returns an error for bash
 and TypeScript files (by design — no async
 fallback).
 
-## Why `code_symbols_in` (tree-sitter)
+## Why `code_scan` (tree-sitter)
 
 The six LSP tools answer "tell me about the symbol at this position." They
 cannot answer "I'm looking at a snippet — what are the symbols in it and where
@@ -90,7 +90,7 @@ symbols: `code_symbol` (`workspace/symbol`) is useless because LSP
 `workspace/symbol` is **workspace-scoped by spec** — it indexes your project
 tree, never `site-packages` or `/usr/include`.
 
-`code_symbols_in` fills the gap: given a real file and a line range, it parses
+`code_scan` fills the gap: given a real file and a line range, it parses
 the range with tree-sitter (in-process, WASM — no LSP server) and returns a
 table of every identifier with its **absolute 1-based** `(path, line, col)`
 and syntactic **role** (`type` / `call` / `member` / `import` / `var`). The
@@ -99,7 +99,7 @@ agent reads a row and passes its coordinates straight into `code_hover` /
 symbols at a known position.
 
 ```
-code_symbols_in(path="widget.cpp", startLine=43, endLine=49)
+code_scan(path="widget.cpp", startLine=43, endLine=49)
   →
 Symbols in widget.cpp:43-49 (1-based, reusable as code_* input):
   type   vector      widget.cpp:43:11
@@ -219,7 +219,7 @@ Always `ctx.cwd` (the directory pi was started in). One server per
 ## Dependencies
 
 `vscode-jsonrpc` and `vscode-languageserver-protocol` for the LSP tools, plus
-`web-tree-sitter` and `tree-sitter-wasm` for `code_symbols_in` (the WASM
+`web-tree-sitter` and `tree-sitter-wasm` for `code_scan` (the WASM
 tree-sitter runtime and prebuilt grammar WASMs). All installed via
 `npm install` in this directory; jiti resolves them from the extension's own
 `node_modules`. The tree-sitter grammars (python, cpp, bash, typescript, tsx)
@@ -227,7 +227,7 @@ ship as prebuilt WASM — no native compilation, no peer-dependency conflicts.
 
 ## Testing
 
-Unit tests for `tree-sitter-parse.ts` (the `code_symbols_in` backing module)
+Unit tests for `tree-sitter-parse.ts` (the `code_scan` backing module)
 live in `test/*.test.mjs` and run with no LSP servers and no pi — pure
 tree-sitter:
 
@@ -279,10 +279,10 @@ End-to-end smoke-tested against **ty** (auto-detected default) and **pyright**:
 - `rename` → `WorkspaceEdit` applied to disk ✓ (ty uses `changes`; pyright uses `documentChanges`)
 - graceful `shutdown` ✓
 
-`code_symbols_in` (tree-sitter, WASM) verified:
+`code_scan` (tree-sitter, WASM) verified:
 - identifier table for python / cpp / bash line ranges ✓
 - skips comment/string noise and keywords (no regex false positives) ✓
 - absolute 1-position math round-trips into `code_hover`/`code_definition` ✓
-- third-party discovery: `code_symbols_in` → `code_definition` jumps into
+- third-party discovery: `code_scan` → `code_definition` jumps into
   nix-store `site-packages` (e.g. `cbor2._decoder.py`) — `code_symbol` cannot ✓
 - `code_definition {list_symbols: true}` appends the table per snippet ✓

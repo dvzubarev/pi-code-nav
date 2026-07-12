@@ -54,15 +54,15 @@ runOrSkip("code_outline on second.py shows Point and TempC classes", async () =>
 	}
 });
 
-runOrSkip("code_scan on second.py matches TempC and its members", async () => {
+runOrSkip("code_tree on second.py matches TempC and its members", async () => {
 	const ws = await withWorkspace(["second.py"]);
 	try {
-		// Pattern-driven scan: TempC matches → the class row (with a hover
+		// Pattern-driven tree: TempC matches → the class row (with a hover
 		// signature, since ty leaves detail empty) PLUS its DIRECT children as
 		// context — and because TempC is a class match, those direct children
 		// are also hovered for signatures (DWYM). Deep locals are NOT dumped.
 		// Point (no match, no matching descendant) is pruned.
-		const out = await nav.scan({ path: "second.py", pattern: "TempC" }, ws.root, ws.clientOf);
+		const out = await nav.tree({ path: "second.py", pattern: "TempC" }, ws.root, ws.clientOf);
 		const lines = out.split("\n");
 		// TempC itself is matched.
 		assert.ok(
@@ -85,13 +85,13 @@ runOrSkip("code_scan on second.py matches TempC and its members", async () => {
 	}
 });
 
-runOrSkip("code_scan with a bad regexp reports an error", async () => {
+runOrSkip("code_tree with a bad regexp reports an error", async () => {
 	const ws = await withWorkspace(["second.py"]);
 	try {
 		// An invalid regexp is a hard error (isError) — the agent learns the
 		// syntax contract fast, no silent substring fallback.
 		await assert.rejects(
-			nav.scan({ path: "second.py", pattern: "(" }, ws.root, ws.clientOf),
+			nav.tree({ path: "second.py", pattern: "(" }, ws.root, ws.clientOf),
 			/Invalid regexp/,
 		);
 	} finally {

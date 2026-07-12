@@ -94,14 +94,14 @@ runOrSkip(
 );
 
 runOrSkip(
-	"code_scan on a .ts file fetches signatures via parallel hover (detail empty)",
+	"code_tree on a .ts file fetches signatures via parallel hover (detail empty)",
 	async () => {
-		// tsserver leaves DocumentSymbol.detail empty, so code_scan falls back to
+		// tsserver leaves DocumentSymbol.detail empty, so code_tree falls back to
 		// one LSP hover per matched row AND per direct child of a class match
 		// (fired in parallel via Promise.all — JSON-RPC over stdio supports
 		// concurrent in-flight requests). The hover signature is appended as a
 		// label. This is the path code_outline does NOT take (it stays a single
-		// documentSymbol call); code_scan is where the hover cost lives, scoped
+		// documentSymbol call); code_tree is where the hover cost lives, scoped
 		// by the pattern.
 		const ws = await withWorkspace([]);
 		try {
@@ -125,7 +125,7 @@ runOrSkip(
 			// detail empty, so the hover is what enriches them) — this is the
 			// signature-enriched promise of code_scan. Deep locals (none here,
 			// but in real files: constants inside methods) are NOT dumped.
-			const out = await nav.scan(
+			const out = await nav.tree(
 				{ path: "svc.ts", pattern: "Service" },
 				ws.root,
 				ws.clientOf,
@@ -152,7 +152,7 @@ runOrSkip(
 				`id (direct property with signature) missing:\n${out}`,
 			);
 			// NOISE (Constant, no match, not under a match) is pruned — and even
-			// if it had matched, code_scan does NOT apply the outline allowlist.
+			// if it had matched, code_tree does NOT apply the outline allowlist.
 			assert.ok(!/NOISE/.test(out), `NOISE should be pruned:\n${out}`);
 			// greet (Function, no match, not under a match) is pruned too.
 			assert.ok(!/greet/.test(out), `greet should be pruned:\n${out}`);

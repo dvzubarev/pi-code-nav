@@ -9,7 +9,7 @@
 // strings (e.g. "int main()", "void Widget::method()"), so:
 //   - code_outline shows an annotated structural overview for free (detail
 //     rendered inline, no hover round-trips).
-//   - code_scan uses detail directly and skips the hover for rows that have
+//   - code_tree uses detail directly and skips the hover for rows that have
 //     it (no redundant round-trip to duplicate the server's own declaration).
 // Both properties are asserted here. See docs/outline-constants.md.
 //
@@ -50,10 +50,7 @@ runOrSkip("code_outline on a .cpp file shows ccls detail signatures", async () =
 		);
 		const out = await nav.outline({ path: "sample.cpp" }, ws.root, ws.clientOf);
 		// The allowlist drops the Variable MAX (constexpr). Confirm it is gone.
-		assert.ok(
-			!/MAX/.test(out),
-			`MAX should be dropped (not a structural kind):\n${out}`,
-		);
+		assert.ok(!/MAX/.test(out), `MAX should be dropped (not a structural kind):\n${out}`);
 		// The kept rows carry their ccls detail signatures inline.
 		assert.match(out, /Function main  int main\(\)/, `main detail missing:\n${out}`);
 		assert.match(
@@ -67,8 +64,8 @@ runOrSkip("code_outline on a .cpp file shows ccls detail signatures", async () =
 	}
 });
 
-runOrSkip("code_scan on a .cpp file uses ccls detail (no redundant hover)", async () => {
-	// When detail is present (ccls), code_scan uses it directly and does NOT
+runOrSkip("code_tree on a .cpp file uses ccls detail (no redundant hover)", async () => {
+	// When detail is present (ccls), code_tree uses it directly and does NOT
 	// hover — so a matched class shows its members (context) each carrying the
 	// ccls declaration, with zero hover round-trips.
 	const ws = await withWorkspace([]);
@@ -87,14 +84,18 @@ runOrSkip("code_scan on a .cpp file uses ccls detail (no redundant hover)", asyn
 			].join("\n"),
 			"utf8",
 		);
-		const out = await nav.scan({ path: "sample.cpp", pattern: "Widget" }, ws.root, ws.clientOf);
+		const out = await nav.tree({ path: "sample.cpp", pattern: "Widget" }, ws.root, ws.clientOf);
 		// Widget matched → its DIRECT children kept as context (DWYM: a
 		// struct/class match emits only direct children, not deep locals), each
 		// carrying the ccls declaration as detail. ccls fills detail, so no
 		// hover round-trips happen here (the hover target filter skips rows
 		// with non-empty detail).
 		assert.match(out, /Struct Widget  struct Widget \{\}/, `Widget match missing:\n${out}`);
-		assert.match(out, /Field field  int Widget::field/, `field (direct child) missing:\n${out}`);
+		assert.match(
+			out,
+			/Field field  int Widget::field/,
+			`field (direct child) missing:\n${out}`,
+		);
 		assert.match(
 			out,
 			/Method method  void Widget::method\(\)/,

@@ -309,7 +309,7 @@ the same path (`renderDiagnostics` in `nav.ts`).
   formats. Load `tree-sitter-parse.ts` through jiti.
 - **End-to-end tests** (`npm run test:e2e`, `test/*.e2e.mjs`): real language
   servers. Call the `nav.*` tool implementations (`outline` / `definition` /
-  `references` / `symbol` / `rename` / `hover` / `symbolsIn` / `diagnostics`)
+  `references` / `symbol` / `rename` / `hover` / `scan` / `diagnostics`)
   through real `LspClient`s scoped to a temp workspace with fixture files —
   the EXACT code path `index.ts` uses. Skip automatically when a server
   isn't on PATH (see `serverAvailable` in `test/e2e-helpers.mjs`).
@@ -381,7 +381,7 @@ destructive; outline/symbol are already list-shaped).
   time) — the `.type` overload breakage is why we use string method names.
   A 3.19+ release might fix the overloads; even so, string calls are fine.
 - `web-tree-sitter@^0.26.10` — the WASM tree-sitter runtime, used by
-  `code_symbols_in` (via `tree-sitter-parse.ts`). Bump deliberately: if
+  `code_scan` (via `tree-sitter-parse.ts`). Bump deliberately: if
   `Language.load` throws "incompatible language version" after a bump, the
   grammar WASMs (from `tree-sitter-wasm`) need a matching build — bump both
   together. `Parser.init()` must be called once before constructing a
@@ -468,7 +468,7 @@ names as `type`. `tsLangForFile` maps `.tsx`/`.jsx` → `tsx` (a distinct
 grammar in `tree-sitter-wasm`) and `.ts`/`.js`/`.mts`/`.mjs`/`.cts`/`.cjs` →
 `typescript`. Because `tsx` is in `TsLang` but not `Lang` (there is only one
 TS LSP server), `TsLang` is now a **superset** of `Lang`; `tsLangToLspLang`
-maps `tsx` → `typescript` so `code_symbols_in`'s `include_docs` enrichment
+maps `tsx` → `typescript` so `code_scan`'s `include_docs` enrichment
 spawns the right LSP client.
 
 ### LSP `SymbolKind` is 1-based
@@ -512,7 +512,7 @@ spawn time (`process.env.HOME`) — keep that dynamic, don't hardcode.
   `code_diagnostics` push fallback. See "code_diagnostics — design notes" above.
 - `index.ts` — `codeNavExtension(pi)`: registers the 3 slash commands + the
   `session_shutdown` hook at load; `registerTools()` (called only by
-  `/code-nav`) registers the 8 LLM tools (6 LSP + `code_symbols_in` +
+  `/code-nav`) registers the 8 LLM tools (6 LSP + `code_scan` +
   `code_diagnostics`). `ServerPool` manages the per-language clients.
   `applyWorkspaceEdit` / `applyTextEdits` apply rename results to disk.
   Rendering helpers (`renderDocSymbol`, `renderSymbolInfo`, `renderLocation`,
@@ -528,7 +528,7 @@ spawn time (`process.env.HOME`) — keep that dynamic, don't hardcode.
   both `typescript` and `tsx`, while `Lang` has only `typescript` — the single
   TypeScript LSP server serves both via its `languageId`). `tsLangToLspLang`
   maps a `TsLang` to the `Lang` whose server answers it (`tsx` → `typescript`).
-  Callers that spawn an LSP client from a `tsLang` (e.g. `code_symbols_in`'s
+  Callers that spawn an LSP client from a `tsLang` (e.g. `code_scan`'s
   `include_docs` enrichment) MUST go through `tsLangToLspLang`, NOT a bare
   `tsLang as Lang` cast — that cast is only valid for python/cpp/bash/typescript
   and would break for `tsx`. No pi
@@ -539,8 +539,8 @@ spawn time (`process.env.HOME`) — keep that dynamic, don't hardcode.
   through jiti (the same loader pi uses) so resolution matches production.
   When you change `classifyRole`, `renderSymbolTable`, or `hoverFirstLine`,
   update or add tests there — they pin the documented contracts in
-  `docs/code_symbols_in.md` and catch the off-by-one / role-classification
-  regressions that would silently break the `code_symbols_in` → `code_hover`
+  `docs/code_scan.md` and catch the off-by-one / role-classification
+  regressions that would silently break the `code_scan` → `code_hover`
   round-trip.
 
 Read `README.md` for the user-facing contract (commands, config, defaults).

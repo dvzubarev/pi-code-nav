@@ -164,7 +164,7 @@ test("tree-sitter parses raw function-body fragments without wrapping", async ()
 });
 
 test("comment and string noise is excluded (the regex-killer case)", async () => {
-	// Straight from code_symbols_in.md "Why tree-sitter and not regex":
+	// Straight from code_scan.md "Why tree-sitter and not regex":
 	//   # TODO: fix the load function
 	//   msg = "sort the data and check size"
 	//   x = cbor2.load(data)  # use load not loads

@@ -9,7 +9,7 @@ proposed. The shipped design split the concern across TWO tools:
   drops everything else (including Constant 14 and Variable 13). No
   arguments, no hover round-trips. The server's `detail` is rendered inline
   where present (ccls fills it; tsserver/ty leave it empty).
-- **`code_scan`** — a NEW pattern-driven tool. Takes a path + a regexp matched
+- **`code_tree`** — a NEW pattern-driven tool. Takes a path + a regexp matched
   against symbol names; prints matches with their ancestors (hierarchy
   context) and the matched node's entire subtree. Fetches signatures via
   **parallel LSP hover** for matched rows whose `detail` is empty (tsserver/ty).
@@ -119,9 +119,9 @@ are.
 
 ## Precedent in this extension
 
-`code_symbols_in` already drops "noisy" rows by default for the same
+`code_scan` already drops "noisy" rows by default for the same
 reason: its default role set is `[type, call, member, import]` — **omitting
-`var`** — with the rationale (code_symbols_in.md):
+`var`** — with the rationale (code_scan.md):
 
 > "import was separated from var specifically so that 'drop the noisy locals'
 > … `var` is a local variable, parameter, or assignment target — hoverable
@@ -145,7 +145,7 @@ tsserver emits `Property` for object-literal keys (every field of a
 `registerTool({...})` call or a returned object literal becomes a `Property`
 row), which floods the outline with non-structural noise. ty/ccls use Field(8)
 only for real class/struct fields, but even there a field list is rarely what a
-"compact overview" wants — the agent can `code_scan` a class name to see its
+"compact overview" wants — the agent can `code_tree` a class name to see its
 members. An allowlist is more honest than a denylist of noisy kinds: it states
 what the overview shows rather than what it happens to hide, and it's robust to
 servers returning kinds we didn't anticipate (dropped by default, the safe
@@ -164,11 +164,11 @@ inline after the name where present — this is **already valuable for C++**
 annotated overview for free. tsserver and ty leave `detail` empty, so TS/Python
 outlines show no signature column. Getting one there requires LSP hover per
 row — which `code_outline` deliberately does NOT do (it stays a single
-`documentSymbol` round-trip). That job is `code_scan`'s.
+`documentSymbol` round-trip). That job is `code_tree`'s.
 
-### `code_scan` — pattern + parallel hover signatures
+### `code_tree` — pattern + parallel hover signatures
 
-`code_scan(path, pattern)` takes a **regexp** matched against symbol names
+`code_tree(path, pattern)` takes a **regexp** matched against symbol names
 and returns matches with their signatures. Tree semantics:
 1. A node whose name matches → keep it AND its entire subtree (members,
    locals) as context.
@@ -188,7 +188,7 @@ small number of matched nodes, so the hover cost is bounded and tiny. In
 `code_outline` there's no pattern → the candidate set is the whole file → N
 hovers on every call, defeating "bloat-free, speedy."
 
-`code_scan` does **NOT** apply the outline allowlist — the pattern is the
+`code_tree` does **NOT** apply the outline allowlist — the pattern is the
 scoping mechanism, so filtering by kind would hide symbols the agent
 explicitly asked for (e.g. scanning for a constant by name).
 
@@ -197,7 +197,7 @@ explicitly asked for (e.g. scanning for a constant by name).
 The original proposal was a `brief?: boolean` (default true) on `code_outline`
 that dropped 13/14, with `brief=false` to restore everything. That was built
 and tested, then superseded: the allowlist is simpler and more honest, and the
-pattern-driven `code_scan` absorbs the "I want signatures for specific symbols"
+pattern-driven `code_tree` absorbs the "I want signatures for specific symbols"
 use case that `brief=false` + manual `code_hover` was a poor fit for. Two
 tools with clear jobs beat one tool with a flag that changes its output shape.
 
@@ -208,7 +208,7 @@ tools with clear jobs beat one tool with a flag that changes its output shape.
   `SymbolInformation[]` **before** rendering — NOT in the shared
   `renderDocSymbol` / `renderSymbolInfo` (also used by `code_symbol`, which
   must NOT be filtered).
-- `code_scan`'s `collectScanRows` prunes the tree to matches+ancestors+subtree
+- `code_tree`'s `collectTreeRows` prunes the tree to matches+ancestors+subtree
   in pre-order (parents before children), returning rows with depth + a
   `matched` flag. A tentative-slot-then-evict technique keeps ancestors before
   their children without a two-pass design.
@@ -225,26 +225,26 @@ tools with clear jobs beat one tool with a flag that changes its output shape.
 ```sh
 # outline: structural kinds only, constants/variables dropped.
 CODE_NAV_ROOT=$(pwd) node scripts/nav-cli.mjs outline test/fixtures/second.py
-# scan: pattern-driven, signatures via parallel hover (TS/Python) or detail (C++).
-CODE_NAV_ROOT=$(pwd) node scripts/nav-cli.mjs scan test/fixtures/second.py "TempC"
-CODE_NAV_ROOT=/tmp node scripts/nav-cli.mjs scan /tmp/many.ts "^get|^set"
+# tree: pattern-driven, signatures via parallel hover (TS/Python) or detail (C++).
+CODE_NAV_ROOT=$(pwd) node scripts/nav-cli.mjs tree test/fixtures/second.py "TempC"
+CODE_NAV_ROOT=/tmp node scripts/nav-cli.mjs tree /tmp/many.ts "^get|^set"
 # C++ outline carries ccls detail signatures on kept rows.
 CODE_NAV_ROOT=/tmp node scripts/nav-cli.mjs outline /tmp/sample.cpp
 ```
 
 [The "Rejected: hover-based signatures" section below is superseded by
-`code_scan`; retained for the reasoning trail.]
+`code_tree`; retained for the reasoning trail.]
 
 ### Rejected: hover-based signatures as a default in `code_outline`
 
-A `include_docs?: boolean` flag (mirroring `code_symbols_in`) was
+A `include_docs?: boolean` flag (mirroring `code_scan`) was
 considered for `code_outline`: when true, hover each kept row and append a
 signature label. Rejected as a default because it is N LSP hover round-trips
 and the whole point of `code_outline`'s default path is a single
 `documentSymbol` call. `detail` already gives C++ signatures for free, and the
 user explicitly said "no need for include_docs, since it is already working
 for ccls. Let's include details by default." The hover-enriched-signatures
-job instead became `code_scan`, where the pattern bounds N to a small set and
+job instead became `code_tree`, where the pattern bounds N to a small set and
 parallel hover makes it cheap — so the capability exists, just not in
 `code_outline`.
 
@@ -264,7 +264,7 @@ opt-in:
   are even less useful than top-level constants. Lean: drop both.*
 - **Keep** `Property`/`Field` (7/8) — structurally meaningful class members.
 - Add optional `include_variables: boolean` (default `false`) to opt back in,
-  mirroring `code_symbols_in`'s `roles: ["var"]` escape hatch. This
+  mirroring `code_scan`'s `roles: ["var"]` escape hatch. This
   preserves the old behavior for any prompt that relied on it.
 
 Where to implement: `nav.ts` `outline()`, after `renderDocSymbol` produces
@@ -289,7 +289,7 @@ Class Point  (10:7)
   outline wouldn't see it by default — but the tool's description never
   promised constants, and `include_variables: true` restores the old
   behavior.
-- The `code_symbols_in` precedent shows this default-drop + opt-in pattern
+- The `code_scan` precedent shows this default-drop + opt-in pattern
   is already accepted in the extension.
 - **Multi-language consideration:** Python's `GLOB` and any language's
   module-level constants also get dropped. That's consistent with the
@@ -329,6 +329,6 @@ CODE_NAV_ROOT=/tmp node scripts/nav-cli.mjs outline sample.ts
 - Check ccls behavior for C++ constants before deciding the cross-language
   default. → ccls returns Variable (13) for `const`/`constexpr`/`static`,
   confirmed (so the filter covers 13 AND 14).
-- Confirm the `include_variables` opt-in name/shape (mirror `code_symbols_in`
+- Confirm the `include_variables` opt-in name/shape (mirror `code_scan`
   `roles`, or a simpler boolean?). → simpler boolean: `brief` (default true),
-  mirroring `code_symbols_in`'s default-drop-of-noisy-rows precedent.
+  mirroring `code_scan`'s default-drop-of-noisy-rows precedent.

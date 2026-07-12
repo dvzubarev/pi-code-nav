@@ -90,7 +90,7 @@ export function hoverText(h: Hover | null): string {
  * the length. Returns "" for an empty hover so the caller can omit the label.
  *
  * Distinct from `hoverFirstLine` (in tree-sitter-parse.ts), which returns only
- * the FIRST physical line of the hover — that's fine for code_symbols_in's
+ * the FIRST physical line of the hover — that's fine for code_scan's
  * include_docs label but truncates multi-line signatures mid-paren. This
  * helper exists for code_scan, where the signature IS the point.
  */
