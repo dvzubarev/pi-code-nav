@@ -10,13 +10,26 @@
  * and returns the rendered text string the agent would see (the same string
  * index.ts wraps in `text_result`).
  *
- * On a recoverable error (unknown language, unreadable file, server
- * unavailable), the function pushes a human-readable message into the output
- * text and returns normally — matching the extension's contract of returning a
- * non-error result with the problem described inline. (The extension may still
- * return `isError: true` for top-level failures like "unknown language"; see
- * the `err()` helper in index.ts. The `ok`/`err` distinction lives there, not
- * here: this module just produces the text; the caller decides isError.)
+ * Error contract (two tiers — so an agent can tell success from failure
+ * without regex-sniffing prose):
+ *   - HARD failures (top-level, single-file tools: outline/tree/rename/scan/
+ *     diagnostics) THROW. index.ts's err() catches and sets `isError: true` —
+ *     the agent gets a machine-readable success/failure bit. Covers: cannot
+ *     read the file, unknown language, invalid regexp, no grammar, parse
+ *     failed, bad params, server unavailable, pull-diagnostics request failed.
+ *   - SOFT failures (per-position in the batched tools: definition/references/
+ *     hover; per-language in symbol) are emitted as a structured row
+ *     `ERROR  <path>:<line>:<col>  <reason>` (or `ERROR  [lang]  <reason>`
+ *     for symbol) that parses with the SAME column grammar as a data row.
+ *     The leading `ERROR` token distinguishes them from data; a consumer
+ *     splits rows on `\n` and checks the first token. Applies to: unknown
+ *     language, cannot read, server unavailable, could not read source,
+ *     symbol scan failed.
+ * Clean empty results (no definition found, no references found, no symbols,
+ * no diagnostics, no identifiers) are NOT failures — they're returned as a
+ *     parenthesized note like `(no definition found for …)`, matching the
+ *     long-standing empty-result convention. The distinction matters: a
+ *     symbol with no references is a legitimate outcome, not an error.
  *
  * Both the extension (index.ts → registerTools) and the CLI harness
  * (scripts/nav-cli.mjs) import these functions, so the CLI and automated tests
@@ -54,6 +67,7 @@ import {
     renderDocSymbol,
     renderSymbolInfo,
     renderLocation,
+    renderErrorRow,
     renderDiagnostic,
     resolveSymbolSelStart,
     resolveDefBodyRange,
@@ -300,7 +314,10 @@ export async function outline(
     try {
         text = await readFile(abs, "utf8");
     } catch (e) {
-        return `Cannot read ${abs}: ${e}`;
+        // Hard failure: cannot read the file. Throw so index.ts's err() sets
+        // isError: true rather than returning an inline string that looks like
+        // a (empty) result.
+        throw new Error(`Cannot read ${abs}: ${e}`);
     }
     const client = await clientOf(lang);
     const syms = await client.documentSymbols(abs, text);
@@ -452,7 +469,9 @@ export async function tree(
     try {
         text = await readFile(abs, "utf8");
     } catch (e) {
-        return `Cannot read ${abs}: ${e}`;
+        // Hard failure: cannot read the file. Throw so index.ts's err() sets
+        // isError: true.
+        throw new Error(`Cannot read ${abs}: ${e}`);
     }
     // Compile the pattern as a regexp. No substring fallback — the agent is
     // told this is a regexp and can escape/anchor as needed. A bad pattern is
@@ -475,7 +494,12 @@ export async function tree(
     // prune and is reported as unsupported (no current server hits it for
     // documentSymbol, but we guard rather than crash).
     if (!("range" in syms[0] && "selectionRange" in syms[0])) {
-        return `(code_tree requires hierarchical documentSymbol; ${params.path} returned flat SymbolInformation)`;
+        // Hard failure: code_tree's pruning semantics require a hierarchical
+        // tree; a flat SymbolInformation[] has no nesting to prune. No current
+        // server hits this for documentSymbol, but we guard rather than crash.
+        throw new Error(
+            `code_tree requires hierarchical documentSymbol; ${params.path} returned flat SymbolInformation`,
+        );
     }
     const rows = collectTreeRows(syms as DocumentSymbol[], re);
     if (rows.length === 0) {
@@ -538,7 +562,13 @@ export async function definition(
     for (const pos of posList) {
         const lang = langForFile(pos.path);
         if (lang === null) {
-            out.push(`(unknown language for file: ${pos.path})`);
+            // Per-position soft failure: structured ERROR row (parseable with
+            // the same column grammar as a data row). Preserve the ### position
+            // header when batching so the agent can attribute the failure.
+            out.push(
+                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
+                    renderErrorRow(pos.path, pos.line, pos.column, `unknown language for file`),
+            );
             continue;
         }
         let client = clients.get(lang);
@@ -546,7 +576,15 @@ export async function definition(
             try {
                 client = await clientOf(lang);
             } catch (e) {
-                out.push(`(${lang}: server unavailable: ${e})`);
+                out.push(
+                    (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
+                        renderErrorRow(
+                            pos.path,
+                            pos.line,
+                            pos.column,
+                            `${lang}: server unavailable: ${e}`,
+                        ),
+                );
                 continue;
             }
             clients.set(lang, client);
@@ -556,20 +594,42 @@ export async function definition(
         try {
             text = await readFile(abs, "utf8");
         } catch (e) {
-            out.push(`(cannot read ${abs}: ${e})`);
+            out.push(
+                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
+                    renderErrorRow(pos.path, pos.line, pos.column, `cannot read ${abs}: ${e}`),
+            );
             continue;
         }
         const def = await client.definition(abs, pos.line - 1, pos.column - 1, text);
         const locs = Array.isArray(def) ? def : def ? [def] : [];
         if (locs.length === 0) {
-            out.push(`(no definition found for ${pos.path}:${pos.line}:${pos.column})`);
+            // Clean empty result (e.g. a built-in, or a position that isn't a
+            // symbol) — NOT a failure. Kept as a parenthesized note so an
+            // agent checking the leading token doesn't mistake a legitimate
+            // "no definition here" for a failure.
+            out.push(
+                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
+                    `(no definition found for ${pos.path}:${pos.line}:${pos.column})`,
+            );
             continue;
         }
         // When batching multiple positions, label each block with its query so
         // the agent can tell which result belongs to which input.
         const block: string[] = [];
         if (posList.length > 1) block.push(`### ${pos.path}:${pos.line}:${pos.column}`);
-        for (const loc of locs as Location[]) {
+        // Delimit each loc within the position so an agent can extract "the
+        // body of the Nth definition at this position" without counting fences.
+        // The sub-header mirrors the ### position header and carries the loc's
+        // own path:line:col so the full position is reconstructable per loc.
+        const locArr = locs as Location[];
+        for (let li = 0; li < locArr.length; li++) {
+            const loc = locArr[li];
+            if (locArr.length > 1) {
+                const lp = uriToPath(loc.uri);
+                const sl0 = loc.range?.start?.line ?? 0;
+                const sc0 = loc.range?.start?.character ?? 0;
+                block.push(`#### def ${li + 1} of ${locArr.length}  ${lp}:${sl0 + 1}:${sc0 + 1}`);
+            }
             block.push(renderLocation(loc));
             const lp = uriToPath(loc.uri);
             try {
@@ -606,12 +666,26 @@ export async function definition(
                                 block.push(renderSymbolTable(lp, sl + 1, el + 1, entries));
                             }
                         } catch (e) {
-                            block.push(`(symbol scan failed: ${e})`);
+                            block.push(
+                                renderErrorRow(
+                                    lp,
+                                    sl + 1,
+                                    (loc.range?.start?.character ?? 0) + 1,
+                                    `symbol scan failed: ${e}`,
+                                ),
+                            );
                         }
                     }
                 }
             } catch {
-                block.push("(could not read source file)");
+                block.push(
+                    renderErrorRow(
+                        lp,
+                        (loc.range?.start?.line ?? 0) + 1,
+                        (loc.range?.start?.character ?? 0) + 1,
+                        `could not read source file`,
+                    ),
+                );
             }
         }
         out.push(block.join("\n"));
@@ -638,7 +712,10 @@ export async function references(
     for (const pos of posList) {
         const lang = langForFile(pos.path);
         if (lang === null) {
-            out.push(`(unknown language for file: ${pos.path})`);
+            out.push(
+                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
+                    renderErrorRow(pos.path, pos.line, pos.column, `unknown language for file`),
+            );
             continue;
         }
         let client = clients.get(lang);
@@ -646,7 +723,15 @@ export async function references(
             try {
                 client = await clientOf(lang);
             } catch (e) {
-                out.push(`(${lang}: server unavailable: ${e})`);
+                out.push(
+                    (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
+                        renderErrorRow(
+                            pos.path,
+                            pos.line,
+                            pos.column,
+                            `${lang}: server unavailable: ${e}`,
+                        ),
+                );
                 continue;
             }
             clients.set(lang, client);
@@ -656,21 +741,32 @@ export async function references(
         try {
             text = await readFile(abs, "utf8");
         } catch (e) {
-            out.push(`(cannot read ${abs}: ${e})`);
+            out.push(
+                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
+                    renderErrorRow(pos.path, pos.line, pos.column, `cannot read ${abs}: ${e}`),
+            );
             continue;
         }
         const refs = await client.references(abs, pos.line - 1, pos.column - 1, text);
         if (refs.length === 0) {
+            // Clean empty result (the symbol has no references) — NOT a failure.
+            // Kept as a parenthesized note (matching outline/diagnostics/scan's
+            // empty-result convention) rather than an ERROR row, so an agent
+            // checking the leading token doesn't mistake a legitimate "unused
+            // symbol" for a failure.
             out.push(
-                posList.length > 1
-                    ? `### ${pos.path}:${pos.line}:${pos.column}\n(no references)`
-                    : `(no references found for ${pos.path}:${pos.line}:${pos.column})`,
+                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
+                    `(no references found for ${pos.path}:${pos.line}:${pos.column})`,
             );
             continue;
         }
         const rendered = refs.map((r) => renderLocation(r));
         const header = posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "";
-        out.push(header + `${rendered.length} reference(s):\n` + rendered.join("\n"));
+        // Drop the leading "N reference(s):" count line — it was prose the
+        // agent had to strip to get the list. The ### header already labels the
+        // position, and a trailing comment line (# N references) is trivially
+        // ignorable while keeping the count for the few callers that want it.
+        out.push(header + rendered.join("\n") + `\n# ${rendered.length} references`);
     }
     return out.join("\n");
 }
@@ -700,7 +796,11 @@ export async function symbol(
         try {
             client = await clientOf(lang);
         } catch (e) {
-            out.push(`(${lang}: server unavailable: ${e})`);
+            // Per-language soft failure: structured ERROR row (leading `ERROR`
+            // token distinguishes it from the `[lang] Kind name path:line:col`
+            // data rows). One language failing must not discard results
+            // already collected from earlier languages.
+            out.push(`ERROR  [${lang}]  server unavailable: ${e}`);
             continue;
         }
         if (
@@ -723,7 +823,7 @@ export async function symbol(
         } catch (e) {
             // One language failing must not discard results already
             // collected from earlier languages.
-            out.push(`(${lang}: workspace/symbol failed: ${e})`);
+            out.push(`ERROR  [${lang}]  workspace/symbol failed: ${e}`);
             continue;
         }
         for (const s of syms) {
@@ -758,7 +858,9 @@ export async function rename(
     try {
         text = await readFile(abs, "utf8");
     } catch (e) {
-        return `Cannot read ${abs}: ${e}`;
+        // Hard failure: cannot read the file. Throw so index.ts's err() sets
+        // isError: true.
+        throw new Error(`Cannot read ${abs}: ${e}`);
     }
     const client = await clientOf(lang);
     const edit = await client.rename(abs, params.line - 1, params.column - 1, text, params.newName);
@@ -787,7 +889,10 @@ export async function hover(
     for (const pos of posList) {
         const lang = langForFile(pos.path);
         if (lang === null) {
-            out.push(`(unknown language for file: ${pos.path})`);
+            out.push(
+                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
+                    renderErrorRow(pos.path, pos.line, pos.column, `unknown language for file`),
+            );
             continue;
         }
         let client = clients.get(lang);
@@ -795,7 +900,15 @@ export async function hover(
             try {
                 client = await clientOf(lang);
             } catch (e) {
-                out.push(`(${lang}: server unavailable: ${e})`);
+                out.push(
+                    (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
+                        renderErrorRow(
+                            pos.path,
+                            pos.line,
+                            pos.column,
+                            `${lang}: server unavailable: ${e}`,
+                        ),
+                );
                 continue;
             }
             clients.set(lang, client);
@@ -805,13 +918,24 @@ export async function hover(
         try {
             text = await readFile(abs, "utf8");
         } catch (e) {
-            out.push(`(cannot read ${abs}: ${e})`);
+            out.push(
+                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
+                    renderErrorRow(pos.path, pos.line, pos.column, `cannot read ${abs}: ${e}`),
+            );
             continue;
         }
         const h = await client.hover(abs, pos.line - 1, pos.column - 1, text);
         const body = hoverText(h);
         const header = posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "";
-        out.push(header + body);
+        // Signature-first: emit the collapsed one-line signature (when one can
+        // be extracted) as the first line, then the full hover markdown. This
+        // surfaces structured signature info that would otherwise be buried in
+        // a ```python fence or a multi-paragraph docstring. The `signature:`
+        // prefix lets a consumer pick the first line cheaply without parsing
+        // the markdown body.
+        const sig = hoverSignature(body);
+        const sigLine = sig ? `signature: ${sig}\n` : "";
+        out.push(header + sigLine + body);
     }
     return out.join("\n");
 }
@@ -854,7 +978,10 @@ export async function scan(
     try {
         text = await readFile(abs, "utf8");
     } catch (e) {
-        return `Cannot read ${abs}: ${e}`;
+        // Hard failure: cannot proceed at all. Throw so index.ts's err() sets
+        // isError: true — the agent gets a machine-readable success/failure bit
+        // instead of an inline string indistinguishable from a data row.
+        throw new Error(`Cannot read ${abs}: ${e}`);
     }
     // Resolve the effective line range. Both optional → default to the whole
     // file (1 .. last line). If only one is given, fill the other end. This
@@ -863,10 +990,11 @@ export async function scan(
     const startLine = params.startLine ?? 1;
     const endLine = params.endLine ?? lineCount;
     if (!Number.isInteger(startLine) || startLine < 1)
-        return `startLine (${startLine}) must be a positive integer`;
+        throw new Error(`startLine (${startLine}) must be a positive integer`);
     if (!Number.isInteger(endLine) || endLine < 1)
-        return `endLine (${endLine}) must be a positive integer`;
-    if (endLine < startLine) return `endLine (${endLine}) must be >= startLine (${startLine})`;
+        throw new Error(`endLine (${endLine}) must be a positive integer`);
+    if (endLine < startLine)
+        throw new Error(`endLine (${endLine}) must be >= startLine (${startLine})`);
     // Optional name-pattern filter. Compiled as a regexp — no substring
     // fallback, matching code_tree's contract. A bad pattern is a hard error
     // (isError) so the agent learns the syntax fast.
@@ -889,9 +1017,11 @@ export async function scan(
             roles: params.roles as Parameters<typeof parseSymbols>[1]["roles"],
         });
     } catch (e) {
-        return `parse failed: ${e}`;
+        // Hard failure: tree-sitter or a grammar failed to load. Throw so the
+        // agent gets isError: true rather than an unparseable string.
+        throw new Error(`parse failed: ${e}`);
     }
-    if (entries === null) return `No grammar for ${params.path}`;
+    if (entries === null) throw new Error(`No grammar for ${params.path}`);
     // Apply the optional name filter after parsing. Filtering here (rather than
     // inside parseSymbols) keeps parseSymbols a pure syntax-walk and lets this
     // tool own the "pattern scopes the candidate set" contract.
@@ -899,14 +1029,19 @@ export async function scan(
     // Optional hover enrichment. One LSP hover call per unique (name, role);
     // the LSP server for the file's language is spawned lazily here (and only
     // when include_docs is true — the default path makes zero LSP calls).
+    // The scan itself already succeeded; if the enrichment server is
+    // unavailable, return the scan WITHOUT docs plus a trailing note rather
+    // than discarding the valid scan results.
     let docs: Map<string, string> | undefined;
+    let docsNote = "";
     if (params.include_docs && entries.length > 0) {
         const lang = tsLangToLspLang(tsLang);
         let client: LspClient;
         try {
             client = await clientOf(lang);
         } catch (e) {
-            return `(${lang}: server unavailable: ${e})`;
+            docsNote = `\n# WARNING: could not enrich with docs (${lang}: server unavailable: ${e})`;
+            return renderSymbolTable(params.path, startLine, endLine, entries) + docsNote;
         }
         docs = new Map();
         for (const e of entries) {
@@ -940,13 +1075,17 @@ export async function diagnostics(
     try {
         text = await readFile(abs, "utf8");
     } catch (e) {
-        return `Cannot read ${abs}: ${e}`;
+        // Hard failure: cannot read the file at all. Throw so index.ts's err()
+        // sets isError: true — the agent gets a machine-readable failure bit
+        // instead of an inline string indistinguishable from a data row.
+        throw new Error(`Cannot read ${abs}: ${e}`);
     }
     let client: LspClient;
     try {
         client = await clientOf(lang);
     } catch (e) {
-        return `${lang}: server unavailable: ${e}`;
+        // Hard failure: the language server could not be spawned.
+        throw new Error(`${lang}: server unavailable: ${e}`);
     }
     // Open the document on the server. didOpen is required for the server
     // to analyze the file; both the pull model (textDocument/diagnostic) and
@@ -988,7 +1127,11 @@ export async function diagnostics(
         }
         // No push diagnostics arrived either - surface the pull error honestly.
         if (pullError) {
-            return `${lang}: textDocument/diagnostic request failed: ${pullError.message}`;
+            // Hard failure: the pull request errored AND no push diagnostics
+            // arrived — the server cannot report diagnostics for this file.
+            throw new Error(
+                `${lang}: textDocument/diagnostic request failed: ${pullError.message}`,
+            );
         }
         return `(no diagnostics returned for ${params.path})`;
     }

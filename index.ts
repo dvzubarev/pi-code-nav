@@ -189,9 +189,10 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_definition",
         label: "Code Definition",
         description:
-            "Find the definition of the symbol(s) at the given position(s). Returns each definition's location and the FULL source body of the definition (the complete function/class/method body, not just the identifier). Accepts absolute paths, including third-party locations (nix store, site-packages, system headers). Set list_symbols=true to also append a symbol table for each returned body (so you can discover third-party/stdlib symbols used inside the body and pass their coordinates to code_hover/code_definition/code_references).",
+            "Find the definition of the symbol(s) at the given position(s). Returns each definition's location and the FULL source body of the definition (the complete function/class/method body, not just the identifier). When a position resolves to multiple definition sites, each is delimited with a `#### def N of M  <path>:<line>:<col>` sub-header. Accepts absolute paths, including third-party locations (nix store, site-packages, system headers). Set list_symbols=true to also append a symbol table for each returned body (so you can discover third-party/stdlib symbols used inside the body and pass their coordinates to code_hover/code_definition/code_references).",
         promptGuidelines: [
             "code_definition returns the FULL source body, not just the definition's location. Set list_symbols=true to also list the symbols used inside each returned body (useful for discovering third-party/stdlib APIs in the body); pass a symbol-table row straight into code_hover/code_definition.",
+            "Per-position soft failures (unknown language, cannot read, server unavailable) appear as a structured `ERROR  <path>:<line>:<col>  <reason>` row (parseable with the same column grammar as a data row) — split rows on \\n and check the leading token to distinguish data from error. A clean empty result (no definition found) is a parenthesized note, not an error.",
         ],
         parameters: Type.Object({
             positions: Type.Array(
@@ -216,9 +217,10 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         }),
         async execute(_id, params, _signal, _onUpdate, ctx) {
             // nav.definition handles the full batched-position logic, per-position
-            // error messages, source-body extraction, and optional tree-sitter
-            // symbol table. It never throws on recoverable errors (it pushes them
-            // inline), so no try/catch wrapper is needed here.
+            // structured ERROR rows for soft failures, source-body extraction,
+            // #### def N of M sub-headers for multi-loc results, and the optional
+            // tree-sitter symbol table. It never throws (soft failures are
+            // per-position ERROR rows), so no try/catch wrapper is needed here.
             return text_result(
                 await nav.definition(params, ctx.cwd, (lang) => state.pool.client(lang)),
             );
@@ -230,9 +232,9 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_references",
         label: "Code References",
         description:
-            "Find all references to the symbol(s) at the given position(s). Returns a list of locations (file:line:col - line:col).",
+            "Find all references to the symbol(s) at the given position(s). Returns a list of locations (file:line:col - line:col), one per line, with a trailing `# N references` comment line. Per-position soft failures appear as a structured `ERROR  <path>:<line>:<col>  <reason>` row.",
         promptGuidelines: [
-            "Use code_references before renaming or refactoring to find every call site of a symbol.",
+            "Use code_references before renaming or refactoring to find every call site of a symbol. The count is a trailing `# N references` comment (trivially ignorable); the location rows are the data.",
         ],
         parameters: Type.Object({
             positions: Type.Array(
@@ -250,9 +252,10 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             ),
         }),
         async execute(_id, params, _signal, _onUpdate, ctx) {
-            // nav.references handles batched positions, per-position error
-            // messages, and the ### headers when batching. Never throws on
-            // recoverable errors.
+            // nav.references handles batched positions, per-position structured
+            // ERROR rows, the ### headers when batching, and the trailing
+            // `# N references` count comment. Never throws (soft failures are
+            // per-position ERROR rows).
             return text_result(
                 await nav.references(params, ctx.cwd, (lang) => state.pool.client(lang)),
             );
@@ -316,9 +319,9 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_hover",
         label: "Code Hover / Docs",
         description:
-            "Retrieve hover/documentation for the symbol(s) at the given position(s). Returns docstring, signature, and type info when available. Accepts absolute paths, including third-party locations (nix store, site-packages, node_modules, system headers).",
+            "Retrieve hover/documentation for the symbol(s) at the given position(s). Returns a signature-first line (`signature: <collapsed one-line signature>`) when one can be extracted, followed by the full hover markdown body (docstring, signature, type info). Accepts absolute paths, including third-party locations (nix store, site-packages, node_modules, system headers).",
         promptGuidelines: [
-            "code_hover returns docstring, signature, and type info.",
+            "code_hover emits a `signature: …` first line (collapsed from the server's multi-line fenced signature) before the raw markdown body — pick the first line cheaply for structured signature info without parsing the markdown.",
         ],
         parameters: Type.Object({
             positions: Type.Array(
@@ -336,8 +339,9 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             ),
         }),
         async execute(_id, params, _signal, _onUpdate, ctx) {
-            // nav.hover handles batched positions, per-position error messages,
-            // and the ### headers when batching. Never throws on recoverable errors.
+            // nav.hover handles batched positions, per-position structured ERROR
+            // rows, the ### headers when batching, and the signature-first line.
+            // Never throws (soft failures are per-position ERROR rows).
             return text_result(await nav.hover(params, ctx.cwd, (lang) => state.pool.client(lang)));
         },
     });

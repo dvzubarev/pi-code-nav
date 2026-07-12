@@ -355,12 +355,24 @@ extension and the CLI import from `render.ts` + `nav.ts`, so they produce
 byte-identical output by construction. **The old "keep nav-cli.mjs in sync
 with index.ts by hand" landmine is gone** — there is nothing to mirror; if you
 change a render function or a tool body, both consumers see it automatically.
-The one allowed divergence is error handling: the extension's single-file
-tools (outline/rename/symbols_in/diagnostics) return `isError: true` on a
-top-level failure (`Unknown language for file: …`, `Cannot read …`); `nav.ts`
-throws `UnknownLanguageError` for the unknown-language case and `index.ts`
-catches it and marks `isError`. The CLI lets that throw to a top-level
-`FAILED:` message (human-facing).
+The one allowed divergence is error handling, now a two-tier contract
+(the agent gets a machine-readable success/failure bit instead of having
+to regex-sniff inline prose):
+  - HARD failures (top-level, single-file tools: outline/tree/rename/scan/
+    diagnostics) THROW. `index.ts`'s `err()` catches and sets `isError: true`.
+    Covers: `Cannot read …`, `Unknown language for file: …`, `Invalid regexp`,
+    `No grammar for …`, `parse failed: …`, bad params, server unavailable,
+    pull-diagnostics request failed. The CLI lets these throw to a top-level
+    `FAILED:` message.
+  - SOFT failures (per-position in the batched tools: definition/references/
+    hover; per-language in symbol) are emitted as a structured row
+    `ERROR  <path>:<line>:<col>  <reason>` (or `ERROR  [lang]  <reason>` for
+    symbol) that parses with the SAME column grammar as a data row. The
+    leading `ERROR` token distinguishes them from data; a consumer splits rows
+    on `\n` and checks the first token. The `### <path>:<line>:<col>` position
+    header is preserved (when batching) so the agent can attribute the failure.
+Clean empty results (`(no symbols found in …)`, `(no diagnostics for …)`,
+`(no identifiers found)`) are NOT failures — they're returned as text.
 
 Subcommands (root = cwd or `CODE_NAV_ROOT`):
 ```
@@ -376,6 +388,10 @@ triples as a `positions` array — the extras are batched through one LSP
 client per language. When more than one position is passed, each result
 block is prefixed with `### <path>:<line>:<col>` so the agent/user can
 correlate results to inputs. Single-position calls produce no header.
+Within a definition block, if a position resolves to MULTIPLE definition
+sites (overloads, multi-definition symbols), each site is delimited with a
+`#### def N of M  <path>:<line>:<col>` sub-header so an agent can extract
+"the body of the Nth definition" without counting code fences.
 
 ### The `positions` array is the sole input shape
 

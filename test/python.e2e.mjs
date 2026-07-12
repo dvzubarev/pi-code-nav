@@ -151,6 +151,32 @@ runOrSkip("code_hover on Point.__init__ signature shows x param", async () => {
     }
 });
 
+runOrSkip("code_hover emits a signature-first line before the markdown body", async () => {
+    const ws = await withWorkspace(["second.py"]);
+    try {
+        // Hovering __init__ (second.py:11:9) should emit a collapsed one-line
+        // signature as the first line (prefixed `signature: `), BEFORE the
+        // raw markdown body. This surfaces structured signature info that would
+        // otherwise be buried inside a ```python fence.
+        const out = await nav.hover(
+            { positions: [{ path: "second.py", line: 11, column: 9 }] },
+            ws.root,
+            ws.clientOf,
+        );
+        const firstLine = out.split("\n")[0];
+        assert.match(
+            firstLine,
+            /^signature: /,
+            `first line should be the signature line, got:\n${out}`,
+        );
+        // The signature line should mention the x param (collapsed from the
+        // multi-line fenced signature ty returns).
+        assert.match(firstLine, /x\s*:\s*int/i, `x param missing from signature line:\n${out}`);
+    } finally {
+        await ws.cleanup();
+    }
+});
+
 runOrSkip("code_references on Point class lists __init__ usages", async () => {
     const ws = await withWorkspace(["second.py"]);
     try {
@@ -161,10 +187,14 @@ runOrSkip("code_references on Point class lists __init__ usages", async () => {
             ws.root,
             ws.clientOf,
         );
-        assert.match(out, /\d+ reference\(s\):/, `reference count header missing:\n${out}`);
-        // At least one reference row should be present (the def itself, plus the
-        // default-arg usage and the call in TempC.__init__).
-        const rows = out.split("\n").filter((l) => /second\.py:\d+:\d+ - \d+:\d+/.test(l));
+        // The count is now a trailing `# N references` comment (trivially
+        // ignorable), not a leading `N reference(s):` glue line. At least one
+        // reference row should be present (the def itself, plus the default-arg
+        // usage and the call in TempC.__init__).
+        assert.match(out, /# \d+ references$/, `trailing count comment missing:\n${out}`);
+        const rows = out
+            .split("\n")
+            .filter((l) => /second\.py:\d+:\d+ - \d+:\d+/.test(l));
         assert.ok(rows.length >= 1, `no reference rows:\n${out}`);
     } finally {
         await ws.cleanup();

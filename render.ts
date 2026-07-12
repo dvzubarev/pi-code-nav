@@ -324,6 +324,32 @@ export function renderLocation(loc: Location): string {
     return path;
 }
 
+/**
+ * Render a structured per-position soft-failure row. Format mirrors a data
+ * row's column grammar so a consumer can split rows on `\n` and distinguish
+ * data from error by the leading token (`ERROR` kind has no name column):
+ *
+ *   ERROR  <path>:<line>:<col>  <reason>
+ *
+ * `line`/`column` are 1-based (the tool's input contract). Use this ONLY for
+ * actual failures: unknown language, cannot read, server unavailable, could
+ * not read source, symbol scan failed. Do NOT use it for clean empty results
+ * (no definition found, no references found) — those are legitimate outcomes,
+ * not errors, and should be a parenthesized note like `(no references found
+ * for …)` so an agent checking the leading token doesn't mistake "unused
+ * symbol" for a failure. Top-level hard failures (scan/diagnostics: no
+ * grammar, parse failed, cannot read, bad params, server unavailable) THROW
+ * instead — index.ts's err() sets isError: true on those.
+ */
+export function renderErrorRow(
+    path: string,
+    line: number,
+    column: number,
+    reason: string,
+): string {
+    return `ERROR  ${path}:${line}:${column}  ${reason}`;
+}
+
 /** LSP DiagnosticSeverity (1-based) → short label. */
 export function severityName(sev: number | undefined): string {
     switch (sev) {

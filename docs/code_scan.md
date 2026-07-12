@@ -175,15 +175,21 @@ or one called method.
 ```
 code_scan(path="widget.cpp", startLine=43, endLine=49)
   →
-Symbols in widget.cpp:43-49 (1-based, reusable as code_* input):
-  type   vector      widget.cpp:43:11
-  call   sort        widget.cpp:43:9
-  member begin       widget.cpp:43:15
-  member end         widget.cpp:43:27
-  member push_back   widget.cpp:45:10
-  member size        widget.cpp:46:23
-  member empty       widget.cpp:47:11
+Symbols in widget.cpp:43-49 (roles: type|call|member|import|var, 1-based, reusable as code_* input):
+  type   vector      :43:11
+  call   sort        :43:9
+  member begin       :43:15
+  member end         :43:27
+  member push_back   :45:10
+  member size        :46:23
+  member empty       :47:11
 ```
+
+The full path appears ONCE in the header; each row carries only `:line:col`
+(the header path + row line:col reconstructs the full position). This matters
+for nix-store / site-packages paths, where repeating a long absolute path on
+every row is pure context-window tax. The header also carries a role legend
+so the agent can branch on the closed enumeration without guessing.
 
 Note: `var` rows (local variables, parameters) are **omitted by default**
 — they are the snippet's own locals, hoverable but rarely what the agent

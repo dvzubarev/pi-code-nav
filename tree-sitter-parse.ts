@@ -485,11 +485,24 @@ export async function parseSymbols(
  * nav-cli.mjs's `scan` subcommand — keep the two in sync (the harness's
  * "precise mirror of index.ts output" rule).
  *
- * Output format (1-based, reusable as code_* input):
- *   Symbols in <path>:<startLine>-<endLine> (1-based, reusable as code_* input):
- *     type   vector      <path>:43:11
- *     call   sort        <path>:43:9
+ * Output format (1-based, reusable as code_* input). The full path appears
+ * ONCE in the header; each row carries only `:line:col` (the row order is
+ * stable, and the header path + row line:col reconstructs the full position).
+ * A one-line role legend follows the header so the agent can branch on the
+ * closed enumeration without guessing:
+ *
+ *   Symbols in <path>:<startLine>-<endLine> (roles: type|call|member|import|var):
+ *     type   vector      :43:11
+ *     call   sort        :43:9
  *     ...
+ *
+ * Per-position soft failures emit a structured row with the SAME column
+ * grammar as a data row, prefixed `ERROR` (mirrors `### position` headers):
+ *
+ *     ERROR  <path>:<line>:<col>  <reason>
+ *
+ * so a consumer splits rows on `\n` and distinguishes data from error by the
+ * leading token (an ERROR row has kind `ERROR` and no name column).
  */
 export function renderSymbolTable(
     path: string,
@@ -499,15 +512,19 @@ export function renderSymbolTable(
     docs?: Map<string, string>,
 ): string {
     if (entries.length === 0) {
-        return `Symbols in ${path}:${startLine}-${endLine} (1-based, reusable as code_* input):\n  (no identifiers found)`;
+        return `Symbols in ${path}:${startLine}-${endLine} (roles: type|call|member|import|var, 1-based, reusable as code_* input):\n  (no identifiers found)`;
     }
     const lines: string[] = [
-        `Symbols in ${path}:${startLine}-${endLine} (1-based, reusable as code_* input):`,
+        `Symbols in ${path}:${startLine}-${endLine} (roles: type|call|member|import|var, 1-based, reusable as code_* input):`,
     ];
     // Column widths for alignment: role is max 6 chars ("member"), name varies.
+    // The path is NOT repeated per row — the header already states it, and the
+    // row's `:line:col` plus the header path reconstructs the full position.
+    // This matters for nix-store / site-packages paths, where repeating a long
+    // absolute path on every row is pure context-window tax.
     const nameWidth = Math.max(...entries.map((e) => e.name.length));
     for (const e of entries) {
-        const loc = `${path}:${e.line}:${e.column}`;
+        const loc = `:${e.line}:${e.column}`;
         const doc = docs?.get(`${e.name}|${e.role}`);
         const label = doc ? `  ${doc}` : "";
         lines.push(`  ${e.role.padEnd(6)} ${e.name.padEnd(nameWidth)}  ${loc}${label}`);
