@@ -486,14 +486,14 @@ export async function parseSymbols(
  * "precise mirror of index.ts output" rule).
  *
  * Output format (1-based, reusable as code_* input). The full path appears
- * ONCE in the header; each row carries only `:line:col` (the row order is
+ * ONCE in the header; each row carries only `(line:col)` (the row order is
  * stable, and the header path + row line:col reconstructs the full position).
  * A one-line role legend follows the header so the agent can branch on the
  * closed enumeration without guessing:
  *
  *   Symbols in <path>:<startLine>-<endLine> (roles: type|call|member|import|var):
- *     type   vector      :43:11
- *     call   sort        :43:9
+ *     type   vector      (43:11)
+ *     call   sort        (43:9)
  *     ...
  *
  * Per-position soft failures emit a structured row with the SAME column
@@ -524,7 +524,7 @@ export function renderSymbolTable(
     // absolute path on every row is pure context-window tax.
     const nameWidth = Math.max(...entries.map((e) => e.name.length));
     for (const e of entries) {
-        const loc = `:${e.line}:${e.column}`;
+        const loc = `(${e.line}:${e.column})`;
         const doc = docs?.get(`${e.name}|${e.role}`);
         const label = doc ? `  ${doc}` : "";
         lines.push(`  ${e.role.padEnd(6)} ${e.name.padEnd(nameWidth)}  ${loc}${label}`);

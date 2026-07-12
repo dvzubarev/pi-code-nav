@@ -191,7 +191,7 @@ export function renderSymbolInfo(
     // code_references (which expect 1-based and subtract 1 internally).
     const p = selStart ?? loc.range?.start;
     const pos = p ? `${p.line + 1}:${p.character + 1}` : "";
-    return `${symbolKindName(s.kind)} ${s.name}  ${path}:${pos}`;
+    return `${symbolKindName(s.kind)} ${s.name}  ${path} (${pos})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -315,11 +315,10 @@ export function posKey(p: { line: number; character: number }): number {
 /** Render a Location as `<path>:<startLine>:<startCol> - <endLine>:<endCol>` (1-based). */
 export function renderLocation(loc: Location): string {
     const start = loc.range?.start;
-    const end = loc.range?.end;
     const path = uriToPath(loc.uri);
-    if (start && end) {
+    if (start) {
         // +1 to convert 0-based LSP coords to 1-based output (matches tool input contract).
-        return `${path}:${start.line + 1}:${start.character + 1} - ${end.line + 1}:${end.character + 1}`;
+        return `${path} (${start.line + 1}:${start.character + 1})`;
     }
     return path;
 }
