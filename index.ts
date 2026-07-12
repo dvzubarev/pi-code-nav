@@ -165,15 +165,15 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             "Return a pruned view of a source file's DocumentSymbol tree, filtered to symbols whose name matches a regexp. Each row carries its kind, position, and signature. Unlike code_outline (a bloat-free structural overview of the whole file), code_tree is pattern-driven: pass a regexp matched against symbol names. DWYM: if the match is a class/interface/struct, it prints its direct children (methods/properties/fields) with a signature; if the match is anything else, it prints its ancestors for context.",
         promptSnippet: "Prints source file as tree-like structure.",
         promptGuidelines: [
-            "Use code_tree when you need more detailed parent/child overview of some symbol. It takes a regexp that is tested against symbol names — e.g. scan a class name to see it and all its members with signatures, or scan `^get_|^set_` to list getters/setters and classes where they are occuring.",
-            "Output row format: `[<pad>]<Kind> <name>  [<signature>]  (<line>:<col>)`. To feed a row into code_hover/code_definition/code_references, combine your input path with the row's `(line:col)`.",
+            "Use code_tree when you need pattern-driven symbol tree with signatures. It takes a regexp that is tested against symbol names — e.g. scan a class name to see it and all its members with signatures, or scan `^get_|^set_` to list getters/setters and their ancestor classes.",
+            "Output row format: `[<pad>]<Kind> <name>  [<signature>]  (<line>:<col>)`.",
             "Prefer code_outline for a full-file structural overview. Use code_tree for a targeted, signature-enriched view of specific symbols by name. For a full identifier scan (including calls, imports, members) use code_scan.",
         ],
         parameters: Type.Object({
             path: Type.String({ description: "File path (absolute or relative to cwd)" }),
             pattern: Type.String({
                 description:
-                    "A JavaScript regexp source (e.g. 'Service', '^get_|^set_', 'id$') tested against each symbol's name. An invalid regexp is a hard error — escape/anchor as needed.",
+                    "A JavaScript case-sensitive regexp.",
             }),
         }),
         async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -198,8 +198,8 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             "Use code_definition when you need FULL source body of a function/class. You must know the function/class position to use this tool.",
             "When input array contains multiple entries, each is delimited with a `### <path>:<line>:<col>` sub-header.",
             "When a position resolves to MULTIPLE definition sites (overloads, multi-definition symbols), each site is delimited with a `#### def N of M  <path>:<line>:<col>` sub-header",
-            "It accepts absolute paths, including third-party locations.",
-            "Set list_symbols=true to also list the symbols used inside each returned body (useful for discovering third-party/stdlib APIs in the body). Output row format `<role> <name> (<line>:<col>)`. To feed a symbol into code_definition, combine header path with row's `(line:col)`",
+            "It accepts absolute paths.",
+            "Set list_symbols=true to also list the identifiers used inside each returned body (useful for discovering third-party/stdlib APIs in the body). Output row format `<role> <name> (<line>:<col>)`. To feed a symbol into code_definition, combine header path with row's `(line:col)`",
         ],
         parameters: Type.Object({
             positions: Type.Array(
@@ -212,13 +212,13 @@ function registerTools(pi: ExtensionAPI, state: State): void {
                 }),
                 {
                     description:
-                        "One or more (path, line, column) positions to look up. Lines/columns are 1-based.",
+                        "One or more (path, line, column) positions to look up.",
                 },
             ),
             list_symbols: Type.Optional(
                 Type.Boolean({
                     description:
-                        'If true, append a symbol table for each returned body (default: false). The table lists identifiers with their absolute 1-based position and syntactic role (type/call/member/import), reusable as input to code_hover/code_definition/code_references. Local-variable rows (var) are omitted by default to keep the output focused on external APIs; use code_scan with roles including "var" if you need locals.',
+                        'If true, append a symbol table for each returned body (default: false). The table lists identifiers their position and syntactic role (type/call/member/import). Local-variable (var) are omitted by default to keep the output focused on external APIs; use code_scan with roles including "var" if you need locals.',
                 }),
             ),
         }),
@@ -255,7 +255,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
                 }),
                 {
                     description:
-                        "One or more (path, line, column) positions to look up. Lines/columns are 1-based.",
+                        "One or more (path, line, column) positions to look up.",
                 },
             ),
         }),
@@ -350,7 +350,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
                 }),
                 {
                     description:
-                        "One or more (path, line, column) positions to look up. Lines/columns are 1-based.",
+                        "One or more (path, line, column) positions to look up.",
                 },
             ),
         }),
@@ -395,7 +395,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             pattern: Type.Optional(
                 Type.String({
                     description:
-                        "Optional JavaScript regexp source (e.g. 'Service', '^get_|^set_', 'id$') tested against each symbol's name. When set, only symbols whose name matches are kept. An invalid regexp is a hard error — escape/anchor as needed.",
+                        "Optional JavaScript case-sensitive regexp. When set, only symbols whose name matches are kept. An invalid regexp is a hard error — escape/anchor as needed.",
                 }),
             ),
             roles: Type.Optional(
@@ -602,9 +602,9 @@ Two groups — ENTRY POINTS produce a position; DETAIL TOOLS consume one.
 
 ENTRY POINTS (you don't have a precise position yet):
 - code_search_symbol — find a symbol by name across the workspace
-- code_outline       — list functions/classes/methods (with signatures) in a file
-- code_tree          — list symbols matching a name pattern in a file
-- code_scan          — list every identifier (with role: type/call/member/import) in a file or range
+- code_outline       — list functions/classes/methods in a file
+- code_tree          — pattern-driven pruned symbol tree with signatures
+- code_scan          — list every identifier (with role: type/call/member/import) in a file or a range
 
 DETAIL TOOLS (take a position — reuse one an entry point printed):
 - code_definition    — jump to a symbol's definition; returns the FULL source body
@@ -627,27 +627,23 @@ Prefer code_* over the grep/read reflex:
 - read a third-party API's source → code_definition at its position (not
   \`python -c "import inspect; inspect.getsource(...)"\` or other hacks for various languages)
 
+
+You can effectively chain tool calls for quickly navigating code base, for example:
+1. code_outline <file> OR code_tree <file> <regexp> OR code_search_symbol <query> OR code_scan <file> <start> <end>.
+   Response will contain position (line, col) for each entry.
+2. Select entry and call code_definition([{path: <file>, line: <line>, column: <col>}], list_symbols=true)
+3. The returned body comes with its OWN symbol table, so you drill down further.
+   call code_definition([{path: <file-from-symbol-table-header>, line: <line>, column: <col>}], list_symbols=true)
+
+
 Retrieving third-party docs/source (site-packages, node_modules, nix store, system headers) workflows:
-1. Shortcut when you ALREADY have a position for the third-party symbol — e.g. a
-   row from the symbol table that code_definition(..., list_symbols=true)
-   appended to a body you just read (members/calls/types inside it are
-   third-party positions too): call code_definition /
-   code_hover directly on previous input path, line and column from symbol table.
-   The returned body comes with its OWN symbol table, so you can
-   chain — define a member it calls, then a member THAT body calls — each hop a
-   single code_definition call, no grep/inspect.getsource involved.
-2. Two-step workflow — scan the source code for the identifier, then code_definition/code_hover that row:
-     (1). code_scan(path, startLine, endLine, pattern="<name>")
-        → returns a row like:  '<role>  <name>  (<line>:<col>)'
-     (2). call code_hover/code_definition on previos input path, line and column from some row.
-        → signature/docstring, or the full source body (jumps into the third-party tree)
-3. Third-party symbol from a NAME only (no position):
+1. Use tool call chains described above.
+2. Third-party symbol from a NAME only (no position):
      (1). resolve the package root.
         If the project uses nix (the common case), every third-party path is exposed via an environment variable — grep the right one for your language:
-        python \`echo $PYTHONPATH | tr ':' '\\n' | grep <name>\`,
-        C++ (cmake, the usual case) \`echo $CMAKE_INCLUDE_PATH | tr ':' '\\n' | grep <name>\`,
-        C++ (no cmake) \`echo $NIX_CFLAGS_COMPILE | tr ' ' '\\n' | grep <name>\`;
-     (2). \`rg -n --column <name> <root>\` — the output is \`line:column:content\`, and on ASCII lines the 1-based line and column match what code_definition/code_hover expect,
-          so pass the hit straight in as (path, line, column);
+        python: \`echo $PYTHONPATH | tr ':' '\\n' | grep <name>\`,
+        C++: (cmake, the usual case) \`echo $CMAKE_INCLUDE_PATH | tr ':' '\\n' | grep <name>\`,
+        C++: (no cmake) \`echo $NIX_CFLAGS_COMPILE | tr ' ' '\\n' | grep <name>\`;
+     (2). \`rg -n --column <name> <root>\` — the output is \`line:column:content\`, and on ASCII lines the 1-based line and column match what code_definition/code_hover expect.
      (3). call code_definition/code_hover on that position (they accept absolute paths, including nix store / site-packages / node_modules / system headers).
     Do NOT rg the whole /nix/store (millions of entries, many versions) — always scope to one resolved package root.`;
