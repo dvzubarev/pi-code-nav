@@ -8,7 +8,7 @@
  *
  *   code_outline     — file structure (functions, classes, methods, signatures)
  *   code_scan        — pattern-driven symbol scan with signatures (parallel hover)
- *   code_definition  — location + source of a symbol's definition
+ *   code_definition  — location + full source body of a symbol's definition
  *   code_references  — list of references for a symbol
  *   code_symbol      — ranked workspace-wide symbol lookup by name
  *   code_rename      — rename a symbol, edits applied to disk
@@ -187,9 +187,9 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 		name: "code_definition",
 		label: "Code Definition",
 		description:
-			"Find the definition of the symbol(s) at the given (path, line, column) position(s). Lines/columns are 1-based. Pass one or more positions to look up (batching multiple in one call is cheaper than N separate calls). Returns each definition's location and its source code. Accepts absolute paths, including third-party locations (nix store, site-packages, node_modules, system headers). Set list_symbols=true to also append a tree-sitter symbol table for each returned snippet (so you can discover third-party/stdlib symbols used inside the body and pass their coordinates to code_hover/code_definition/code_references).",
+			"Find the definition of the symbol(s) at the given (path, line, column) position(s). Lines/columns are 1-based. Pass one or more positions to look up (batching multiple in one call is cheaper than N separate calls). Returns each definition's location and the FULL source body of the definition (the complete function/class/method body, not just the identifier) — resolved via DocumentSymbol when the server supports it, falling back to the definition range otherwise. Accepts absolute paths, including third-party locations (nix store, site-packages, node_modules, system headers). Set list_symbols=true to also append a tree-sitter symbol table for each returned body (so you can discover third-party/stdlib symbols used inside the body and pass their coordinates to code_hover/code_definition/code_references).",
 		promptGuidelines: [
-			"Use code_definition with 1-based line and column to jump to a symbol's definition and read its source. Pass an array of positions to batch several lookups in one call. It accepts absolute paths, so positions in third-party trees (nix store, site-packages, node_modules, system headers) work. Set list_symbols=true to also list the symbols used inside each returned snippet (useful for discovering third-party/stdlib APIs in the body); pass a snippet symbol-table row straight into code_hover/code_definition. For third-party symbols you only have a NAME for, see code_symbols_in's guidelines for the rg workflow.",
+			"Use code_definition with 1-based line and column to jump to a symbol's definition and read its full source body. Pass an array of positions to batch several lookups in one call. It accepts absolute paths, so positions in third-party trees (nix store, site-packages, node_modules, system headers) work. Set list_symbols=true to also list the symbols used inside each returned body (useful for discovering third-party/stdlib APIs in the body); pass a symbol-table row straight into code_hover/code_definition. For third-party symbols you only have a NAME for, see code_symbols_in's guidelines for the rg workflow.",
 		],
 		parameters: Type.Object({
 			positions: Type.Array(
@@ -208,13 +208,13 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 			list_symbols: Type.Optional(
 				Type.Boolean({
 					description:
-						'If true, append a tree-sitter symbol table for each returned snippet (default: false). The table lists identifiers with their absolute 1-based position and syntactic role (type/call/member/import), reusable as input to code_hover/code_definition/code_references. Local-variable rows (var) are omitted by default to keep the output focused on external APIs; use code_symbols_in with roles including "var" if you need locals.',
+						'If true, append a tree-sitter symbol table for each returned body (default: false). The table lists identifiers with their absolute 1-based position and syntactic role (type/call/member/import), reusable as input to code_hover/code_definition/code_references. Local-variable rows (var) are omitted by default to keep the output focused on external APIs; use code_symbols_in with roles including "var" if you need locals.',
 				}),
 			),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			// nav.definition handles the full batched-position logic, per-position
-			// error messages, source-snippet extraction, and optional tree-sitter
+			// error messages, source-body extraction, and optional tree-sitter
 			// symbol table. It never throws on recoverable errors (it pushes them
 			// inline), so no try/catch wrapper is needed here.
 			return text_result(
@@ -348,7 +348,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
 			"List every identifier in a line range of a file with its absolute 1-based (path, line, column) and syntactic role (type/call/member/import/var), parsed by tree-sitter. The output is a table whose rows can be passed directly as (path, line, column) into code_hover / code_definition / code_references. This is the entry point for discovering third-party, stdlib, or system symbols (which code_symbol/workspace-symbol cannot find, since workspace/symbol is workspace-scoped). Set include_docs=true to also hover each symbol and append a one-line label. For third-party symbols you only have a NAME for (from docs or an error) and have no position, see the workflow in the guidelines below (rg over the resolved package root, then feed the hit into code_definition).",
 		promptSnippet: "List identifiers (with positions + roles) in a file range via tree-sitter",
 		promptGuidelines: [
-			"Use code_symbols_in to discover identifiers in a code snippet or line range when you have a file path but not a precise position — e.g. after code_definition returns a snippet containing a third-party/stdlib symbol you want to learn about. Read the table, pick a row's (path, line, column), and pass it to code_hover / code_definition / code_references.",
+			"Use code_symbols_in to discover identifiers in a code snippet or line range when you have a file path but not a precise position — e.g. after code_definition returns a body containing a third-party/stdlib symbol you want to learn about. Read the table, pick a row's (path, line, column), and pass it to code_hover / code_definition / code_references.",
 			"The default path (include_docs=false) makes no LSP calls — it is a pure tree-sitter parse, fast and cheap. Use it first; only set include_docs=true when you need hover labels and are willing to pay the LSP round-trips.",
 			'Roles: type (a type name), call (a function/method being called), member (a field/attribute access like .push_back / .encode), import (a name brought into scope by an import — module names and imported symbols, the primary entry points for third-party discovery), var (a local variable, parameter, or assignment target — hoverable but rarely worth learning about). By default `var` is omitted (noisy locals); pass roles including "var" to include them. The table dedupes by (name, role) and keeps the first occurrence; pass a tighter startLine/endLine to reach a later occurrence.',
 			"Third-party symbol from a NAME only (no position): code_symbol is workspace-scoped and will NOT find it, but code_definition/code_hover DO resolve third-party at a known position. The workflow is: (1) resolve the package root via the project env — python: `python -c \"import cbor2; print(cbor2.__file__)\"`, node: `node -e \"console.log(require.resolve('typescript'))\"`, C++ stdlib: `g++ -E -Wp,-v - </dev/null` (prints the include search list), C++ project deps: the -I flags from compile_commands.json; (2) `rg -n --column <name> <root>` — the output is `line:column:content`, and on ASCII lines the 1-based line and column match what code_definition/code_hover expect, so pass the hit straight in as (path, line, column); (3) call code_definition/code_hover on that position (they accept absolute paths, including nix store / site-packages / node_modules / system headers). Do NOT rg the whole /nix/store (millions of entries, many versions) — always scope to one resolved package root.",

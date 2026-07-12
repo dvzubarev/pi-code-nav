@@ -9,7 +9,7 @@ plus one diagnostic reporter:
 | Tool              | Backing                            | Notes                                                |
 | ----------------- | ---------------------------------- | ---------------------------------------------------- |
 | `code_outline`    | LSP `textDocument/documentSymbol`  | File structure: functions, classes, methods, sigs   |
-| `code_definition` | LSP `textDocument/definition`      | Location + source snippet of a symbol's definition   |
+| `code_definition` | LSP `textDocument/definition`      | Location + full source body of a symbol's definition   |
 | `code_references`| LSP `textDocument/references`      | All references to a symbol                            |
 | `code_symbol`     | LSP `workspace/symbol`             | Ranked symbol search by name, workspace-wide         |
 | `code_rename`     | LSP `textDocument/rename`          | Rename, edits applied to disk                        |
