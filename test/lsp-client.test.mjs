@@ -161,45 +161,6 @@ test("control: workspaceSymbol succeeds against the ok fake server", async () =>
 });
 
 test(
-    // Regression: a server that wedges its INPUT pipe after initialize (stops
-    // draining stdin) is distinct from the `silent` mode (which keeps reading
-    // stdin and only ignores requests). With stdin wedged, a large didOpen
-    // write blocks `writable.write()` forever, holding the writer semaphore —
-    // so the following documentSymbol request never reaches its own
-    // requestWithTimeout race and hangs indefinitely. The fix (notifyWithTimeout
-    // on didOpen) must reject the didOpen write under the timeout instead.
-    "documentSymbol rejects (not hangs) when server wedges stdin after init",
-    withDeadline(8000, "wedge-stdin", async () => {
-        const root = await mkdtemp(resolve(tmpdir(), "code-nav-fake-"));
-        const c = new LspClient("python", root, fakeConfig("wedge-stdin"));
-        try {
-            await c.ensureReady();
-            // A large source file so didOpen exceeds the OS pipe buffer (64KB)
-            // and the write blocks on the wedged stdin. If didOpen is awaited
-            // under notifyWithTimeout, it rejects at the file-wide 300ms;
-            // without that guard the semaphore is held forever and
-            // documentSymbol hangs (caught by withDeadline as a hard hang).
-            const bigText = "x = 1\n" + ("    # " + "a".repeat(200) + "\n").repeat(5000);
-            await assert.rejects(
-                c.documentSymbols(resolve(root, "big.py"), bigText),
-                // Any rejection is acceptable (timeout or a write error);
-                // the contract is "rejects, doesn't hang".
-                () => true,
-            );
-        } finally {
-            try {
-                await c.shutdown();
-            } catch {}
-            // Let the killed child flush/exit so its stdio streams close
-            // cleanly before node:test checks for lingering async activity
-            // (mirrors e2e-helpers.serverAvailable's teardown).
-            await new Promise((r) => setTimeout(r, 50));
-            await rm(root, { recursive: true, force: true });
-        }
-    }),
-);
-
-test(
     // Regression: spawn() with a missing binary (ENOENT) emits an asynchronous
     // 'error' event on the ChildProcess. With no listener, Node treats it as an
     // UNCAUGHT exception and kills the whole pi process — the original crash

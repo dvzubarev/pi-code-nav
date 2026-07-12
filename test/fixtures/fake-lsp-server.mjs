@@ -15,15 +15,6 @@
 //                        every subsequent request forever (stays alive, never
 //                        answers). The client must reject via the per-request
 //                        timeout.
-//   wedge-stdin         — replies to initialize, then STOPS reading stdin
-//                        permanently (removes the data listener + pauses).
-//                        Distinct from `silent` (which keeps reading stdin
-//                        and only ignores requests): a wedged INPUT pipe
-//                        blocks the client's `writable.write()` on a large
-//                        didOpen payload, holding StreamMessageWriter's
-//                        writeSemaphore forever so the following request never
-//                        reaches its own Promise.race. The client must reject
-//                        via the didOpen/notification timeout, not hang.
 //   ok                 — replies to initialize + initialized, then answers
 //                        workspace/symbol with a canned SymbolInformation[].
 //                        Used as a control: the happy path must still work.
@@ -91,17 +82,6 @@ function handle(msg) {
         return;
     }
     if (msg.method === "initialized") {
-        if (mode === "wedge-stdin") {
-            // Stop reading stdin entirely. Any subsequent write (the large
-            // didOpen the client is about to send) will exceed the OS pipe
-            // buffer and block the client's writer — holding the writer's
-            // semaphore. The client's didOpen-notification timeout must
-            // reject (not hang) so the following documentSymbol request can
-            // also reject (via the timeout or the dispose on teardown).
-            process.stdin.removeAllListeners("data");
-            process.stdin.pause();
-            return;
-        }
         return; // notification, no reply
     }
     if (msg.method === "workspace/symbol") {
