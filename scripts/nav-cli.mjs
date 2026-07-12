@@ -74,10 +74,11 @@ function usage() {
 hover/definition/references accept one or more (file line col) triples.
 outline prints a bloat-free structural overview (classes, methods, functions,
   properties/fields) — constants/variables are dropped, no arguments.
-scan takes a regexp matched against symbol names; it prints matches (with
-  ancestors for context) and fetches signatures via parallel LSP hover calls
-  for rows whose server detail is empty (tsserver/ty). No constant/variable
-  filtering — the pattern scopes the candidate set.
+scan takes a regexp matched against symbol names. DWYM: a class/interface/struct
+  match prints ONLY its direct children (methods/properties/fields), each
+  enriched with a hover signature when the server detail is empty (tsserver/ty);
+  any other match prints NO subtree (just the node + ancestors for context).
+  No constant/variable filtering — the pattern scopes the candidate set.
 definition accepts --list-symbols to also append a tree-sitter symbol table
   per returned snippet (mirrors code_definition's list_symbols parameter).
 symbols-in parses a line range with tree-sitter and lists identifiers with

@@ -111,11 +111,11 @@ export function hoverSignature(hoverText: string): string {
 		}
 		// No fence: take the first non-blank line as the signature.
 		if (line) {
-			return trunc(line, 100);
+			return trunc(line, 140);
 		}
 	}
 	if (buf.length === 0) return "";
-	return trunc(buf.join(" ").replace(/\s+/g, " ").trim(), 100);
+	return trunc(buf.join(" ").replace(/\s+/g, " ").trim(), 140);
 }
 
 // ---------------------------------------------------------------------------

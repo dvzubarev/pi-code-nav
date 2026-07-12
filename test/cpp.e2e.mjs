@@ -88,13 +88,17 @@ runOrSkip("code_scan on a .cpp file uses ccls detail (no redundant hover)", asyn
 			"utf8",
 		);
 		const out = await nav.scan({ path: "sample.cpp", pattern: "Widget" }, ws.root, ws.clientOf);
-		// Widget matched → its whole subtree kept as context, each with detail.
+		// Widget matched → its DIRECT children kept as context (DWYM: a
+		// struct/class match emits only direct children, not deep locals), each
+		// carrying the ccls declaration as detail. ccls fills detail, so no
+		// hover round-trips happen here (the hover target filter skips rows
+		// with non-empty detail).
 		assert.match(out, /Struct Widget  struct Widget \{\}/, `Widget match missing:\n${out}`);
-		assert.match(out, /Field field  int Widget::field/, `field (context) missing:\n${out}`);
+		assert.match(out, /Field field  int Widget::field/, `field (direct child) missing:\n${out}`);
 		assert.match(
 			out,
 			/Method method  void Widget::method\(\)/,
-			`method (context) missing:\n${out}`,
+			`method (direct child) missing:\n${out}`,
 		);
 		// MAX (no match, not under a match) is pruned, and main (no match) too.
 		assert.ok(!/MAX/.test(out), `MAX should be pruned:\n${out}`);

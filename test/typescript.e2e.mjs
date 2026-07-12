@@ -97,11 +97,12 @@ runOrSkip(
 	"code_scan on a .ts file fetches signatures via parallel hover (detail empty)",
 	async () => {
 		// tsserver leaves DocumentSymbol.detail empty, so code_scan falls back to
-		// one LSP hover per matched row (fired in parallel via Promise.all —
-		// JSON-RPC over stdio supports concurrent in-flight requests). The
-		// hover-first-line is appended as a signature label. This is the path
-		// code_outline does NOT take (it stays a single documentSymbol call);
-		// code_scan is where the hover cost lives, scoped by the pattern.
+		// one LSP hover per matched row AND per direct child of a class match
+		// (fired in parallel via Promise.all — JSON-RPC over stdio supports
+		// concurrent in-flight requests). The hover signature is appended as a
+		// label. This is the path code_outline does NOT take (it stays a single
+		// documentSymbol call); code_scan is where the hover cost lives, scoped
+		// by the pattern.
 		const ws = await withWorkspace([]);
 		try {
 			const file = resolve(ws.root, "svc.ts");
@@ -119,7 +120,11 @@ runOrSkip(
 				"utf8",
 			);
 			// Match Service → class row (hovered, since detail is empty) + its
-			// members as context (NOT hovered — they're context, not matches).
+			// DIRECT children as context. DWYM: because Service is a class match,
+			// each direct child is also hovered for a signature (tsserver leaves
+			// detail empty, so the hover is what enriches them) — this is the
+			// signature-enriched promise of code_scan. Deep locals (none here,
+			// but in real files: constants inside methods) are NOT dumped.
 			const out = await nav.scan(
 				{ path: "svc.ts", pattern: "Service" },
 				ws.root,
@@ -131,11 +136,20 @@ runOrSkip(
 				/^Class Service  .+\(\d+:\d+\)$/m,
 				`Service match row with signature missing:\n${out}`,
 			);
-			// Its members are kept as context (indented), without signatures.
+			// Its direct members are kept (indented) and carry hover-derived
+			// signatures — they are NOT bare context rows anymore.
 			assert.match(
 				out,
-				/^  Method getId  \(\d+:\d+\)$/m,
-				`getId (context member) missing:\n${out}`,
+				/^  Method getId  .+\(\d+:\d+\)$/m,
+				`getId (direct member with signature) missing:\n${out}`,
+			);
+			// The constructor parameter property `id` is also a direct child and
+			// gets a signature — confirming all direct children are hovered, not
+			// just methods.
+			assert.match(
+				out,
+				/^  Property id  .+\(\d+:\d+\)$/m,
+				`id (direct property with signature) missing:\n${out}`,
 			);
 			// NOISE (Constant, no match, not under a match) is pruned — and even
 			// if it had matched, code_scan does NOT apply the outline allowlist.

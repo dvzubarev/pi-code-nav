@@ -58,8 +58,10 @@ runOrSkip("code_scan on second.py matches TempC and its members", async () => {
 	const ws = await withWorkspace(["second.py"]);
 	try {
 		// Pattern-driven scan: TempC matches → the class row (with a hover
-		// signature, since ty leaves detail empty) PLUS its whole subtree as
-		// context. Point (no match, no matching descendant) is pruned.
+		// signature, since ty leaves detail empty) PLUS its DIRECT children as
+		// context — and because TempC is a class match, those direct children
+		// are also hovered for signatures (DWYM). Deep locals are NOT dumped.
+		// Point (no match, no matching descendant) is pruned.
 		const out = await nav.scan({ path: "second.py", pattern: "TempC" }, ws.root, ws.clientOf);
 		const lines = out.split("\n");
 		// TempC itself is matched.
@@ -67,11 +69,11 @@ runOrSkip("code_scan on second.py matches TempC and its members", async () => {
 			lines.some((l) => /^Class TempC  .+\(\d+:\d+\)$/.test(l)),
 			`TempC match row with signature missing:\n${out}`,
 		);
-		// Its members are kept as context (indented, no signature label since
-		// they're not themselves matches — only the matched node is hovered).
+		// Its direct members are kept (indented) and carry hover-derived
+		// signatures — they are NOT bare context rows anymore.
 		assert.ok(
-			lines.some((l) => /^  Method punintend  \(\d+:\d+\)$/.test(l)),
-			`punintend (context member) missing:\n${out}`,
+			lines.some((l) => /^  Method punintend  .+\(\d+:\d+\)$/.test(l)),
+			`punintend (direct member with signature) missing:\n${out}`,
 		);
 		// Point is pruned (no match in its subtree).
 		assert.ok(

@@ -182,57 +182,70 @@ export interface ScanParams {
 
 /**
  * One row of the scan result: the symbol, its tree depth (for indentation),
- * and whether this node itself matched the pattern (descendants-matched nodes
- * are kept as context but are not themselves hovers/hovered).
+ * whether this node itself matched the pattern, and whether it's a direct
+ * child of a class/interface/struct match (in which case it's hovered for a
+ * signature even though it isn't itself a match — see DWYM rule below).
  */
 interface ScanRow {
 	sym: DocumentSymbol;
 	depth: number;
 	matched: boolean;
+	/** True for direct children of a class/interface/struct match. */
+	directClassChild: boolean;
 }
+
+/** LSP SymbolKind values that trigger the class-match DWYM path. */
+const CLASS_LIKE_KINDS = new Set([5, 11, 23]); // Class, Interface, Struct
 
 /**
  * Prune a DocumentSymbol tree to matches, returning a flat list of rows
- * with depth + a `matched` flag. Semantics (per docs/outline-constants.md):
+ * with depth + flags. Semantics (DWYM — do what the agent means):
  *
- *   1. A node whose name matches the pattern is a match. A match's ENTIRE
- *      subtree is kept (children, grandchildren, …) as context — the agent
- *      asked about this entry, so it wants to see what's inside. Those
- *      descendants are kept with `matched: false` (they're context, not
- *      matches themselves, so they're not hovered).
+ *   1. A node whose name matches the pattern is a match. The matched node is
+ *      always emitted (matched: true).
+ *        a. If the match is a class/interface/struct, emit ONLY its DIRECT
+ *           children (methods/properties/fields) as context rows with
+ *           `directClassChild: true` — the agent asked about the class, so it
+ *           wants the member list, not the deep locals of every method. Deep
+ *           nesting (constants inside methods, properties inside those) is
+ *           dropped; the agent can code_hover/code_definition a member to go
+ *           deeper. Direct children are hovered for signatures (see scan).
+ *        b. If the match is anything else (method/function/property/…), emit
+ *           NOTHING from its subtree. The agent asked about this specific
+ *           symbol; its body locals are noise. Ancestors still provide context.
  *   2. A node with a matching descendant is kept as an ancestor for context
  *      (so the agent sees where the match sits in the hierarchy), but its
  *      non-matching sibling subtrees are pruned.
  *
- * The two rules compose: a self-match pulls in its whole subtree; a
- * descendant match pulls in its ancestors. Siblings with no match in their
- * subtree are dropped. Output is in pre-order (parents before children) so
- * indentation renders the hierarchy correctly.
+ * Output is in pre-order (parents before children) so indentation renders the
+ * hierarchy correctly.
  */
 function collectScanRows(syms: DocumentSymbol[], re: RegExp): ScanRow[] {
 	const out: ScanRow[] = [];
-	// `forceKeep`: when true, emit this node and ALL descendants unconditionally
-	// (matched=false for everyone). This is set on the subtree of a self-match
-	// (rule 1's descendant side).
-	const walk = (nodes: DocumentSymbol[], depth: number, forceKeep: boolean): boolean => {
+	const walk = (nodes: DocumentSymbol[], depth: number): boolean => {
 		let anyMatchInSubtree = false;
 		for (const s of nodes) {
 			const selfMatch = re.test(s.name);
 			const children =
 				(s as unknown as { children?: DocumentSymbol[] }).children ?? [];
-			if (forceKeep) {
-				// Rule 1 (descendant side): an ancestor self-matched; emit this whole
-				// subtree as context, none of it "matched".
-				out.push({ sym: s, depth, matched: false });
-				walk(children, depth + 1, true);
-				anyMatchInSubtree = true;
-				continue;
-			}
+			const kind = (s as unknown as { kind?: number }).kind;
 			if (selfMatch) {
-				// Rule 1 (root side): self-match — emit (matched: true) and
-				// force-keep the whole subtree below as context.
-				out.push({ sym: s, depth, matched: true });
-				walk(children, depth + 1, true);
+				// Rule 1: self-match — emit (matched: true).
+				out.push({ sym: s, depth, matched: true, directClassChild: false });
+				if (CLASS_LIKE_KINDS.has(kind ?? 0)) {
+					// Rule 1a (class-like): emit ONLY direct children, flagged so the
+					// caller knows to hover them for signatures. Do NOT recurse —
+					// deep locals of each member are dropped (DWYM).
+					for (const ch of children) {
+						out.push({
+							sym: ch,
+							depth: depth + 1,
+							matched: false,
+							directClassChild: true,
+						});
+					}
+				}
+				// Rule 1b (non-class): emit nothing from the subtree.
 				anyMatchInSubtree = true;
 				continue;
 			}
@@ -240,8 +253,8 @@ function collectScanRows(syms: DocumentSymbol[], re: RegExp): ScanRow[] {
 			// We don't yet know whether a descendant matches, so reserve a slot now
 			// (pre-order: parent before children) and fill/evict it after recursing.
 			const slot = out.length;
-			out.push({ sym: s, depth, matched: false }); // tentative
-			const childMatch = walk(children, depth + 1, false);
+			out.push({ sym: s, depth, matched: false, directClassChild: false }); // tentative
+			const childMatch = walk(children, depth + 1);
 			if (childMatch) {
 				anyMatchInSubtree = true; // keep the slot
 			} else {
@@ -250,7 +263,7 @@ function collectScanRows(syms: DocumentSymbol[], re: RegExp): ScanRow[] {
 		}
 		return anyMatchInSubtree;
 	};
-	walk(syms, 0, false);
+	walk(syms, 0);
 	return out;
 }
 
@@ -318,16 +331,22 @@ export async function scan(
 	if (rows.length === 0) {
 		return `(no symbols matching /${params.pattern}/ in ${params.path})`;
 	}
-	// Hover the MATCHED rows whose `detail` is empty, in parallel (JSON-RPC
-	// over stdio supports concurrent in-flight requests; measured ~4ms for 10
-	// hovers). Ancestors kept for context are not hovered (they're just there to
-	// show the path; their own signature is rarely interesting and hovering them
-	// would balloon the candidate set when the match is deep). Skip rows that
-	// already have a non-empty `detail` (ccls fills these for free) — no point
-	// paying a hover to duplicate the server's own declaration string.
+	// Hover the rows whose `detail` is empty, in parallel (JSON-RPC over stdio
+	// supports concurrent in-flight requests; measured ~4ms for 10 hovers):
+	//   - matched rows (any kind) — the agent asked about these by name;
+	//   - direct children of a class/interface/struct match (DWYM rule 1a) —
+	//     the agent asked about the class, so its member list should carry
+	//     signatures, not just bare names. This is where code_scan earns its
+	//     "signature-enriched" promise for tsserver/ty (which leave `detail`
+	//     empty); ccls fills `detail` for members, so they're skipped here.
+	// Ancestors kept for context (rule 2) are NOT hovered — they're just the
+	// path to the match; their own signature is rarely interesting and hovering
+	// them would balloon the candidate set when the match is deep. Skip rows
+	// that already have a non-empty `detail` — no point paying a hover to
+	// duplicate the server's own declaration string.
 	const hoverTargets = rows.filter(
 		(r) =>
-			r.matched &&
+			(r.matched || r.directClassChild) &&
 			!(r.sym as unknown as { detail?: string | null }).detail,
 	);
 	const signatures = new Map<DocumentSymbol, string>();
