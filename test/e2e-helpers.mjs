@@ -36,8 +36,8 @@ export const SHOULD_RUN_E2E = !process.env.CODE_NAV_SKIP_E2E;
 // reports the actual assertion results instead of crashing the whole file.
 // (Every e2e file imports from this module, so registering it here covers all.)
 process.on("unhandledRejection", (err) => {
-	if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
-	throw err;
+    if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
+    throw err;
 });
 
 /**
@@ -50,40 +50,40 @@ process.on("unhandledRejection", (err) => {
  *   (relative paths are preserved; subdirs created as needed).
  */
 export async function withWorkspace(fixtureNames = []) {
-	const root = await mkdtemp(resolve(tmpdir(), "code-nav-e2e-"));
-	const toShutdown = [];
-	const clients = new Map();
+    const root = await mkdtemp(resolve(tmpdir(), "code-nav-e2e-"));
+    const toShutdown = [];
+    const clients = new Map();
 
-	// Copy fixtures into the temp root.
-	for (const name of fixtureNames) {
-		const src = resolve(FIXTURES_DIR, name);
-		const dst = resolve(root, name);
-		const { dirname: d } = await import("node:path");
-		await mkdir(resolve(root, d(name)), { recursive: true });
-		const { readFile } = await import("node:fs/promises");
-		await writeFile(dst, await readFile(src, "utf8"), "utf8");
-	}
+    // Copy fixtures into the temp root.
+    for (const name of fixtureNames) {
+        const src = resolve(FIXTURES_DIR, name);
+        const dst = resolve(root, name);
+        const { dirname: d } = await import("node:path");
+        await mkdir(resolve(root, d(name)), { recursive: true });
+        const { readFile } = await import("node:fs/promises");
+        await writeFile(dst, await readFile(src, "utf8"), "utf8");
+    }
 
-	const clientOf = async (lang) => {
-		let c = clients.get(lang);
-		if (!c) {
-			c = new LspClient(lang, root, resolveConfig(lang));
-			clients.set(lang, c);
-			toShutdown.push(c);
-		}
-		await c.ensureReady();
-		return c;
-	};
+    const clientOf = async (lang) => {
+        let c = clients.get(lang);
+        if (!c) {
+            c = new LspClient(lang, root, resolveConfig(lang));
+            clients.set(lang, c);
+            toShutdown.push(c);
+        }
+        await c.ensureReady();
+        return c;
+    };
 
-	return {
-		root,
-		clientOf,
-		async cleanup() {
-			await Promise.allSettled(toShutdown.map((c) => c.shutdown()));
-			clients.clear();
-			await rm(root, { recursive: true, force: true });
-		},
-	};
+    return {
+        root,
+        clientOf,
+        async cleanup() {
+            await Promise.allSettled(toShutdown.map((c) => c.shutdown()));
+            clients.clear();
+            await rm(root, { recursive: true, force: true });
+        },
+    };
 }
 
 /**
@@ -92,16 +92,16 @@ export async function withWorkspace(fixtureNames = []) {
  * to skip themselves gracefully when a server isn't installed (e.g. bash).
  */
 export async function serverAvailable(lang, cwd) {
-	try {
-		const c = new LspClient(lang, cwd ?? tmpdir(), resolveConfig(lang));
-		await c.ensureReady();
-		await c.shutdown();
-		// Give the child process a moment to flush + exit so its stdio streams
-		// close cleanly before the test harness checks for lingering async
-		// activity (otherwise node:test reports ERR_STREAM_DESTROYED).
-		await new Promise((r) => setTimeout(r, 50));
-		return true;
-	} catch {
-		return false;
-	}
+    try {
+        const c = new LspClient(lang, cwd ?? tmpdir(), resolveConfig(lang));
+        await c.ensureReady();
+        await c.shutdown();
+        // Give the child process a moment to flush + exit so its stdio streams
+        // close cleanly before the test harness checks for lingering async
+        // activity (otherwise node:test reports ERR_STREAM_DESTROYED).
+        await new Promise((r) => setTimeout(r, 50));
+        return true;
+    } catch {
+        return false;
+    }
 }

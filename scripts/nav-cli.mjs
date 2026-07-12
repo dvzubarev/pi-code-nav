@@ -63,7 +63,7 @@ const ROOT = process.env.CODE_NAV_ROOT ?? process.cwd();
 const [cmd, ...rest] = process.argv.slice(2);
 
 function usage() {
-	console.error(`usage (root: ${ROOT}):
+    console.error(`usage (root: ${ROOT}):
   node nav-cli.mjs outline <file>
   node nav-cli.mjs tree <file> <pattern>
   node nav-cli.mjs hover <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
@@ -97,7 +97,7 @@ diagnostics fetches errors/warnings for a file via the LSP pull model
 
 env:
   CODE_NAV_ROOT  workspace root (default: cwd)`);
-	process.exit(2);
+    process.exit(2);
 }
 
 // One LSP client per language, spawned lazily and reused across calls in one
@@ -105,123 +105,123 @@ env:
 // All spawned clients are shut down on exit (success or error).
 const clients = new Map();
 const clientOf = async (lang) => {
-	let c = clients.get(lang);
-	if (!c) {
-		c = new LspClient(lang, ROOT, resolveConfig(lang));
-		clients.set(lang, c);
-	}
-	await c.ensureReady();
-	return c;
+    let c = clients.get(lang);
+    if (!c) {
+        c = new LspClient(lang, ROOT, resolveConfig(lang));
+        clients.set(lang, c);
+    }
+    await c.ensureReady();
+    return c;
 };
 async function shutdownAll() {
-	await Promise.allSettled([...clients.values()].map((c) => c.shutdown()));
-	clients.clear();
+    await Promise.allSettled([...clients.values()].map((c) => c.shutdown()));
+    clients.clear();
 }
 
 async function main() {
-	if (!cmd) usage();
-	if (cmd === "outline") {
-		const [path] = rest;
-		if (!path) usage();
-		console.log(await nav.outline({ path }, ROOT, clientOf));
-	} else if (cmd === "tree") {
-		// tree <file> <pattern> — pattern is a regexp tested against symbol names.
-		const [path, pattern] = rest;
-		if (!path || !pattern) usage();
-		console.log(await nav.tree({ path, pattern }, ROOT, clientOf));
-	} else if (cmd === "hover" || cmd === "definition" || cmd === "references") {
-		// Accept one or more (file line col) triples. Each triple is batched
-		// through one LSP client per language (mirroring the `positions` array
-		// the code_definition/code_hover/code_references tools accept in nav.ts).
-		// `definition` also accepts a trailing --list-symbols flag (mirrors the
-		// list_symbols parameter of the code_definition tool).
-		const listSymbols = rest.includes("--list-symbols");
-		const positional = rest.filter((a) => a !== "--list-symbols");
-		if (positional.length < 3 || positional.length % 3 !== 0) usage();
-		const positions = [];
-		for (let i = 0; i + 2 < positional.length; i += 3) {
-			positions.push({
-				path: positional[i],
-				line: parseInt(positional[i + 1], 10),
-				column: parseInt(positional[i + 2], 10),
-			});
-		}
-		if (positions.length === 0) usage();
-		if (cmd === "hover") console.log(await nav.hover({ positions }, ROOT, clientOf));
-		else if (cmd === "definition")
-			console.log(
-				await nav.definition({ positions, list_symbols: listSymbols }, ROOT, clientOf),
-			);
-		else console.log(await nav.references({ positions }, ROOT, clientOf));
-	} else if (cmd === "rename") {
-		const [path, lineStr, colStr, newName] = rest;
-		if (!path || !lineStr || !colStr || !newName) usage();
-		const line = parseInt(lineStr, 10),
-			column = parseInt(colStr, 10);
-		console.log(await nav.rename({ path, line, column, newName }, ROOT, clientOf));
-	} else if (cmd === "symbol") {
-		const [query, langArg] = rest;
-		if (!query) usage();
-		const params = { query };
-		if (langArg) params.language = langArg;
-		console.log(await nav.symbol(params, ROOT, clientOf));
-	} else if (cmd === "scan") {
-		// scan <file> [<startLine> <endLine>] [--pattern <re>] [--docs] [--roles ...]
-		// With no line range, scan the whole file. --pattern filters by name.
-		const wantDocs = rest.includes("--docs");
-		const rolesArg = rest.find((a) => a.startsWith("--roles"));
-		let roles;
-		if (rolesArg) {
-			const val = rolesArg.includes("=") ? rolesArg.slice(rolesArg.indexOf("=") + 1) : "";
-			const list = val
-				.split(",")
-				.map((s) => s.trim())
-				.filter(Boolean);
-			const valid = ["type", "call", "member", "import", "var"];
-			roles = list.filter((r) => valid.includes(r));
-			if (roles.length === 0)
-				throw new Error(`--roles: expected a comma list from ${valid.join(",")}`);
-		}
-		let pattern;
-		const patIdx = rest.indexOf("--pattern");
-		if (patIdx >= 0) {
-			pattern = rest[patIdx + 1];
-			if (!pattern) throw new Error("--pattern requires a regexp argument");
-		}
-		// Positional args: path, optionally startLine + endLine. Strip flags and
-		// the --pattern value from the positional set so they aren't parsed as
-		// path/line numbers.
-		const isFlaglike = (a) => a === "--docs" || a.startsWith("--roles") || a === "--pattern";
-		const positional = rest.filter((a, i) => {
-			if (a === "--pattern") return false;
-			if (i > 0 && rest[i - 1] === "--pattern") return false;
-			return !isFlaglike(a);
-		});
-		if (positional.length !== 1 && positional.length !== 3) usage();
-		const [path, startStr, endStr] = positional;
-		const params = { path, roles, include_docs: wantDocs, pattern };
-		if (positional.length === 3) {
-			const startLine = parseInt(startStr, 10),
-				endLine = parseInt(endStr, 10);
-			if (!Number.isInteger(startLine) || !Number.isInteger(endLine)) usage();
-			params.startLine = startLine;
-			params.endLine = endLine;
-		}
-		console.log(await nav.scan(params, ROOT, clientOf));
-	} else if (cmd === "diagnostics") {
-		const [path] = rest;
-		if (!path) usage();
-		console.log(await nav.diagnostics({ path }, ROOT, clientOf));
-	} else {
-		usage();
-	}
+    if (!cmd) usage();
+    if (cmd === "outline") {
+        const [path] = rest;
+        if (!path) usage();
+        console.log(await nav.outline({ path }, ROOT, clientOf));
+    } else if (cmd === "tree") {
+        // tree <file> <pattern> — pattern is a regexp tested against symbol names.
+        const [path, pattern] = rest;
+        if (!path || !pattern) usage();
+        console.log(await nav.tree({ path, pattern }, ROOT, clientOf));
+    } else if (cmd === "hover" || cmd === "definition" || cmd === "references") {
+        // Accept one or more (file line col) triples. Each triple is batched
+        // through one LSP client per language (mirroring the `positions` array
+        // the code_definition/code_hover/code_references tools accept in nav.ts).
+        // `definition` also accepts a trailing --list-symbols flag (mirrors the
+        // list_symbols parameter of the code_definition tool).
+        const listSymbols = rest.includes("--list-symbols");
+        const positional = rest.filter((a) => a !== "--list-symbols");
+        if (positional.length < 3 || positional.length % 3 !== 0) usage();
+        const positions = [];
+        for (let i = 0; i + 2 < positional.length; i += 3) {
+            positions.push({
+                path: positional[i],
+                line: parseInt(positional[i + 1], 10),
+                column: parseInt(positional[i + 2], 10),
+            });
+        }
+        if (positions.length === 0) usage();
+        if (cmd === "hover") console.log(await nav.hover({ positions }, ROOT, clientOf));
+        else if (cmd === "definition")
+            console.log(
+                await nav.definition({ positions, list_symbols: listSymbols }, ROOT, clientOf),
+            );
+        else console.log(await nav.references({ positions }, ROOT, clientOf));
+    } else if (cmd === "rename") {
+        const [path, lineStr, colStr, newName] = rest;
+        if (!path || !lineStr || !colStr || !newName) usage();
+        const line = parseInt(lineStr, 10),
+            column = parseInt(colStr, 10);
+        console.log(await nav.rename({ path, line, column, newName }, ROOT, clientOf));
+    } else if (cmd === "symbol") {
+        const [query, langArg] = rest;
+        if (!query) usage();
+        const params = { query };
+        if (langArg) params.language = langArg;
+        console.log(await nav.symbol(params, ROOT, clientOf));
+    } else if (cmd === "scan") {
+        // scan <file> [<startLine> <endLine>] [--pattern <re>] [--docs] [--roles ...]
+        // With no line range, scan the whole file. --pattern filters by name.
+        const wantDocs = rest.includes("--docs");
+        const rolesArg = rest.find((a) => a.startsWith("--roles"));
+        let roles;
+        if (rolesArg) {
+            const val = rolesArg.includes("=") ? rolesArg.slice(rolesArg.indexOf("=") + 1) : "";
+            const list = val
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean);
+            const valid = ["type", "call", "member", "import", "var"];
+            roles = list.filter((r) => valid.includes(r));
+            if (roles.length === 0)
+                throw new Error(`--roles: expected a comma list from ${valid.join(",")}`);
+        }
+        let pattern;
+        const patIdx = rest.indexOf("--pattern");
+        if (patIdx >= 0) {
+            pattern = rest[patIdx + 1];
+            if (!pattern) throw new Error("--pattern requires a regexp argument");
+        }
+        // Positional args: path, optionally startLine + endLine. Strip flags and
+        // the --pattern value from the positional set so they aren't parsed as
+        // path/line numbers.
+        const isFlaglike = (a) => a === "--docs" || a.startsWith("--roles") || a === "--pattern";
+        const positional = rest.filter((a, i) => {
+            if (a === "--pattern") return false;
+            if (i > 0 && rest[i - 1] === "--pattern") return false;
+            return !isFlaglike(a);
+        });
+        if (positional.length !== 1 && positional.length !== 3) usage();
+        const [path, startStr, endStr] = positional;
+        const params = { path, roles, include_docs: wantDocs, pattern };
+        if (positional.length === 3) {
+            const startLine = parseInt(startStr, 10),
+                endLine = parseInt(endStr, 10);
+            if (!Number.isInteger(startLine) || !Number.isInteger(endLine)) usage();
+            params.startLine = startLine;
+            params.endLine = endLine;
+        }
+        console.log(await nav.scan(params, ROOT, clientOf));
+    } else if (cmd === "diagnostics") {
+        const [path] = rest;
+        if (!path) usage();
+        console.log(await nav.diagnostics({ path }, ROOT, clientOf));
+    } else {
+        usage();
+    }
 }
 
 try {
-	await main();
+    await main();
 } catch (e) {
-	console.error("FAILED:", e);
-	process.exitCode = 1;
+    console.error("FAILED:", e);
+    process.exitCode = 1;
 } finally {
-	await shutdownAll();
+    await shutdownAll();
 }

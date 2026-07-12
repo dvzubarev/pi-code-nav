@@ -24,22 +24,22 @@ import { dirname, resolve } from "node:path";
 export const EXT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const jiti = createJiti(EXT_DIR, {
-	// Cache off so edits to the .ts source are picked up on re-run without
-	// needing to clear a cache dir. The modules are tiny; re-parse is cheap.
-	cache: false,
-	// interopDefault so `import { parseSymbols } from ...` works regardless of
-	// how the module's default export is shaped.
-	interopDefault: true,
+    // Cache off so edits to the .ts source are picked up on re-run without
+    // needing to clear a cache dir. The modules are tiny; re-parse is cheap.
+    cache: false,
+    // interopDefault so `import { parseSymbols } from ...` works regardless of
+    // how the module's default export is shaped.
+    interopDefault: true,
 });
 
 /** Load a module from the extension by relative path (e.g. "./tree-sitter-parse.ts"). */
 export function load(rel) {
-	return jiti.import(rel);
+    return jiti.import(rel);
 }
 
 /** Convenience: the tree-sitter parse module (the unit-test target). */
 export function loadParse() {
-	return load("./tree-sitter-parse.ts");
+    return load("./tree-sitter-parse.ts");
 }
 
 /**
@@ -49,37 +49,37 @@ export function loadParse() {
  * significant only for the kept position, not for which rows exist).
  */
 export async function parseMap(lang, text, opts = {}) {
-	const { parseSymbols } = await loadParse();
-	const entries = await parseSymbols(lang, { text, ...opts });
-	if (entries === null) throw new Error(`parseSymbols returned null for ${lang}`);
-	const m = new Map();
-	for (const e of entries) m.set(`${e.role}:${e.name}`, e);
-	return m;
+    const { parseSymbols } = await loadParse();
+    const entries = await parseSymbols(lang, { text, ...opts });
+    if (entries === null) throw new Error(`parseSymbols returned null for ${lang}`);
+    const m = new Map();
+    for (const e of entries) m.set(`${e.role}:${e.name}`, e);
+    return m;
 }
 
 /** All entries as a sorted, stable string list for snapshot-style assertions. */
 export async function parseList(lang, text, opts = {}) {
-	const { parseSymbols } = await loadParse();
-	const entries = await parseSymbols(lang, { text, ...opts });
-	if (entries === null) throw new Error(`parseSymbols returned null for ${lang}`);
-	return entries.map((e) => `${e.role}\t${e.name}\t${e.line}:${e.column}`).sort();
+    const { parseSymbols } = await loadParse();
+    const entries = await parseSymbols(lang, { text, ...opts });
+    if (entries === null) throw new Error(`parseSymbols returned null for ${lang}`);
+    return entries.map((e) => `${e.role}\t${e.name}\t${e.line}:${e.column}`).sort();
 }
 
 /** Assert that a map contains a role:name entry at the expected 1-based pos. */
 export function assertEntry(map, role, name, line, column) {
-	const e = map.get(`${role}:${name}`);
-	if (!e) {
-		throw new Error(`missing ${role}:${name} (have: ${[...map.keys()].join(", ")})`);
-	}
-	if (e.line !== line || e.column !== column) {
-		throw new Error(`${role}:${name} expected ${line}:${column}, got ${e.line}:${e.column}`);
-	}
-	return e;
+    const e = map.get(`${role}:${name}`);
+    if (!e) {
+        throw new Error(`missing ${role}:${name} (have: ${[...map.keys()].join(", ")})`);
+    }
+    if (e.line !== line || e.column !== column) {
+        throw new Error(`${role}:${name} expected ${line}:${column}, got ${e.line}:${e.column}`);
+    }
+    return e;
 }
 
 /** Assert that a map does NOT contain a role:name entry. */
 export function assertNoEntry(map, role, name) {
-	if (map.has(`${role}:${name}`)) {
-		throw new Error(`unexpected ${role}:${name} present (should be filtered)`);
-	}
+    if (map.has(`${role}:${name}`)) {
+        throw new Error(`unexpected ${role}:${name} present (should be filtered)`);
+    }
 }
