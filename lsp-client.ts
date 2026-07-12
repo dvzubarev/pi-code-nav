@@ -247,6 +247,60 @@ const silentLogger: Logger = {
     log: (_m: string) => {},
 };
 
+/**
+ * Default per-request deadline (ms). A server that has replied to
+ * `initialize` but then silently drops a request (or crashes after init
+ * without disposing its connection) would otherwise leave sendRequest
+ * awaiting forever — the tool call hangs. The exit/onClose → dispose() path
+ * rejects in-flight requests on process death; this timeout covers the
+ * alive-but-silent case (e.g. typescript-language-server over a project-less
+ * root, or a server wedged mid-request). Generous enough for slow indexing
+ * (ccls on a cold cache, tsserver on a large project); short enough that the
+ * agent gets an error it can report per-language instead of hanging.
+ * Override with the CODE_NAV_REQUEST_TIMEOUT_MS env var (ms) — used by the
+ * unit tests to keep the silent-server regression test fast.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
+function resolveRequestTimeoutMs(): number {
+    return (
+        Number.parseInt(process.env.CODE_NAV_REQUEST_TIMEOUT_MS ?? "", 10) ||
+        DEFAULT_REQUEST_TIMEOUT_MS
+    );
+}
+
+class RequestTimeoutError extends Error {
+    constructor(method: string, ms: number) {
+        super(`LSP ${method} timed out after ${ms}ms`);
+        this.name = "RequestTimeoutError";
+    }
+}
+
+/**
+ * sendRequest with a bounded deadline. Races the jsonrpc sendRequest against a
+ * timer; on timeout, rejects with RequestTimeoutError (and disposes the
+ * connection — a wedged server's pending request is worthless, and dispose
+ * also rejects any OTHER in-flight requests on the same dead connection).
+ * The timer is cleared on a prompt reply so no dangling timeout fires after
+ * success. `conn` is the live MessageConnection (caller passes this.conn!,
+ * having just ensureReady()'d).
+ */
+async function requestWithTimeout(
+    conn: MessageConnection,
+    method: string,
+    params: unknown,
+    ms: number = resolveRequestTimeoutMs(),
+): Promise<unknown> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new RequestTimeoutError(method, ms)), ms);
+    });
+    try {
+        return await Promise.race([conn.sendRequest(method, params), timeout]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
 export class LspClient {
     readonly lang: Lang;
     readonly rootUri: string;
@@ -304,6 +358,24 @@ export class LspClient {
                     `[code-nav ${this.lang}] server exited code=${code} signal=${signal}`,
                 );
             }
+            // Dispose the connection FIRST, while `conn` still holds the live
+            // MessageConnection. dispose() rejects every in-flight sendRequest
+            // promise with ConnectionErrors.Disposed (error code
+            // PendingResponseRejected, -32097) — see vscode-jsonrpc
+            // messages.ts: "The connection got disposed or lost and all
+            // pending responses got rejected." Without this, a server that
+            // exits AFTER a successful initialize but BEFORE answering a
+            // request (e.g. ty crashes over some projects right after init)
+            // leaves the sendRequest promise awaiting a reply on a dead pipe
+            // forever — the tool hangs. The field-nilling below only stops
+            // FUTURE requests; it does not settle the outstanding ones.
+            if (this.conn) {
+                try {
+                    this.conn.dispose();
+                } catch {
+                    // Connection may already be disposed/ended.
+                }
+            }
             this.proc = null;
             this.conn = null;
             this.capabilities = null;
@@ -327,6 +399,18 @@ export class LspClient {
                 this.diagnosticsByUri.set(uri, diags);
             },
         );
+        // If the transport closes without the process exiting (reader hits
+        // EOF / writer error), vscode-jsonrpc fires onClose. dispose() there
+        // too for the same reason as the exit handler above — reject in-flight
+        // requests instead of leaving them dangling on a dead pipe. The
+        // closure captures the local `conn`, not `this.conn`, so it still works
+        // after the exit handler nulls this.conn; onClose on an already-
+        // disposed connection is a no-op.
+        conn.onClose(() => {
+            try {
+                conn.dispose();
+            } catch {}
+        });
         conn.listen();
         this.conn = conn;
 
@@ -383,7 +467,7 @@ export class LspClient {
         ] as unknown as InitializeParams["workspaceFolders"];
         initParams.workspaceFolders = wf;
 
-        const result = (await conn.sendRequest("initialize", initParams)) as {
+        const result = (await requestWithTimeout(conn, "initialize", initParams)) as {
             capabilities: ServerCapabilities;
         };
         this.capabilities = result.capabilities;
@@ -462,7 +546,7 @@ export class LspClient {
     ): Promise<DocumentSymbol[] | SymbolInformation[]> {
         await this.openDocument(absPath, text);
         const uri = pathToFileURL(absPath).href;
-        const res = await this.conn!.sendRequest("textDocument/documentSymbol", {
+        const res = await requestWithTimeout(this.conn!, "textDocument/documentSymbol", {
             textDocument: { uri },
         });
         return (res as DocumentSymbol[] | SymbolInformation[] | null) ?? [];
@@ -476,7 +560,7 @@ export class LspClient {
     ): Promise<Definition> {
         await this.openDocument(absPath, text);
         const uri = pathToFileURL(absPath).href;
-        const res = await this.conn!.sendRequest("textDocument/definition", {
+        const res = await requestWithTimeout(this.conn!, "textDocument/definition", {
             textDocument: { uri },
             position: { line, character: col },
         });
@@ -496,14 +580,14 @@ export class LspClient {
             position: { line, character: col },
             context: { includeDeclaration: true },
         };
-        const res = await this.conn!.sendRequest("textDocument/references", params);
+        const res = await requestWithTimeout(this.conn!, "textDocument/references", params);
         return (res as Location[] | null) ?? [];
     }
 
     async hover(absPath: string, line: number, col: number, text: string): Promise<Hover | null> {
         await this.openDocument(absPath, text);
         const uri = pathToFileURL(absPath).href;
-        const res = await this.conn!.sendRequest("textDocument/hover", {
+        const res = await requestWithTimeout(this.conn!, "textDocument/hover", {
             textDocument: { uri },
             position: { line, character: col },
         });
@@ -512,7 +596,7 @@ export class LspClient {
 
     async workspaceSymbol(query: string): Promise<SymbolInformation[]> {
         await this.ensureReady();
-        const res = await this.conn!.sendRequest("workspace/symbol", { query });
+        const res = await requestWithTimeout(this.conn!, "workspace/symbol", { query });
         return (res as SymbolInformation[] | null) ?? [];
     }
 
@@ -530,7 +614,7 @@ export class LspClient {
             position: { line, character: col },
             newName,
         };
-        const res = await this.conn!.sendRequest("textDocument/rename", params);
+        const res = await requestWithTimeout(this.conn!, "textDocument/rename", params);
         return (res as WorkspaceEdit) ?? {};
     }
 
@@ -569,7 +653,7 @@ export class LspClient {
     async pullDiagnostics(absPath: string): Promise<Diagnostic[] | null> {
         await this.ensureReady();
         const uri = pathToFileURL(absPath).href;
-        const res = await this.conn!.sendRequest("textDocument/diagnostic", {
+        const res = await requestWithTimeout(this.conn!, "textDocument/diagnostic", {
             textDocument: { uri },
         });
         const report = res as DocumentDiagnosticReport | null;
@@ -616,9 +700,14 @@ export class LspClient {
         this.openDocs.clear();
         this.diagnosticsByUri.clear();
         try {
-            await conn.sendRequest("shutdown");
+            // Bounded: a silent/wedged server would otherwise hang shutdown
+            // forever (the silent-fake regression test hits this in its
+            // finally). 1s is generous for a well-behaved server's shutdown;
+            // a wedged server won't honor it anyway and we SIGTERM below.
+            await requestWithTimeout(conn, "shutdown", null, 1000);
         } catch {
-            // Server may have already exited.
+            // Server may have already exited, be wedged, or reject the request.
+            // shutdown() is best-effort; we proceed to kill the process below.
         }
         // Send the `exit` notification fire-and-forget, but attach a rejection
         // handler: the underlying socket write can reject with EPIPE/
