@@ -356,7 +356,7 @@ export class LspClient {
     /** Resolves when initialize + initialized handshake completes. */
     private ready: Promise<void> | null = null;
     /** Documents opened on this server, keyed by file URI. */
-    private openDocs = new Map<string, number>();
+    private openDocs = new Map<string, { version: number; text: string }>();
     /**
      * Latest push-model diagnostics per URI, populated by the
      * textDocument/publishDiagnostics notification handler. Latest-wins: each
@@ -619,6 +619,18 @@ export class LspClient {
             rootUri: this.rootUri,
             capabilities: {
                 textDocument: {
+                    // didOpen/didChange/didClose are always supported when
+                    // `synchronization` is present (per LSP spec — the client
+                    // capability only opts into willSave/willSaveWaitUntil/
+                    // didSave). The SERVER's initialize result advertises its
+                    // preferred textDocumentSync (Full/Incremental/None +
+                    // openClose + save), which is what governs whether it acts
+                    // on the didChange we send. All four servers we use accept
+                    // full-content didChange. openDocument() sends didChange
+                    // with the whole document text whenever a tool reads
+                    // different text than the server last saw — this is what
+                    // keeps the server's index/diagnostics fresh after the
+                    // agent edits the file on disk.
                     synchronization: { didSave: true },
                     hover: { contentFormat: ["markdown", "plaintext"] },
                     definition: { linkSupport: false },
@@ -700,11 +712,59 @@ export class LspClient {
         await notifyWithTimeout(conn, "initialized", {});
     }
 
-    /** Open or refresh a document on the server (didOpen). */
+    /**
+     * Open or refresh a document on the server.
+     *
+     * First call for a URI sends `textDocument/didOpen` with the full text.
+     * Subsequent calls send `textDocument/didChange` (full-content sync) when
+     * the new text differs from what the server last saw — this is what keeps
+     * the server's index/diagnostics fresh after the agent edits the file on
+     * disk. Without it the server keeps analyzing the version-1 snapshot
+     * forever (we don't advertise workspace/didChangeWatchedFiles, so the
+     * server has no other way to learn the file changed). Every nav.ts tool
+     * reads the file fresh from disk before calling in, so a didChange is sent
+     * automatically whenever the on-disk content has changed since the last
+     * tool call touched that file.
+     *
+     * Versioning: starts at 1 on didOpen and monotonically increments on each
+     * didChange. Servers use the version to order updates and to match
+     * publishDiagnostics to the document version they describe; skipping it
+     * or reusing a value confuses servers that track it (tsserver, pyright).
+     *
+     * The text is tracked here (not re-read from disk) because the caller
+     * already has it — and comparing against the last-sent text is what lets
+     * us skip the no-op didChange when a tool is called twice on an
+     * unmodified file (avoids re-indexing churn on ccls/tsserver).
+     */
     async openDocument(absPath: string, text: string): Promise<void> {
         await this.ensureReady();
         const uri = pathToFileURL(absPath).href;
-        if (this.openDocs.has(uri)) return;
+        const existing = this.openDocs.get(uri);
+        if (existing) {
+            if (existing.text === text) return; // no change since last sync
+            const version = existing.version + 1;
+            // Full-content sync: send the entire document text. We never
+            // compute incremental (range) edits — the server is told the
+            // whole file each time. The LSP client capability only opts into
+            // willSave/willSaveWaitUntil/didSave; didOpen/didChange/didClose
+            // are always available when `synchronization` is advertised, and
+            // the server's initialize result declares its preferred
+            // textDocumentSync (all four servers we use accept full-content
+            // didChange).
+            await notifyWithTimeout(this.conn!, "textDocument/didChange", {
+                textDocument: { uri, version },
+                contentChanges: [{ text }],
+            });
+            this.openDocs.set(uri, { version, text });
+            // Clear any stale push-diagnostics cached for this URI: after a
+            // didChange the server will re-publish a fresh set (possibly
+            // empty) keyed to the new version. Dropping the old set prevents
+            // code_diagnostics' push fallback from returning diagnostics for
+            // the pre-edit snapshot during the brief window before the new
+            // publish arrives.
+            this.diagnosticsByUri.delete(uri);
+            return;
+        }
         const version = 1;
         const doc: TextDocumentItem = {
             uri,
@@ -723,7 +783,7 @@ export class LspClient {
         await notifyWithTimeout(this.conn!, "textDocument/didOpen", {
             textDocument: doc,
         });
-        this.openDocs.set(uri, version);
+        this.openDocs.set(uri, { version, text });
     }
 
     async closeDocument(absPath: string): Promise<void> {
