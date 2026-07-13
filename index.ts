@@ -657,12 +657,28 @@ Prefer code_* over the grep/read reflex:
   \`python -c "import inspect; inspect.getsource(...)"\` or other hacks for various languages)
 
 
-You can effectively chain tool calls for quickly navigating code base, for example:
-1. code_outline <file> OR code_tree <file> <regexp> OR code_search_symbol <query> OR code_scan <file> <start> <end>.
-   Response will contain position (line, col) for each entry.
-2. Select entry and call code_definition([{path: <file>, line: <line>, column: <col>}], list_symbols=true)
-3. The returned body comes with its OWN symbol table, so you drill down further.
-   call code_definition([{path: <file-from-symbol-table-header>, line: <line>, column: <col>}], list_symbols=true)
+You can chain tool calls to navigate the codebase quickly. The pattern is
+ENTRY POINT → DETAIL TOOL → DETAIL TOOL, where each step's output literally
+contains the positions the next step needs.
+
+1. ENTRY POINT (you don't have a position yet). Call ONE of:
+   - code_outline(path)                → "Kind name  (<line>:<col>)" per row
+   - code_tree(path, pattern)          → "[pad]Kind name  [<sig>]  (<line>:<col>)" per row
+   - code_search_symbol(query)         → "<lang> <Kind> <name> <path> (<line>:<col>)" per row
+   - code_scan(path[, start, end])     → "  role name  (<line>:<col>)" per identifier
+   Pick a row, copy its (line,col) — and the path, for search_symbol/scan.
+
+2. DETAIL TOOL (you now have a position). Pass it as {path, line, column}.
+   For code_definition, pass [{path,line,column}] and set list_symbols=true.
+   The tool returns the FULL source body of the symbol at that position.
+
+3. DRILL DOWN. With list_symbols=true, code_definition ALSO returns a symbol
+   table of every identifier used inside the body, formatted as:
+       role name  (<line>:<col>)
+   Each row is itself a position you can feed straight back into
+   code_definition / code_hover / code_references — no outline/scan needed.
+   So the loop is: definition → read its symbol table → definition again,
+   following identifiers into their definitions, as deep as you need.
 
 
 Retrieving third-party docs/source (site-packages, node_modules, nix store, system headers) workflows:
