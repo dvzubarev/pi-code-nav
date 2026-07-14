@@ -270,7 +270,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_search_symbol",
         label: "Code Symbol Search",
         description:
-            "Symbol search by name across the workspace AND third-party/stdlib trees. Given a query string (a bare name like `loads` or a qualified name like `typing.cast`, `cbor2.loads`, `std::vector::push_back`), return a ranked list of matching symbols (kind, name, <path>:<line>:<col>). For Python (ty), third-party/stdlib roots are added as workspace folders (discovered from $propagatedBuildInputs / $PYTHONPATH) so the search covers site-packages and the stdlib; ccls already indexes third-parties via its compilation database. Results are ranked: for a bare name, workspace-root exact matches are returned alone; otherwise third-party exact matches come first, then fuzzy matches (trimmed). For a qualified name, only the exact bare-name match whose module/namespace matches the qualifier is kept.",
+            "Symbol search by name across the workspace AND third-party/stdlib trees. Given a query string (a bare name like `loads` or a qualified name like `typing.cast`, `cbor2.loads`, `std::vector::push_back`), return a ranked list of matching symbols (kind, name, <path>:<line>:<col>). For Python (ty), third-party/stdlib roots are added as workspace folders (discovered from $propagatedBuildInputs, or $PYTHONPATH when that's absent) so the search covers site-packages and the stdlib; ccls already indexes third-parties via its compilation database. Results are ranked: for a bare name, workspace-root exact matches are returned alone; otherwise third-party exact matches come first, then fuzzy matches (trimmed). For a qualified name, only the exact bare-name match whose module/namespace matches the qualifier is kept.",
         promptSnippet: "Search for a symbol by name (bare or qualified) across the workspace and third-party/stdlib.",
         promptGuidelines: [
             "Use code_search_symbol to find a location of a symbol by name. Pass a BARE name (e.g. `loads`, `TempC`) to find symbols in your project first; if your project has no symbol by that name, third-party/stdlib exact matches are returned next. Pass a QUALIFIED name (`typing.cast`, `cbor2.loads`, `std::vector::push_back`) to pin a specific third-party/stdlib symbol — the tool strips the qualifier, searches the bare name, then keeps only the match in that module/namespace.",
@@ -636,17 +636,16 @@ ENTRY POINT → DETAIL TOOL → DETAIL TOOL, where each step's output literally
 contains the positions the next step needs.
 
 1. ENTRY POINT (you don't have a position yet). Call ONE of:
+   - code_search_symbol(query)         → "<lang> <Kind> <name> <path>:<line>:<col>" per row
    - code_outline(path)                → "Kind name  :<line>:<col>" per row
    - code_tree(path, pattern)          → "[pad]Kind name  [<sig>]  :<line>:<col>" per row
-   - code_search_symbol(query)         → "<lang> <Kind> <name> <path>:<line>:<col>" per row
    - code_scan(path[, start, end])     → "  role name  :<line>:<col>" per identifier
    Pick a row, copy its (line,col) — and the path, for search_symbol/scan.
 
 2. DETAIL TOOL (you now have a position). Pass it as {path, line, column}.
    For code_definition, set list_symbols=true to ALSO get a symbol table of
    every identifier used inside the body. The tool returns a header line
-   \`<defPath>:<sl>-<el>\` then the verbatim source body (no code fence) —
-   ready to copy straight into an edit.
+   \`<defPath>:<sl>-<el>\` then the verbatim source body.
 
 3. DRILL DOWN. With list_symbols=true, code_definition ALSO returns a symbol
    table of every identifier used inside the body, formatted as:
@@ -661,9 +660,7 @@ contains the positions the next step needs.
 Retrieving third-party docs/source (site-packages, nix store, system headers) workflows:
 1. PREFERRED: code_search_symbol with a QUALIFIED name. Pass \`typing.cast\`,
    \`cbor2.loads\`, \`std::vector::push_back\` — the tool searches across the
-   workspace AND third-party/stdlib (for Python it adds $propagatedBuildInputs /
-   $PYTHONPATH roots as workspace folders so ty indexes site-packages + the
-   stdlib; ccls already indexes third-parties via its compilation database).
+   workspace AND third-party/stdlib.
    You get a position; feed it into code_definition / code_hover.
 2. FALLBACK (symbol not found via search, or you only have a file in view):
    use the tool call chains above — code_scan the file you're looking at to
