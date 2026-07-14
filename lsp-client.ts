@@ -416,6 +416,9 @@ export class LspClient {
 
     private async start(): Promise<void> {
         const { command, args, initOptions } = this.cfg;
+        // Don't spawn a server that isn't on PATH — the user wants missing
+        // servers skipped silently, not spawned into an ENOENT error.
+        if (!commandExists(command)) throw new Error(`command not found on PATH: ${command}`);
         // rejectReady lets the proc 'error' handler reject the outer
         // start()/ensureReady() promise. start() is async and awaits
         // initialize on the spawned process; without a way to reject the

@@ -186,12 +186,12 @@ test(
                 c.ensureReady(),
                 (err) => {
                     const msg = String(err?.message ?? err);
-                    // The original errno must surface so the ERROR row names
-                    // the real cause (ENOENT), not a generic timeout.
+                    // The pre-flight check names the missing command
+                    // (instead of letting spawn() emit a raw ENOENT).
                     assert.match(
                         msg,
-                        /ENOENT/,
-                        `should surface the ENOENT, not a generic error; got: ${msg}`,
+                        /command not found on PATH/,
+                        `should surface the missing-command error, not a generic/timeout; got: ${msg}`,
                     );
                     // And it must NOT be the request timeout — that would
                     // mean the 'error' handler didn't reject and we waited

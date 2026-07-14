@@ -948,10 +948,9 @@ export async function symbol(
         try {
             client = await clientOf(lang);
         } catch (e) {
-            // Per-language soft failure: structured ERROR row (leading `ERROR`
-            // token distinguishes it from the `[lang] Kind name path:line:col`
-            // data rows). One language failing must not discard results
-            // already collected from earlier languages.
+            // Missing server binary: skip silently (user: "if I don't have a
+            // language server on my PATH I don't want to report it").
+            if (/command not found on PATH/.test(String((e as Error)?.message ?? e))) continue;
             out.push(`ERROR  [${lang}]  server unavailable: ${e}`);
             continue;
         }
