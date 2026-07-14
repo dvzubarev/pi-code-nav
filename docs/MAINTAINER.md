@@ -368,52 +368,64 @@ change a render function or a tool body, both consumers see it automatically.
 The one allowed divergence is error handling, now a two-tier contract
 (the agent gets a machine-readable success/failure bit instead of having
 to regex-sniff inline prose):
-  - HARD failures (top-level, single-file tools: outline/tree/rename/scan/
-    diagnostics) THROW. `index.ts`'s `err()` catches and sets `isError: true`.
-    Covers: `Cannot read …`, `Unknown language for file: …`, `Invalid regexp`,
-    `No grammar for …`, `parse failed: …`, bad params, server unavailable,
-    pull-diagnostics request failed. The CLI lets these throw to a top-level
-    `FAILED:` message.
-  - SOFT failures (per-position in the batched tools: definition/references/
-    hover; per-language in symbol) are emitted as a structured row
+  - HARD failures (top-level, single-file tools: outline/tree/definition/
+    rename/scan/diagnostics) THROW. `index.ts`'s `err()` catches and sets
+    `isError: true`. Covers: `Cannot read …`, `Unknown language for file: …`,
+    `Invalid regexp`, `No grammar for …`, `parse failed: …`, bad params,
+    server unavailable, no definition found, multiple definitions, could not
+    resolve body range, pull-diagnostics request failed. The CLI lets these
+    throw to a top-level `FAILED:` message.
+  - SOFT failures (per-position in the batched tools: references/hover;
+    per-language in symbol) are emitted as a structured row
     `ERROR  <path>:<line>:<col>  <reason>` (or `ERROR  [lang]  <reason>` for
     symbol) that parses with the SAME column grammar as a data row. The
     leading `ERROR` token distinguishes them from data; a consumer splits rows
     on `\n` and checks the first token. The `### <path>:<line>:<col>` position
     header is preserved (when batching) so the agent can attribute the failure.
 Clean empty results (`(no symbols found in …)`, `(no diagnostics for …)`,
-`(no identifiers found)`) are NOT failures — they're returned as text.
+`(no identifiers found)`, `(no references found for …)`) are NOT failures —
+they're returned as text. NOTE: `code_definition` is the exception — its
+contract is "return verbatim source code", so even a clean "no definition
+found" is a HARD failure there (no source code to return).
 
 Subcommands (root = cwd or `CODE_NAV_ROOT`):
 ```
   outline <file>
   hover <file> <line:1> <col:1> [<file> <line> <col> ...]
-  definition <file> <line:1> <col:1> [<file> <line> <col> ...]
+  definition <file> <line:1> <col:1> [--list-symbols]
   references <file> <line:1> <col:1> [<file> <line> <col> ...]
   rename <file> <line:1> <col:1> <newName>
   symbol <query> [python|cpp|bash]
 ```
-`hover`/`definition`/`references` accept **one or more** `(file line col)`
-triples as a `positions` array — the extras are batched through one LSP
-client per language. When more than one position is passed, each result
-block is prefixed with `### <path>:<line>:<col>` so the agent/user can
-correlate results to inputs. Single-position calls produce no header.
-Within a definition block, if a position resolves to MULTIPLE definition
-sites (overloads, multi-definition symbols), each site is delimited with a
-`#### def N of M  <path>:<line>:<col>` sub-header so an agent can extract
-"the body of the Nth definition" without counting code fences.
+`hover`/`references` accept **one or more** `(file line col)` triples as a
+`positions` array — the extras are batched through one LSP client per
+language. When more than one position is passed, each result block is
+prefixed with `### <path>:<line>:<col>` so the agent/user can correlate
+results to inputs. Single-position calls produce no header.
+`definition` takes a **single** `(file line col)` triple — it returns the
+verbatim source body of one symbol (no batching). Output format: a header
+line `<defPath>:<sl>-<el>` (1-based inclusive line range of the body) then
+the raw source lines (no code fence). It THROWS on any failure (no
+definition found, multiple definitions, cannot resolve body, etc.) — the
+contract is "source code or a hard error", no fallbacks.
 
-### The `positions` array is the sole input shape
+### The `positions` array vs scalar input
 
-`code_definition`, `code_hover`, and `code_references` take a **required**
-`positions: Position[]` array — there is NO scalar `path`/`line`/`column`
-form. Even a single lookup is `{ positions: [{ path, line, column }] }`.
-This lets the agent batch several symbol lookups in a single tool call —
-one round-trip instead of N — which is meaningfully cheaper for the model
-and for the server (one client per language, documents opened once), and it
-keeps the schema simple (one input shape, no XOR validation between a scalar
-triple and an array). (The logic lives in `nav.ts`; both `index.ts` and
+`code_hover` and `code_references` take a **required** `positions:
+Position[]` array — there is NO scalar `path`/`line`/`column` form for them.
+Even a single lookup is `{ positions: [{ path, line, column }] }`. This lets
+the agent batch several symbol lookups in a single tool call — one round-trip
+instead of N — which is meaningfully cheaper for the model and for the server
+(one client per language, documents opened once), and it keeps the schema
+simple (one input shape, no XOR validation between a scalar triple and an
+array). (The logic lives in `nav.ts`; both `index.ts` and
 `scripts/nav-cli.mjs` call it.)
+
+`code_definition` takes a **scalar** `(path, line, column)` — NOT a
+`positions` array. Its contract is "return the verbatim source body of ONE
+symbol, ready to copy into an edit"; batching would muddle that (multiple
+bodies, ambiguous edit targets). A single body per call keeps the output
+clean: header `<defPath>:<sl>-<el>` + raw source + optional symbol table.
 
 `code_outline`, `code_search_symbol`, and `code_rename` are inherently
 single-symbol-per-call and do **not** take a `positions` array (rename is

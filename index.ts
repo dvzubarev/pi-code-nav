@@ -205,45 +205,38 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_definition",
         label: "Code Definition",
         description:
-            "Returns each definition's location and the FULL source body of the definition (the complete function/class/method body, not just the identifier). You must know the symbol position to use this tool.",
-        promptSnippet: "Retrieve class/function source code.",
+            "Retrieve the VERBATIM source code of a function/class/method definition. Given a symbol position (path, line, column), resolves the definition and returns the full body — the complete function/class/method source, ready to copy into an edit. Output format: a header line `<defPath>:<sl>-<el>` (1-based inclusive line range of the body) followed by the raw source lines (no code fence). The definition may live in a different file than the input position (including third-party trees).",
+        promptSnippet: "Retrieve verbatim source code of a function/class.",
         promptGuidelines: [
-            "Use code_definition when you need FULL source body of a function/class. You must know the function/class position to use this tool.",
-            "When input array contains multiple entries, each is delimited with a `### <path>:<line>:<col>` sub-header.",
-            "When a position resolves to MULTIPLE definition sites (overloads, multi-definition symbols), each site is delimited with a `#### def N of M  <path>:<line>:<col>` sub-header",
-            "It accepts absolute paths.",
-            "Set list_symbols=true to also list the identifiers used inside each returned body (useful for discovering third-party/stdlib APIs in the body). Output row format `<role> <name> (<line>:<col>)`. To feed a symbol into code_definition, combine header path with row's `(line:col)`",
+            "Use code_definition when you need the FULL source body of a function/class/method — the verbatim text, ready to copy into an edit. You must know the symbol's position (path, line, column) to use this tool; get one from code_outline, code_tree, code_search_symbol, or code_scan.",
+            "Output format: a header line `<defPath>:<sl>-<el>` (the path the definition lives in, plus its 1-based inclusive line range), then the raw source body with NO code fence. defPath may differ from your input path (the definition can be in another file, including third-party trees).",
+            "It accepts absolute paths, including third-party locations (nix store, site-packages, node_modules, system headers).",
+            "HARD ERROR: if the tool cannot return verbatim source code for ANY reason (unknown language, cannot read file, server unavailable, no definition found, multiple definitions, could not resolve body range) it throws an error — there are NO fallbacks. The tool's contract is source code or failure.",
+            "Set list_symbols=true to also append a symbol table after the body (useful for discovering third-party/stdlib APIs used inside). Output row format `  <role> <name>  (<line>:<col>)`. Each row is itself a position you can feed back into code_definition / code_hover / code_references — combine the header's defPath with the row's `(line:col)`.",
         ],
         parameters: Type.Object({
-            positions: Type.Array(
-                Type.Object({
-                    path: Type.String({
-                        description: "File path (absolute or relative to cwd)",
-                    }),
-                    line: Type.Number({ description: "1-based line number" }),
-                    column: Type.Number({ description: "1-based column number" }),
-                }),
-                {
-                    description:
-                        "One or more (path, line, column) positions to look up.",
-                },
-            ),
+            path: Type.String({ description: "File path (absolute or relative to cwd)" }),
+            line: Type.Number({ description: "1-based line number of the symbol" }),
+            column: Type.Number({ description: "1-based column number of the symbol" }),
             list_symbols: Type.Optional(
                 Type.Boolean({
                     description:
-                        'If true, append a symbol table for each returned body (default: false). The table lists identifiers their position and syntactic role (type/call/member/import). Local-variable (var) are omitted by default to keep the output focused on external APIs; use code_scan with roles including "var" if you need locals.',
+                        'If true, append a symbol table for the returned body (default: false). The table lists identifiers with their position and syntactic role (type/call/member/import). Local-variable (var) are omitted by default to keep the output focused on external APIs; use code_scan with roles including "var" if you need locals.',
                 }),
             ),
         }),
         async execute(_id, params, _signal, _onUpdate, ctx) {
-            // nav.definition handles the full batched-position logic, per-position
-            // structured ERROR rows for soft failures, source-body extraction,
-            // #### def N of M sub-headers for multi-loc results, and the optional
-            // tree-sitter symbol table. It never throws (soft failures are
-            // per-position ERROR rows), so no try/catch wrapper is needed here.
-            return text_result(
-                await nav.definition(params, ctx.cwd, (lang) => state.pool.client(lang)),
-            );
+            // nav.definition now throws on ANY failure (no fallbacks, no
+            // soft-failure rows) — the tool's contract is "verbatim source
+            // code or a hard error". Wrap in try/catch so err() sets
+            // isError: true.
+            try {
+                return text_result(
+                    await nav.definition(params, ctx.cwd, (lang) => state.pool.client(lang)),
+                );
+            } catch (e) {
+                return err(e instanceof Error ? e.message : String(e));
+            }
         },
     });
 
@@ -636,7 +629,7 @@ ENTRY POINTS (you don't have a precise position yet):
 - code_scan          — list every identifier (with role: type/call/member/import) in a file or a range
 
 DETAIL TOOLS (take a position — reuse one an entry point printed):
-- code_definition    — jump to a symbol's definition; returns the FULL source body
+- code_definition    — retrieve the VERBATIM source body of a symbol's definition (header \`<defPath>:<sl>-<el>\` + raw source, no fence)
 - code_references    — all call sites of a symbol
 - code_hover         — docstring / signature / type info
 - code_rename        — rename a symbol across the workspace; edits applied to disk
@@ -669,16 +662,19 @@ contains the positions the next step needs.
    Pick a row, copy its (line,col) — and the path, for search_symbol/scan.
 
 2. DETAIL TOOL (you now have a position). Pass it as {path, line, column}.
-   For code_definition, pass [{path,line,column}] and set list_symbols=true.
-   The tool returns the FULL source body of the symbol at that position.
+   For code_definition, set list_symbols=true to ALSO get a symbol table of
+   every identifier used inside the body. The tool returns a header line
+   \`<defPath>:<sl>-<el>\` then the verbatim source body (no code fence) —
+   ready to copy straight into an edit.
 
 3. DRILL DOWN. With list_symbols=true, code_definition ALSO returns a symbol
    table of every identifier used inside the body, formatted as:
        role name  (<line>:<col>)
    Each row is itself a position you can feed straight back into
    code_definition / code_hover / code_references — no outline/scan needed.
-   So the loop is: definition → read its symbol table → definition again,
-   following identifiers into their definitions, as deep as you need.
+   Combine the header's defPath with the row's (line:col). So the loop is:
+   definition → read its symbol table → definition again, following
+   identifiers into their definitions, as deep as you need.
 
 
 Retrieving third-party docs/source (site-packages, node_modules, nix store, system headers) workflows:

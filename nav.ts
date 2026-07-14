@@ -12,24 +12,28 @@
  *
  * Error contract (two tiers — so an agent can tell success from failure
  * without regex-sniffing prose):
- *   - HARD failures (top-level, single-file tools: outline/tree/rename/scan/
- *     diagnostics) THROW. index.ts's err() catches and sets `isError: true` —
- *     the agent gets a machine-readable success/failure bit. Covers: cannot
- *     read the file, unknown language, invalid regexp, no grammar, parse
- *     failed, bad params, server unavailable, pull-diagnostics request failed.
- *   - SOFT failures (per-position in the batched tools: definition/references/
- *     hover; per-language in symbol) are emitted as a structured row
+ *   - HARD failures (top-level, single-file tools: outline/tree/definition/
+ *     rename/scan/diagnostics) THROW. index.ts's err() catches and sets
+ *     `isError: true` — the agent gets a machine-readable success/failure bit.
+ *     Covers: cannot read the file, unknown language, invalid regexp, no
+ *     grammar, parse failed, bad params, server unavailable, no definition
+ *     found, multiple definitions, could not resolve body range,
+ *     pull-diagnostics request failed.
+ *   - SOFT failures (per-position in the batched tools: references/hover;
+ *     per-language in symbol) are emitted as a structured row
  *     `ERROR  <path>:<line>:<col>  <reason>` (or `ERROR  [lang]  <reason>`
  *     for symbol) that parses with the SAME column grammar as a data row.
  *     The leading `ERROR` token distinguishes them from data; a consumer
  *     splits rows on `\n` and checks the first token. Applies to: unknown
- *     language, cannot read, server unavailable, could not read source,
- *     symbol scan failed.
- * Clean empty results (no definition found, no references found, no symbols,
- * no diagnostics, no identifiers) are NOT failures — they're returned as a
- *     parenthesized note like `(no definition found for …)`, matching the
+ *     language, cannot read, server unavailable.
+ * Clean empty results (no references found, no symbols, no diagnostics, no
+ * identifiers) are NOT failures — they're returned as a
+ *     parenthesized note like `(no references found for …)`, matching the
  *     long-standing empty-result convention. The distinction matters: a
  *     symbol with no references is a legitimate outcome, not an error.
+ *     NOTE: code_definition is the exception — its contract is "return
+ *     verbatim source code", so even a clean "no definition found" is a HARD
+ *     failure there (no source code to return).
  *
  * Both the extension (index.ts → registerTools) and the CLI harness
  * (scripts/nav-cli.mjs) import these functions, so the CLI and automated tests
@@ -543,10 +547,37 @@ export async function tree(
 
 // ---------------------------------------------------------------------------
 // 2. code_definition
+//
+// The tool's PRIMARY purpose is retrieving verbatim source code of a
+// function/class/method so the agent can reuse it instantly for editing —
+// like the read tool, but scoped to a symbol's body. Output format:
+//
+//   <defPath>:<sl>-<el>
+//   <body verbatim from source code>
+//   <optional sym table when list_symbols=true>
+//
+// The header is `rel/or/abs/path.ts:42-45` (1-based inclusive line range of
+// the body slice). defPath is the path the definition lives in (may differ
+// from the input path — the definition can be in another file, including
+// third-party trees). The body is the raw source lines, NO code fence, so an
+// agent can copy it straight into an edit.
+//
+// Error contract: HARD failures THROW (index.ts's err() sets isError: true).
+// There are NO fallbacks and NO soft-failure rows — if we cannot return
+// verbatim source code for any reason, the tool fails loudly so the agent
+// knows it got nothing reusable. Covers: unknown language, cannot read input
+// file, server unavailable, no definition found, could not read the
+// definition's source file, could not resolve the body range. A clean "no
+// definition found" (e.g. a built-in, or a position that isn't a symbol) is
+// ALSO a hard error now — the tool's contract is "returns source code", so
+// the absence of a definition is a failure to fulfill that contract, not a
+// legitimate empty result.
 // ---------------------------------------------------------------------------
 
 export interface DefinitionParams {
-    positions: Position[];
+    path: string;
+    line: number; // 1-based
+    column: number; // 1-based
     list_symbols?: boolean;
 }
 
@@ -555,140 +586,116 @@ export async function definition(
     cwd: string,
     clientOf: ClientProvider,
 ): Promise<string> {
-    const posList: Position[] = params.positions;
-    const out: string[] = [];
-    // One client per language; reuse across positions of the same lang.
-    const clients = new Map<Lang, LspClient>();
-    for (const pos of posList) {
-        const lang = langForFile(pos.path);
-        if (lang === null) {
-            // Per-position soft failure: structured ERROR row (parseable with
-            // the same column grammar as a data row). Preserve the ### position
-            // header when batching so the agent can attribute the failure.
-            out.push(
-                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
-                    renderErrorRow(pos.path, pos.line, pos.column, `unknown language for file`),
-            );
-            continue;
-        }
-        let client = clients.get(lang);
-        if (!client) {
-            try {
-                client = await clientOf(lang);
-            } catch (e) {
-                out.push(
-                    (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
-                        renderErrorRow(
-                            pos.path,
-                            pos.line,
-                            pos.column,
-                            `${lang}: server unavailable: ${e}`,
-                        ),
-                );
-                continue;
-            }
-            clients.set(lang, client);
-        }
-        const abs = toAbs(pos.path, cwd);
-        let text: string;
-        try {
-            text = await readFile(abs, "utf8");
-        } catch (e) {
-            out.push(
-                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
-                    renderErrorRow(pos.path, pos.line, pos.column, `cannot read ${abs}: ${e}`),
-            );
-            continue;
-        }
-        const def = await client.definition(abs, pos.line - 1, pos.column - 1, text);
-        const locs = Array.isArray(def) ? def : def ? [def] : [];
-        if (locs.length === 0) {
-            // Clean empty result (e.g. a built-in, or a position that isn't a
-            // symbol) — NOT a failure. Kept as a parenthesized note so an
-            // agent checking the leading token doesn't mistake a legitimate
-            // "no definition here" for a failure.
-            out.push(
-                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
-                    `(no definition found for ${pos.path}:${pos.line}:${pos.column})`,
-            );
-            continue;
-        }
-        // When batching multiple positions, label each block with its query so
-        // the agent can tell which result belongs to which input.
-        const block: string[] = [];
-        if (posList.length > 1) block.push(`### ${pos.path}:${pos.line}:${pos.column}`);
-        // Delimit each loc within the position so an agent can extract "the
-        // body of the Nth definition at this position" without counting fences.
-        // The sub-header mirrors the ### position header and carries the loc's
-        // own path:line:col so the full position is reconstructable per loc.
-        const locArr = locs as Location[];
-        for (let li = 0; li < locArr.length; li++) {
-            const loc = locArr[li];
-            if (locArr.length > 1) {
+    const lang = langForFile(params.path);
+    if (lang === null) throw new UnknownLanguageError(params.path);
+    const abs = toAbs(params.path, cwd);
+    let text: string;
+    try {
+        text = await readFile(abs, "utf8");
+    } catch (e) {
+        // Hard failure: cannot read the input file. Throw so index.ts's err()
+        // sets isError: true — no fallback, no partial result.
+        throw new Error(`Cannot read ${abs}: ${e}`);
+    }
+    let client: LspClient;
+    try {
+        client = await clientOf(lang);
+    } catch (e) {
+        // Hard failure: the language server could not be spawned. No source
+        // code can be retrieved without it.
+        throw new Error(`${lang}: server unavailable: ${e}`);
+    }
+    const def = await client.definition(abs, params.line - 1, params.column - 1, text);
+    const locs = (Array.isArray(def) ? def : def ? [def] : []) as Location[];
+    if (locs.length === 0) {
+        // Hard failure: no definition found. The tool's contract is "returns
+        // verbatim source code"; the absence of a definition means we cannot
+        // fulfill it. No parenthesized-note fallback — throw so the agent knows
+        // it got nothing reusable and can try another approach (code_hover,
+        // code_search_symbol, etc.).
+        throw new Error(
+            `No definition found for ${params.path}:${params.line}:${params.column}`,
+        );
+    }
+    // A position may resolve to multiple definition sites (overloads,
+    // multi-definition symbols). The contract is ONE verbatim body per call;
+    // multiple sites is an ambiguous result the agent can't consume as a single
+    // edit target, so it's a hard error naming the count and the sites.
+    if (locs.length > 1) {
+        const sites = locs
+            .map((loc) => {
                 const lp = uriToPath(loc.uri);
                 const sl0 = loc.range?.start?.line ?? 0;
                 const sc0 = loc.range?.start?.character ?? 0;
-                block.push(`#### def ${li + 1} of ${locArr.length}  ${lp}:${sl0 + 1}:${sc0 + 1}`);
-            }
-            block.push(renderLocation(loc));
-            const lp = uriToPath(loc.uri);
+                return `${lp}:${sl0 + 1}:${sc0 + 1}`;
+            })
+            .join(", ");
+        throw new Error(
+            `Multiple definitions (${locs.length}) for ${params.path}:${params.line}:${params.column}: ${sites}`,
+        );
+    }
+    const loc = locs[0];
+    const defPath = uriToPath(loc.uri);
+    let src: string;
+    try {
+        src = await readFile(defPath, "utf8");
+    } catch (e) {
+        // Hard failure: the definition's source file can't be read (e.g. a
+        // server pointed at a stale or unreadable path). No fallback.
+        throw new Error(`Cannot read definition source ${defPath}: ${e}`);
+    }
+    // The definition range from the server is usually just the identifier
+    // span (e.g. the 9 chars of `punintend`). Resolve the enclosing
+    // DocumentSymbol to extract the full function/class body range.
+    const body = await resolveDefBodyRange(client, loc);
+    if (!body) {
+        // Hard failure: could not resolve the enclosing symbol's body range.
+        // Without it we'd return only the identifier span, which is NOT the
+        // verbatim source body the tool promises — so fail rather than return
+        // a misleading snippet.
+        throw new Error(
+            `Could not resolve definition body for ${defPath} at ${params.path}:${params.line}:${params.column}`,
+        );
+    }
+    const sl = body.startLine; // 0-based LSP line
+    const el = body.endLine; // 0-based LSP line
+    const srcLines = src.split(/\r?\n/);
+    const snippet = srcLines.slice(sl, el + 1).join("\n");
+    const out: string[] = [];
+    // Header: <defPath>:<sl>-<el> (1-based inclusive line range of the body).
+    // defPath is the path the definition lives in — relative or absolute as
+    // the server returned it (the agent can feed it back into code_* tools).
+    out.push(`${defPath}:${sl + 1}-${el + 1}`);
+    out.push(snippet);
+    // Optional tree-sitter symbol table over the snippet. Reuses the same
+    // parseSymbols helper as code_scan. The snippet's absolute line range is
+    // (sl+1 .. el+1) in 1-based coords. Only run when requested: default
+    // false keeps code_definition's output focused on the verbatim body.
+    if (params.list_symbols) {
+        const tsLang = tsLangForFile(defPath);
+        if (tsLang) {
             try {
-                const src = await readFile(lp, "utf8");
-                // The definition range from the server is usually just the identifier
-                // span (e.g. the 9 chars of `punintend`). Resolve the enclosing
-                // DocumentSymbol to extract the full function/class body.
-                const body = await resolveDefBodyRange(client, loc);
-                const sl = body ? body.startLine : (loc.range?.start?.line ?? 0);
-                const el = body ? body.endLine : (loc.range?.end?.line ?? sl);
-                const snippet = src
-                    .split(/\r?\n/)
-                    .slice(sl, el + 1)
-                    .join("\n");
-                block.push("```");
-                block.push(snippet);
-                block.push("```");
-                // Optional tree-sitter symbol table over the snippet. Reuses the
-                // same parseSymbols helper as code_scan. The snippet's
-                // absolute line range is (sl+1 .. el+1) in 1-based coords (sl/el
-                // are 0-based LSP line numbers). Only run when requested: default
-                // false keeps code_definition's output focused and preserves its
-                // contract (the do-not-break-round-trip guarantee in the README).
-                if (params.list_symbols) {
-                    const tsLang = tsLangForFile(lp);
-                    if (tsLang) {
-                        try {
-                            const entries = await parseSymbols(tsLang, {
-                                text: src,
-                                startLine: sl + 1,
-                                endLine: el + 1,
-                            });
-                            if (entries && entries.length > 0) {
-                                block.push(renderSymbolTable(lp, sl + 1, el + 1, entries));
-                            }
-                        } catch (e) {
-                            block.push(
-                                renderErrorRow(
-                                    lp,
-                                    sl + 1,
-                                    (loc.range?.start?.character ?? 0) + 1,
-                                    `symbol scan failed: ${e}`,
-                                ),
-                            );
-                        }
-                    }
+                const entries = await parseSymbols(tsLang, {
+                    text: src,
+                    startLine: sl + 1,
+                    endLine: el + 1,
+                });
+                if (entries && entries.length > 0) {
+                    // Blank line separates the verbatim body from the symbol
+                    // table so an agent can unambiguously tell where the body
+                    // ends and the table begins (the body itself may contain
+                    // lines that look table-like).
+                    out.push("");
+                    out.push(renderSymbolTable(defPath, sl + 1, el + 1, entries));
                 }
-            } catch {
-                block.push(
-                    renderErrorRow(
-                        lp,
-                        (loc.range?.start?.line ?? 0) + 1,
-                        (loc.range?.start?.character ?? 0) + 1,
-                        `could not read source file`,
-                    ),
-                );
+            } catch (e) {
+                // Hard failure: the symbol scan failed. The verbatim body was
+                // already retrieved (the primary contract), but list_symbols
+                // is an explicit request the agent is relying on — surface the
+                // failure rather than silently omitting the table.
+                throw new Error(`symbol scan failed for ${defPath}:${sl + 1}-${el + 1}: ${e}`);
             }
         }
-        out.push(block.join("\n"));
     }
     return out.join("\n");
 }

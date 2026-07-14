@@ -1,11 +1,15 @@
-// Tests for the structured error contract (change 1) and the symbol-table
-// path dedup (change 2). Pure (no LSP servers needed) — exercises:
+// Tests for the structured error contract and the symbol-table path dedup.
+// Pure (no LSP servers needed) — exercises:
 //   - renderErrorRow format (the ERROR row parses with the same column
 //     grammar as a data row, leading `ERROR` token distinguishes from data)
 //   - nav.scan hard failures now THROW (Cannot read, No grammar, parse
 //     failed, bad params) instead of returning inline strings
-//   - nav.definition/references/hover per-position soft failures emit
-//     structured ERROR rows (with the ### position header when batching)
+//   - nav.definition now THROWS on every failure (no fallbacks, no soft-
+//     failure rows) — the tool's contract is "verbatim source code or a hard
+//     error". Covers: unknown language, cannot read, server unavailable, no
+//     definition found, multiple definitions, could not resolve body.
+//   - nav.references/hover per-position soft failures emit structured ERROR
+//     rows (with the ### position header when batching)
 //
 // The batched-tool soft-failure path is exercised with a `clientOf` that
 // throws — so the language-server spawn fails and we see the ERROR row for
@@ -101,63 +105,39 @@ test("nav.scan hard failure: bad endLine < startLine → throws", async () => {
     }
 });
 
-test("nav.definition per-position soft failure: server unavailable → ERROR row", async () => {
-    const { definition } = await load("./nav.ts");
-    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
-    try {
-        const file = resolve(dir, "svc.ts");
-        await writeFile(file, "const x = 1;\n", "utf8");
-        // Single position: no ### header, just the ERROR row.
-        const out = await definition(
-            { positions: [{ path: "svc.ts", line: 1, column: 1 }] },
-            dir,
-            throwingClientOf,
-        );
-        assert.match(out, /^ERROR  svc\.ts:1:1  typescript: server unavailable/, out);
-    } finally {
-        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
-    }
-});
-
-test("nav.definition batched: ### header + ERROR row per failed position", async () => {
-    const { definition } = await load("./nav.ts");
-    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
-    try {
-        const file = resolve(dir, "svc.ts");
-        await writeFile(file, "const x = 1;\n", "utf8");
-        // Two positions → each gets a ### header before its ERROR row.
-        const out = await definition(
-            {
-                positions: [
-                    { path: "svc.ts", line: 1, column: 1 },
-                    { path: "svc.ts", line: 1, column: 5 },
-                ],
-            },
-            dir,
-            throwingClientOf,
-        );
-        const blocks = out.split(/^### /m).filter(Boolean);
-        // Two blocks, each starting with the position header.
-        assert.equal(blocks.length, 2, `expected 2 blocks, got:\n${out}`);
-        assert.match(out, /### svc\.ts:1:1\nERROR  svc\.ts:1:1  typescript: server unavailable/);
-        assert.match(out, /### svc\.ts:1:5\nERROR  svc\.ts:1:5  typescript: server unavailable/);
-    } finally {
-        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
-    }
-});
-
-test("nav.definition unknown language → ERROR row with reason", async () => {
+test("nav.definition hard failure: unknown language → throws", async () => {
     const { definition } = await load("./nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "x.txt");
         await writeFile(file, "hello\n", "utf8");
-        const out = await definition(
-            { positions: [{ path: "x.txt", line: 1, column: 1 }] },
-            dir,
-            throwingClientOf,
+        await assert.rejects(
+            definition({ path: "x.txt", line: 1, column: 1 }, dir, throwingClientOf),
+            /Unknown language/,
         );
-        assert.match(out, /^ERROR  x\.txt:1:1  unknown language for file/, out);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("nav.definition hard failure: cannot read input file → throws", async () => {
+    const { definition } = await load("./nav.ts");
+    await assert.rejects(
+        definition({ path: "nope.ts", line: 1, column: 1 }, "/nonexistent-cwd", throwingClientOf),
+        /Cannot read/,
+    );
+});
+
+test("nav.definition hard failure: server unavailable → throws", async () => {
+    const { definition } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
+    try {
+        const file = resolve(dir, "svc.ts");
+        await writeFile(file, "const x = 1;\n", "utf8");
+        await assert.rejects(
+            definition({ path: "svc.ts", line: 1, column: 1 }, dir, throwingClientOf),
+            /typescript: server unavailable/,
+        );
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }
@@ -226,10 +206,14 @@ test("nav.tree hard failure: Cannot read → throws", async () => {
 });
 
 // --- Clean empty results are NOT ERROR rows ----------------------------------
-// A symbol with no definition/references is a legitimate outcome, not a
-// failure. These use a mock client that returns empty results, so the tool
-// reaches the "no definition found" / "no references found" path without a
-// real server. The output must be a parenthesized note, NOT an `ERROR` row.
+// A symbol with no references is a legitimate outcome, not a failure. These
+// use a mock client that returns empty results, so the tool reaches the "no
+// references found" path without a real server. The output must be a
+// parenthesized note, NOT an `ERROR` row.
+//
+// NOTE: code_definition is the exception — its contract is "return verbatim
+// source code", so even a clean "no definition found" is a HARD failure there
+// (no source code to return). See the definition test below.
 
 /** A mock LspClient that returns empty definition/reference results. */
 function emptyResultClientOf() {
@@ -241,20 +225,19 @@ function emptyResultClientOf() {
     return async () => client;
 }
 
-test("nav.definition clean empty result: no definition → parenthesized note, not ERROR", async () => {
+test("nav.definition clean empty result: no definition → HARD error (throws)", async () => {
     const { definition } = await load("./nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "svc.ts");
         await writeFile(file, "const x = 1;\n", "utf8");
-        const out = await definition(
-            { positions: [{ path: "svc.ts", line: 1, column: 1 }] },
-            dir,
-            emptyResultClientOf(),
+        // code_definition's contract is "verbatim source code or a hard error".
+        // A clean "no definition found" means no source code can be returned —
+        // so it throws (isError) rather than emitting a parenthesized note.
+        await assert.rejects(
+            definition({ path: "svc.ts", line: 1, column: 1 }, dir, emptyResultClientOf()),
+            /No definition found for svc\.ts:1:1/,
         );
-        // Clean empty result — parenthesized note, NOT an ERROR row.
-        assert.match(out, /^\(no definition found for svc\.ts:1:1\)/, out);
-        assert.ok(!/^ERROR/.test(out), `should not be an ERROR row:\n${out}`);
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }

@@ -421,12 +421,11 @@ Notes for the maintainer:
 ## Integration with `code_definition` — IMPLEMENTED
 
 `code_definition` gained an optional `list_symbols?: boolean` (default
-`false`) that runs the same tree-sitter scan over its returned snippet and
+`false`) that runs the same tree-sitter scan over its returned body and
 appends the symbol table. Default `false` keeps `code_definition`'s output
-focused and preserves its contract (the "do not break round-trip" guarantee
-in the README). The scan reuses the exact same `parseSymbols` helper as
-`code_scan`, so the two share one implementation. The snippet's
-absolute line range is computed from the `resolveDefBodyRange` result
+focused on the verbatim source body. The scan reuses the exact same
+`parseSymbols` helper as `code_scan`, so the two share one implementation. The
+body's absolute line range is computed from the `resolveDefBodyRange` result
 (`sl+1 .. el+1` in 1-based coords, where sl/el are the 0-based LSP line
 numbers), and the same `renderSymbolTable` formats the output.
 

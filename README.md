@@ -17,15 +17,19 @@ plus one diagnostic reporter:
 | `code_scan` | tree-sitter (WASM, in-process)     | Identifier table for a line range — the third-party entry point |
 | `code_diagnostics`| LSP `textDocument/diagnostic` (pull) | Errors/warnings for a file, fetched on demand       |
 
-`code_definition`, `code_hover`, and `code_references` accept an optional
-`positions` array of `{path, line, column}` objects in addition to the scalar
-`path`/`line`/`column` form, so the agent can batch several symbol lookups in
-one tool call. When more than one position is passed, each result block is
-prefixed with `### <path>:<line>:<col>` to correlate results to inputs.
+`code_hover` and `code_references` accept an optional `positions` array of
+`{path, line, column}` objects in addition to the scalar `path`/`line`/`column`
+form, so the agent can batch several symbol lookups in one tool call. When more
+than one position is passed, each result block is prefixed with
+`### <path>:<line>:<col>` to correlate results to inputs. `code_definition`
+takes a **scalar** `(path, line, column)` — it returns the verbatim source
+body of ONE symbol (no batching); its output is a header line
+`<defPath>:<sl>-<el>` followed by the raw source lines (no code fence), ready
+to copy straight into an edit.
 
 `code_definition` also accepts an optional `list_symbols` boolean (default
-`false`). When true, a tree-sitter symbol table is appended to each returned
-snippet, so the agent can discover third-party/stdlib symbols used inside the
+`false`). When true, a tree-sitter symbol table is appended to the returned
+body, so the agent can discover third-party/stdlib symbols used inside the
 definition body and pass their coordinates to `code_hover`/
 `code_definition`/`code_references` without a separate call.
 
@@ -118,9 +122,10 @@ see `loads`'s signature/source, but `cbor2` is in `site-packages`:
    app.py:44:18 — loads
    def loads(data: bytes, /) -> Any: ...
 
-   # or, to read the full source body instead of just the signature:
-   code_definition(positions=[{path:"app.py", line:44, column:18}])
+   # or, to read the full verbatim source body instead of just the signature:
+   code_definition(path="app.py", line=44, column=18)
      → jumps into cbor2/_decoder.py and returns the complete function body
+       (header `<defPath>:<sl>-<el>` + raw source, no code fence)
 ```
 
 The `pattern` arg narrows the scan to `loads` (a regexp on symbol names);
@@ -368,4 +373,4 @@ End-to-end smoke-tested against **ty** (auto-detected default) and **pyright**:
 - absolute 1-position math round-trips into `code_hover`/`code_definition` ✓
 - third-party discovery: `code_scan` → `code_definition` jumps into
   nix-store `site-packages` (e.g. `cbor2._decoder.py`) — `code_search_symbol` cannot ✓
-- `code_definition {list_symbols: true}` appends the table per snippet ✓
+- `code_definition {list_symbols: true}` appends the table to the body ✓

@@ -20,7 +20,7 @@
 //   node nav-cli.mjs outline <file>
 //   node nav-cli.mjs tree <file> <pattern>
 //   node nav-cli.mjs hover <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
-//   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [<file> <line> <col> ...] [--list-symbols]
+//   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [--list-symbols]
 //   node nav-cli.mjs references <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
 //   node nav-cli.mjs rename <file> <line:1-based> <col:1-based> <newName>
 //   node nav-cli.mjs symbol <query> [python|cpp|bash|typescript]
@@ -29,9 +29,10 @@
 //
 // hover/definition/references accept one or more (file line col) triples; the
 // extra triples are batched through one LSP client per language, mirroring the
-// required `positions` array parameter the code_definition/code_hover/
-// code_references tools accept in index.ts (the argv triples are collected
-// into that array internally).
+// required `positions` array parameter the code_hover/code_references tools
+// accept in index.ts (the argv triples are collected into that array
+// internally). code_definition takes a SINGLE (file line col) triple — it
+// returns the verbatim source body of one symbol (no batching).
 //
 // Examples:
 //   node nav-cli.mjs outline temp.py
@@ -39,7 +40,7 @@
 //   node nav-cli.mjs scan temp.py                  # whole file
 //   node nav-cli.mjs scan temp.py --pattern load   # filter by name
 //   node nav-cli.mjs hover temp.py 5 5
-//   node nav-cli.mjs definition second.py 16 7 second.py 10 7
+//   node nav-cli.mjs definition second.py 16 7
 //   node nav-cli.mjs references temp.py 5 5
 //   node nav-cli.mjs rename temp.py 5 5 new_name
 //   node nav-cli.mjs symbol "parse" python
@@ -67,7 +68,7 @@ function usage() {
   node nav-cli.mjs outline <file>
   node nav-cli.mjs tree <file> <pattern>
   node nav-cli.mjs hover <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
-  node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [<file> <line> <col> ...] [--list-symbols]
+  node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [--list-symbols]
   node nav-cli.mjs references <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
   node nav-cli.mjs rename <file> <line:1-based> <col:1-based> <newName>
   node nav-cli.mjs symbol <query> [python|cpp|bash|typescript]
@@ -82,8 +83,11 @@ tree takes a regexp matched against symbol names. DWYM: a class/interface/struct
   enriched with a hover signature when the server detail is empty (tsserver/ty);
   any other match prints NO subtree (just the node + ancestors for context).
   No constant/variable filtering — the pattern scopes the candidate set.
-definition accepts --list-symbols to also append a symbol table
-  per returned snippet (mirrors code_definition's list_symbols parameter).
+definition accepts a SINGLE (file line col) triple and returns the verbatim
+  source body of the symbol at that position (header `<defPath>:<sl>-<el>` +
+  raw source, no fence). Throws a hard error if it cannot return source code
+  (no definition found, multiple definitions, cannot resolve body, etc.).
+  --list-symbols appends a symbol table per the list_symbols parameter.
 scan lists identifiers with their absolute 1-based position and syntactic role
   (type/call/member/import/var). With no line range it scans the whole file.
   --pattern filters symbols by name regexp. --docs enriches each row with a
@@ -129,30 +133,36 @@ async function main() {
         const [path, pattern] = rest;
         if (!path || !pattern) usage();
         console.log(await nav.tree({ path, pattern }, ROOT, clientOf));
-    } else if (cmd === "hover" || cmd === "definition" || cmd === "references") {
+    } else if (cmd === "hover" || cmd === "references") {
         // Accept one or more (file line col) triples. Each triple is batched
         // through one LSP client per language (mirroring the `positions` array
-        // the code_definition/code_hover/code_references tools accept in nav.ts).
-        // `definition` also accepts a trailing --list-symbols flag (mirrors the
-        // list_symbols parameter of the code_definition tool).
-        const listSymbols = rest.includes("--list-symbols");
-        const positional = rest.filter((a) => a !== "--list-symbols");
-        if (positional.length < 3 || positional.length % 3 !== 0) usage();
+        // the code_hover/code_references tools accept in nav.ts).
+        if (rest.length < 3 || rest.length % 3 !== 0) usage();
         const positions = [];
-        for (let i = 0; i + 2 < positional.length; i += 3) {
+        for (let i = 0; i + 2 < rest.length; i += 3) {
             positions.push({
-                path: positional[i],
-                line: parseInt(positional[i + 1], 10),
-                column: parseInt(positional[i + 2], 10),
+                path: rest[i],
+                line: parseInt(rest[i + 1], 10),
+                column: parseInt(rest[i + 2], 10),
             });
         }
         if (positions.length === 0) usage();
         if (cmd === "hover") console.log(await nav.hover({ positions }, ROOT, clientOf));
-        else if (cmd === "definition")
-            console.log(
-                await nav.definition({ positions, list_symbols: listSymbols }, ROOT, clientOf),
-            );
         else console.log(await nav.references({ positions }, ROOT, clientOf));
+    } else if (cmd === "definition") {
+        // definition takes a SINGLE (file line col) triple — it returns the
+        // verbatim source body of one symbol (no batching). --list-symbols is
+        // optional and appends a symbol table after the body.
+        const listSymbols = rest.includes("--list-symbols");
+        const positional = rest.filter((a) => a !== "--list-symbols");
+        if (positional.length !== 3) usage();
+        const params = {
+            path: positional[0],
+            line: parseInt(positional[1], 10),
+            column: parseInt(positional[2], 10),
+            list_symbols: listSymbols,
+        };
+        console.log(await nav.definition(params, ROOT, clientOf));
     } else if (cmd === "rename") {
         const [path, lineStr, colStr, newName] = rest;
         if (!path || !lineStr || !colStr || !newName) usage();

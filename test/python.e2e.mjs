@@ -120,15 +120,24 @@ runOrSkip("code_definition on punintend returns its body", async () => {
     const ws = await withWorkspace(["second.py"]);
     try {
         // punintend is at second.py:24:9 (1-based) per code_outline. definition
-        // should resolve the enclosing body and return the source snippet.
+        // should resolve the enclosing body and return the verbatim source.
         const out = await nav.definition(
-            { positions: [{ path: "second.py", line: 24, column: 9 }] },
+            { path: "second.py", line: 24, column: 9 },
             ws.root,
             ws.clientOf,
+        );
+        // New output format: header `<defPath>:<sl>-<el>` then raw source (no fence).
+        const lines = out.split("\n");
+        assert.match(
+            lines[0],
+            /second\.py:\d+-\d+$/,
+            `header should be <defPath>:<sl>-<el>, got:\n${out}`,
         );
         assert.match(out, /def punintend/, `punintend body missing:\n${out}`);
         // The docstring should be inside the resolved body extent.
         assert.match(out, /Documentation of punintend/);
+        // No code fence — the body is raw source ready for editing.
+        assert.ok(!/^```$/m.test(out), `body should have no code fence:\n${out}`);
     } finally {
         await ws.cleanup();
     }
