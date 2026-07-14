@@ -99,14 +99,21 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
    `tsLangForFile` (step 6); if an extension has a tree-sitter grammar but no
    LSP server (or vice versa), that's a deliberate gap — document why.
 
-10. **`loadConfig`** — add the language to the `["cpp", "python", "bash",
-    ...]` array in the `.pi/lsp.json` merge loop so per-project overrides
-    work for it.
+10. **`loadConfig`** — iterates `ALL_LANGS` (imported from `nav.ts`) for the
+    `.pi/lsp.json` merge loop, so per-project overrides pick up a new
+    language automatically once it's added to `ALL_LANGS` (step 11) —
+    nothing to touch here directly.
 
-11. **`code_search_symbol` default `langs`** — add the language to the default list
-    so `code_search_symbol` with no `language` param searches it. If the server
-    needs `ensureProjectLoaded` (step 4), the call is already there for all
-    languages (no-op otherwise).
+11. **`code_search_symbol` default `langs`** — add the language to `ALL_LANGS`
+    in `nav.ts` (the single source of truth for the `Lang` union's members).
+    It's reused by: project-language detection (all tiers), `code_search_symbol`'s
+    language-validation check (so a bad `language` value fails cleanly instead
+    of throwing a raw TypeError out of `resolveConfig`), `index.ts`'s
+    `.pi/lsp.json` merge loop, and the `StringEnum` for the `code_search_symbol`
+    tool's `language` parameter (the tool-schema-level allow-list an agent
+    sees) — one array, four call sites, so adding a language here is enough;
+    no separate literal to remember. If the server needs `ensureProjectLoaded`
+    (step 4), the call is already there for all languages (no-op otherwise).
 
 12. **`code_scan` `include_docs`** — if `TsLang` is a superset (step
     7), the LSP client is spawned via `tsLangToLspLang(tsLang)`, **not** a

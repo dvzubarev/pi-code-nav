@@ -83,6 +83,14 @@ export interface ClientProvider {
     (lang: Lang): Promise<LspClient>;
 }
 
+/** Every language this extension supports — the single source of truth for
+ * the `Lang` union's members. Used for project-language detection (all
+ * tiers), to validate an agent-supplied `language` string (code_search_symbol),
+ * and by index.ts for the `.pi/lsp.json` merge loop and the code_search_symbol
+ * tool's `language` parameter StringEnum — one array, four call sites, so
+ * adding a language can't silently miss one of them. */
+export const ALL_LANGS = ["cpp", "python", "bash", "typescript"] as const satisfies readonly Lang[];
+
 // ---------------------------------------------------------------------------
 // Project language detection
 // ---------------------------------------------------------------------------
@@ -184,7 +192,7 @@ export async function detectProjectLanguages(rootPath: string): Promise<Lang[]> 
 async function detectProjectLanguagesUncached(rootPath: string): Promise<Lang[]> {
     const found = new Set<Lang>();
     // Tier 1: root markers.
-    for (const lang of ["cpp", "python", "bash", "typescript"] as Lang[]) {
+    for (const lang of ALL_LANGS) {
         const markers = ROOT_MARKERS[lang];
         if (markers?.some((m) => existsSync(resolve(rootPath, m)))) {
             found.add(lang);
@@ -194,7 +202,7 @@ async function detectProjectLanguagesUncached(rootPath: string): Promise<Lang[]>
 
     // Tier 2: bounded breadth-first source-extension scan. Build the set of
     // languages still unconfirmed so we can stop early once all resolve.
-    const wanted = new Set<Lang>(["cpp", "python", "bash", "typescript"]);
+    const wanted = new Set<Lang>(ALL_LANGS);
     for (const l of found) wanted.delete(l);
     let dirsVisited = 0;
     let queue: string[] = [rootPath];
@@ -225,7 +233,7 @@ async function detectProjectLanguagesUncached(rootPath: string): Promise<Lang[]>
             }
         }
     }
-    if (found.size === 0) return ["cpp", "python", "bash", "typescript"];
+    if (found.size === 0) return [...ALL_LANGS];
     return [...found];
 }
 
@@ -989,6 +997,17 @@ export async function symbol(
     cwd: string,
     clientOf: ClientProvider,
 ): Promise<string> {
+    if (params.language !== undefined && !ALL_LANGS.includes(params.language as Lang)) {
+        // Defensive: the tool schema (index.ts) already constrains `language`
+        // to a StringEnum, but nav.ts is also driven directly by the CLI
+        // harness and tests, which bypass that schema. An unchecked cast here
+        // would flow into resolveConfig's `DEFAULTS[lang]` lookup and throw a
+        // raw "Cannot read properties of undefined" TypeError instead of a
+        // clean, agent-readable message.
+        throw new Error(
+            `Unknown language "${params.language}" — must be one of: ${ALL_LANGS.join(", ")}`,
+        );
+    }
     const langs: Lang[] = params.language
         ? [params.language as Lang]
         : await detectProjectLanguages(cwd);

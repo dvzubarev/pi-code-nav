@@ -206,6 +206,35 @@ test("nav.tree hard failure: Cannot read → throws", async () => {
     );
 });
 
+test("nav.symbol hard failure: invalid `language` → throws (not a raw TypeError)", async () => {
+    const { symbol } = await load("./nav.ts");
+    // The tool schema (index.ts) constrains `language` to a StringEnum, but
+    // nav.ts is also called directly by the CLI harness/tests, which bypass
+    // that schema. An invalid value must fail with a clean, agent-readable
+    // message — NOT propagate into resolveConfig's `DEFAULTS[lang]` lookup
+    // and throw a raw "Cannot read properties of undefined" TypeError.
+    await assert.rejects(
+        symbol({ query: "foo", language: "javascript" }, "/nonexistent-cwd", throwingClientOf),
+        /Unknown language "javascript"/,
+    );
+});
+
+test("nav.symbol accepts a valid `language` without throwing on validation", async () => {
+    const { symbol } = await load("./nav.ts");
+    // "typescript" is a valid Lang (previously omitted from the tool
+    // description's allowed-value list). Validation must pass the language
+    // check; the request then fails later for an unrelated recoverable
+    // reason (server unavailable), which nav.symbol reports as an ERROR row
+    // rather than a thrown rejection — proving it got past the language
+    // check without raising the validation error.
+    const result = await symbol(
+        { query: "foo", language: "typescript" },
+        "/nonexistent-cwd",
+        throwingClientOf,
+    );
+    assert.match(result, /ERROR\s+\[typescript\]\s+server unavailable/);
+});
+
 // --- Clean empty results are NOT ERROR rows ----------------------------------
 // A symbol with no references is a legitimate outcome, not a failure. These
 // use a mock client that returns empty results, so the tool reaches the "no

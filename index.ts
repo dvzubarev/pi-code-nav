@@ -40,6 +40,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { LspClient, resolveConfig, type Lang, type ServerConfig } from "./lsp-client";
 import * as nav from "./nav";
+import { ALL_LANGS } from "./nav";
 
 /** File extension → language (re-exported from render.ts for status reporting). */
 // EXT_LANG and langForFile now live in render.ts; index.ts imports them.
@@ -59,7 +60,7 @@ async function loadConfig(
             const raw = await readFile(p, "utf8");
             const data = JSON.parse(raw);
             if (data && typeof data === "object") {
-                for (const lang of ["cpp", "python", "bash", "typescript"] as Lang[]) {
+                for (const lang of ALL_LANGS) {
                     const ov = (data as Record<string, unknown>)[lang];
                     if (ov && typeof ov === "object") {
                         merged[lang] = { ...merged[lang], ...(ov as Partial<ServerConfig>) };
@@ -149,7 +150,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_outline",
         label: "Code Outline",
         description:
-            "Retrieve the structure of a source file: functions, classes, methods, with positions. Only structural kinds are kept (class, method, function, constructor, interface, struct) — constants, variables, and other leaf bindings are dropped. For signature-enriched, pattern-scoped results use code_tree.",
+            "Retrieve the structure of a source file: functions, classes, methods, with positions. Only structural kinds are kept (class, method, function, constructor, interface, struct) — constants, variables, and other leaf bindings are dropped. For signature-enriched, pattern-scoped results use code_tree. Example output:\n  Class Foo  :12:1\n    Method bar  [void bar(int x)]  :15:3",
         promptSnippet: "List functions/classes/methods in a file via LSP",
         promptGuidelines: [
             "Use code_outline when you need quick overwiev of source code structure. It returns list of class/method/interface.",
@@ -175,7 +176,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_tree",
         label: "Code Tree",
         description:
-            "Return a pruned view of a source file's DocumentSymbol tree, filtered to symbols whose name matches a regexp. Each row carries its kind, position, and signature. Unlike code_outline (a bloat-free structural overview of the whole file), code_tree is pattern-driven: pass a regexp matched against symbol names. DWYM: if the match is a class/interface/struct, it prints its direct children (methods/properties/fields) with a signature; if the match is anything else, it prints its ancestors for context.",
+            "Return a pruned view of a source file's DocumentSymbol tree, filtered to symbols whose name matches a regexp. Each row carries its kind, position, and signature. Unlike code_outline (a bloat-free structural overview of the whole file), code_tree is pattern-driven: pass a regexp matched against symbol names. DWYM: if the match is a class/interface/struct, it prints its direct children (methods/properties/fields) with a signature; if the match is anything else, it prints its ancestors for context. Example output for pattern `^Foo$`:\n  Class Foo  :12:1\n    Method bar  [void bar(int x)]  :15:3\n    Method baz  [int baz()]  :18:3",
         promptSnippet: "Prints source file as tree-like structure.",
         promptGuidelines: [
             "Use code_tree when you need pattern-driven symbol tree with signatures. It takes a regexp that is tested against symbol names — e.g. scan a class name to see it and all its members with signatures, or scan `^get_|^set_` to list getters/setters and their ancestor classes.",
@@ -211,7 +212,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             "Use code_definition when you need the FULL source body of a function/class/method — the verbatim text, ready to copy into an edit. You must know the symbol's position (path, line, column) to use this tool; get one from code_outline, code_tree, code_search_symbol, or code_scan. Path might be absolute (typical for third-party locations in nix store, site-packages, system headers).",
             "Output format: a header line `<defPath>:<sl>-<el>` (the path the definition lives in, plus its 1-based inclusive line range), then the raw source body. defPath may differ from your input path (the definition can be in another file, including third-party trees).",
             "Multiple definitions: a position may resolve to several definition sites (overloads, header-vs-source in C++, re-exports). The tool then returns one block per site (each with the same `<defPath>:<sl>-<el>` header + body), separated by a blank line, with a trailing `# N definitions` count. Pick the body you meant.",
-            "Set list_symbols=true to also append a symbol table after the body (useful for discovering third-party/stdlib APIs used inside). Output row format `  <role> <name>  :<line>:<col>`. Each row is itself a position you can feed back into code_definition / code_hover / code_references — combine the header's defPath with the row's `:line:col`.",
+            "Set list_symbols=true to also append a symbol table after the body (useful for discovering third-party/stdlib APIs used inside): a `Symbols in ...:` header line, then one row per identifier `  <role> <name>  :<line>:<col>`. Each row is itself a position you can feed back into code_definition / code_hover / code_references — combine the header's defPath with the row's `:line:col`.",
         ],
         parameters: Type.Object({
             path: Type.String({ description: "File path (absolute or relative to cwd)" }),
@@ -270,7 +271,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_search_symbol",
         label: "Code Symbol Search",
         description:
-            "Symbol search by name across the workspace AND third-party/stdlib trees. Given a query string (a bare name like `loads` or a qualified name like `typing.cast`, `cbor2.loads`, `std::vector::push_back`), return a ranked list of matching symbols (kind, name, <path>:<line>:<col>). For Python (ty), third-party/stdlib roots are added as workspace folders (discovered from $propagatedBuildInputs, or $PYTHONPATH when that's absent) so the search covers site-packages and the stdlib; ccls already indexes third-parties via its compilation database. Results are ranked: for a bare name, workspace-root exact matches are returned alone; otherwise third-party exact matches come first, then fuzzy matches (trimmed). For a qualified name, only the exact bare-name match whose module/namespace matches the qualifier is kept.",
+            "Symbol search by name across the workspace AND third-party/stdlib trees. Given a query string (a bare name like `loads` or a qualified name like `typing.cast`, `cbor2.loads`, `std::vector::push_back`), return a ranked list of matching symbols (kind, name, <path>:<line>:<col>). For Python (ty), third-party/stdlib roots are added as workspace folders (discovered from $propagatedBuildInputs, or $PYTHONPATH when that's absent) so the search covers site-packages and the stdlib; ccls already indexes third-parties via its compilation database. Results are ranked: for a bare name, workspace-root exact matches are returned alone; otherwise third-party exact matches come first, then fuzzy matches (trimmed). For a qualified name, only the exact bare-name match whose module/namespace matches the qualifier is kept. Example output for query `typing.cast`:\n  [python] Function cast  /nix/store/.../typing.py:1234:5",
         promptSnippet: "Search for a symbol by name (bare or qualified) across the workspace and third-party/stdlib.",
         promptGuidelines: [
             "Use code_search_symbol to find a location of a symbol by name. Pass a BARE name (e.g. `loads`, `TempC`) to find symbols in your project first; if your project has no symbol by that name, third-party/stdlib exact matches are returned next. Pass a QUALIFIED name (`typing.cast`, `cbor2.loads`, `std::vector::push_back`) to pin a specific third-party/stdlib symbol — the tool strips the qualifier, searches the bare name, then keeps only the match in that module/namespace.",
@@ -284,17 +285,24 @@ function registerTools(pi: ExtensionAPI, state: State): void {
                     "Symbol name to search for. A bare name (e.g. `loads`, `TempC`) searches the workspace first, then third-party/stdlib. A qualified name (`typing.cast`, `cbor2.loads`, `std::vector::push_back`) pins a specific module/namespace — the tool strips the qualifier, searches the bare name, then keeps only the match in that module.",
             }),
             language: Type.Optional(
-                Type.String({
-                    description: "Optional: 'cpp' | 'python' | 'bash' to limit to one language",
+                StringEnum(ALL_LANGS, {
+                    description: "Optional: limit the search to one language.",
                 }),
             ),
         }),
         async execute(_id, params, _signal, _onUpdate, ctx) {
-            // nav.symbol iterates the enabled languages, resolves identifier
-            // selStarts via documentSymbol, and never throws on recoverable errors.
-            return text_result(
-                await nav.symbol(params, ctx.cwd, (lang) => state.pool.client(lang)),
-            );
+            // nav.symbol never throws on RECOVERABLE errors (unknown server,
+            // failed workspace/symbol call — those become ERROR rows), but it
+            // DOES throw on an invalid `language` value (a hard input-validation
+            // error, same contract as code_scan's pattern/range validation) so
+            // wrap in try/catch like the other validating tools.
+            try {
+                return text_result(
+                    await nav.symbol(params, ctx.cwd, (lang) => state.pool.client(lang)),
+                );
+            } catch (e) {
+                return err(e instanceof Error ? e.message : String(e));
+            }
         },
     });
 
@@ -354,13 +362,13 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_scan",
         label: "Code Scan",
         description:
-            "Scan a source file for identifiers — type names, calls, member accesses, imports — and return each with its position and syntactic role. Optionally filter by a name pattern and/or limit to a line range.",
+            "Scan a source file for identifiers — type names, calls, member accesses, imports — and return each with its position and syntactic role. Optionally filter by a name pattern and/or limit to a line range. Output has a header line, then one row per identifier: `<role> <name>  :<line>:<col>` (plus a trailing hover label if include_docs=true). Example:\n  Symbols in foo.py:1-40 (roles: type|call|member|import|var, 1-based, reusable as code_* input):\n    import  cbor2   :3:8\n    call    loads   :10:12",
         promptSnippet:
             "List identifiers (with positions + roles) in a file or range; optionally filter by name pattern",
         promptGuidelines: [
             "Use code_scan for listing all identifier in a given range.",
             "Pass only `path` to scan the whole file. Add `pattern` (a regexp tested against symbol names) to narrow to e.g. a specific imported module or a method called in a body. Add `startLine`/`endLine` (1-based inclusive) to limit the range — useful for large files where a whole-file scan would be noisy.",
-            "Output row format: `  <role> <name>  :<line>:<col> [<details>]`. To feed a row into code_hover/code_definition/code_references, combine your input path with the row's `:line:col`",
+            "Output starts with a header line `Symbols in <path>:<startLine>-<endLine> (roles: ...):`, then one row per identifier: `  <role> <name>  :<line>:<col>` (plus a trailing one-line hover label ONLY when include_docs=true — omitted otherwise). To feed a row into code_hover/code_definition/code_references, combine your input path with the row's `:line:col`",
             'Roles: type (a type name), call (a function/method being called), member (a field/attribute access like .push_back / .encode), import (a name brought into scope by an import — module names and imported symbols, the primary entry points for third-party discovery), var (a local variable, parameter, or assignment target — hoverable but rarely worth learning about). By default `var` is omitted (noisy locals); pass roles including "var" to include them. The table dedupes by (name, role) and keeps the first occurrence; pass a tighter startLine/endLine to reach a later occurrence.',
             "Use include_docs=true when you need signature returned by code_hover command (note that it will be truncated).",
 
