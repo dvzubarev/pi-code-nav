@@ -21,7 +21,12 @@ plus one diagnostic reporter:
 `(path, line, column)` — one symbol per call (no batching). `code_definition`
 returns the verbatim source body of the symbol: a header line
 `<defPath>:<sl>-<el>` followed by the raw source lines (no code fence), ready
-to copy straight into an edit.
+to copy straight into an edit. A position may resolve to **multiple**
+definition sites (overloads, header-vs-source in C++, re-exports); in that
+case the tool returns one block per site (each with the same
+`<defPath>:<sl>-<el>` header + body, blank-line-separated) plus a trailing
+`# N definitions for <inPath>:<line>:<col>` count — multiple sites are data,
+not an error.
 
 `code_definition` also accepts an optional `list_symbols` boolean (default
 `false`). When true, a tree-sitter symbol table is appended to the returned

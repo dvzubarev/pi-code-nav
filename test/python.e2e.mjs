@@ -80,16 +80,16 @@ runOrSkip("code_outline on second.py shows Point and TempC classes", async () =>
         // Hierarchical DocumentSymbol[] → indented outline. Verify the two
         // top-level classes appear with their kind and 1-based selectionRange pos.
         assert.ok(
-            lines.some((l) => /^Class Point  \(\d+:\d+\)$/.test(l)),
+            lines.some((l) => /^Class Point  :\d+:\d+$/.test(l)),
             `Point missing:\n${out}`,
         );
         assert.ok(
-            lines.some((l) => /^Class TempC  \(\d+:\d+\)$/.test(l)),
+            lines.some((l) => /^Class TempC  :\d+:\d+$/.test(l)),
             `TempC missing:\n${out}`,
         );
         // TempC's children (__init__, punintend) are indented two spaces.
         assert.ok(
-            lines.some((l) => /^  Method punintend  \(\d+:\d+\)$/.test(l)),
+            lines.some((l) => /^  Method punintend  :\d+:\d+$/.test(l)),
             `punintend missing:\n${out}`,
         );
         // code_outline keeps only structural kinds (class/method/function/...).
@@ -116,13 +116,13 @@ runOrSkip("code_tree on second.py matches TempC and its members", async () => {
         const lines = out.split("\n");
         // TempC itself is matched.
         assert.ok(
-            lines.some((l) => /^Class TempC  .+\(\d+:\d+\)$/.test(l)),
+            lines.some((l) => /^Class TempC  .+:\d+:\d+$/.test(l)),
             `TempC match row with signature missing:\n${out}`,
         );
         // Its direct members are kept (indented) and carry hover-derived
         // signatures — they are NOT bare context rows anymore.
         assert.ok(
-            lines.some((l) => /^  Method punintend  .+\(\d+:\d+\)$/.test(l)),
+            lines.some((l) => /^  Method punintend  .+:\d+:\d+$/.test(l)),
             `punintend (direct member with signature) missing:\n${out}`,
         );
         // Point is pruned (no match in its subtree).
@@ -156,8 +156,8 @@ runOrSkip("code_search_symbol 'tempc' finds TempC with its identifier position",
         const out = await nav.symbol({ query: "tempc", language: "python" }, ws.root, ws.clientOf);
         // ty matches case-insensitively on the query prefix; the result row must
         // name TempC as a Class and point at its identifier (col 7 of its line).
-        // renderSymbolInfo now emits `<path> (<line>:<col>)` (path-space-parens).
-        assert.match(out, /\[python\] Class TempC  .*second\.py \(\d+:7\)/);
+        // renderSymbolInfo now emits `<path>:<line>:<col>` (grep-style).
+        assert.match(out, /\[python\] Class TempC  .*second\.py:\d+:7/);
         // There must be no other-symbol rows (only TempC should match "tempc").
         const rows = out.split("\n").filter((l) => l.trim());
         for (const r of rows) assert.match(r, /TempC/, `unexpected row for "tempc" query: ${r}`);
@@ -188,7 +188,7 @@ runOrSkipThirdParty("code_search_symbol qualified 'typing.cast' finds stdlib cas
         // starts with `#` and is not a data row.
         const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
         assert.equal(rows.length, 1, `expected 1 row for typing.cast, got:\n${out}`);
-        assert.match(rows[0], /\[python\] Function cast  .*typing\.py \(\d+:\d+\)/);
+        assert.match(rows[0], /\[python\] Function cast  .*typing\.py:\d+:\d+/);
     } finally {
         await ws.cleanup();
     }
@@ -213,7 +213,7 @@ runOrSkipThirdParty("code_search_symbol qualified 'cbor2.loads' finds the cbor2 
         );
         const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
         assert.equal(rows.length, 1, `expected 1 row for cbor2.loads, got:\n${out}`);
-        assert.match(rows[0], /\[python\] Function loads  .*cbor2\/_decoder\.py \(\d+:\d+\)/);
+        assert.match(rows[0], /\[python\] Function loads  .*cbor2\/_decoder\.py:\d+:\d+/);
     } finally {
         await ws.cleanup();
     }
@@ -275,7 +275,7 @@ runOrSkip("code_search_symbol bare 'mymethod' returns ONLY the workspace symbol"
         );
         const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
         assert.equal(rows.length, 1, `expected ONLY the workspace mymethod, got:\n${out}`);
-        assert.match(rows[0], /\[python\] Method mymethod  .*main\.py \(\d+:\d+\)/);
+        assert.match(rows[0], /\[python\] Method mymethod  .*main\.py:\d+:\d+/);
     } finally {
         await ws.cleanup();
     }
@@ -312,7 +312,7 @@ runOrSkipThirdParty("code_search_symbol qualified 'aiohttp.StreamReader.iter_chu
         assert.equal(dataRows.length, 1, `expected 1 row for iter_chunks, got:\n${out}`);
         assert.match(
             dataRows[0],
-            /\[python\] Method iter_chunks  .*aiohttp\/streams\.py \(\d+:\d+\)/,
+            /\[python\] Method iter_chunks  .*aiohttp\/streams\.py:\d+:\d+/,
         );
     } finally {
         await ws.cleanup();
@@ -348,7 +348,7 @@ runOrSkipThirdParty("code_search_symbol qualified 'aiohttp.web.Request' finds th
         const dataRows = rows.filter((l) => !l.startsWith("[python] #"));
         // The class `Request` in aiohttp/web_request.py MUST be present.
         assert.ok(
-            dataRows.some((r) => /\[python\] Class Request  .*aiohttp\/web_request\.py \(\d+:\d+\)/.test(r)),
+            dataRows.some((r) => /\[python\] Class Request  .*aiohttp\/web_request\.py:\d+:\d+/.test(r)),
             `class Request in web_request.py missing from:\n${out}`,
         );
         // Lowercase `request` methods (case-variant noise) must NOT appear —
@@ -448,11 +448,11 @@ runOrSkip("code_references on Point class lists __init__ usages", async () => {
         // reference row should be present (the def itself, plus the default-arg
         // usage and the call in TempC.__init__).
         assert.match(out, /# \d+ references$/, `trailing count comment missing:\n${out}`);
-        // renderLocation now emits `<path> (<line>:<col>)` (path-space-parens,
+        // renderLocation now emits `<path>:<line>:<col>` (grep-style,
         // single position instead of a start - end range).
         const rows = out
             .split("\n")
-            .filter((l) => /second\.py \(\d+:\d+\)/.test(l));
+            .filter((l) => /second\.py:\d+:\d+/.test(l));
         assert.ok(rows.length >= 1, `no reference rows:\n${out}`);
     } finally {
         await ws.cleanup();

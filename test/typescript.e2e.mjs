@@ -133,14 +133,14 @@ runOrSkip(
             // The matched class row carries a hover-derived signature.
             assert.match(
                 out,
-                /^Class Service  .+\(\d+:\d+\)$/m,
+                /^Class Service  .+:\d+:\d+$/m,
                 `Service match row with signature missing:\n${out}`,
             );
             // Its direct members are kept (indented) and carry hover-derived
             // signatures — they are NOT bare context rows anymore.
             assert.match(
                 out,
-                /^  Method getId  .+\(\d+:\d+\)$/m,
+                /^  Method getId  .+:\d+:\d+$/m,
                 `getId (direct member with signature) missing:\n${out}`,
             );
             // The constructor parameter property `id` is also a direct child and
@@ -148,7 +148,7 @@ runOrSkip(
             // just methods.
             assert.match(
                 out,
-                /^  Property id  .+\(\d+:\d+\)$/m,
+                /^  Property id  .+:\d+:\d+$/m,
                 `id (direct property with signature) missing:\n${out}`,
             );
             // NOISE (Constant, no match, not under a match) is pruned — and even

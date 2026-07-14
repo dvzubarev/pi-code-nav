@@ -453,9 +453,10 @@ to regex-sniff inline prose):
     rename/scan/diagnostics) THROW. `index.ts`'s `err()` catches and sets
     `isError: true`. Covers: `Cannot read …`, `Unknown language for file: …`,
     `Invalid regexp`, `No grammar for …`, `parse failed: …`, bad params,
-    server unavailable, no definition found, multiple definitions, could not
-    resolve body range, pull-diagnostics request failed. The CLI lets these
-    throw to a top-level `FAILED:` message.
+    server unavailable, no definition found, could not resolve body range,
+    pull-diagnostics request failed. (Multiple definitions is NOT a failure —
+    it's reported as data: one block per site.) The CLI lets these throw to a
+    top-level `FAILED:` message.
   - SOFT failures (per-position in the batched tools: references/hover;
     per-language in symbol) are emitted as a structured row
     `ERROR  <path>:<line>:<col>  <reason>` (or `ERROR  [lang]  <reason>` for
@@ -482,11 +483,16 @@ Subcommands (root = cwd or `CODE_NAV_ROOT`):
 col)` triple — one symbol per call (no batching). `definition` returns the
 verbatim source body of the symbol: a header line `<defPath>:<sl>-<el>`
 (1-based inclusive line range of the body) then the raw source lines (no code
-fence). It THROWS on any failure (no definition found, multiple definitions,
-cannot resolve body, etc.) — the contract is "source code or a hard error",
-no fallbacks. `hover` and `references` emit a structured `ERROR` row on
-recoverable failures (unknown language, cannot read, server unavailable);
-a clean empty result (no references / no hover info) is a parenthesized note.
+fence). A position may resolve to MULTIPLE definition sites (overloads,
+header-vs-source, re-exports) — that's reported as one block per site
+(each with the same `<defPath>:<sl>-<el>` header + body, blank-line-separated)
+plus a trailing `# N definitions for <inPath>:<line>:<col>` count; a
+single-site result has no separator and no count. It THROWS on any failure
+(no definition found, cannot resolve body, etc.) — the contract is "source
+code or a hard error", no fallbacks. `hover` and `references` emit a
+structured `ERROR` row on recoverable failures (unknown language, cannot
+read, server unavailable); a clean empty result (no references / no hover
+info) is a parenthesized note.
 
 ### Scalar `(path, line, column)` input — no `positions` array
 

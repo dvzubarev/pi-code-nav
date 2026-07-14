@@ -17,8 +17,8 @@
  *     `isError: true` — the agent gets a machine-readable success/failure bit.
  *     Covers: cannot read the file, unknown language, invalid regexp, no
  *     grammar, parse failed, bad params, server unavailable, no definition
- *     found, multiple definitions, could not resolve body range,
- *     pull-diagnostics request failed.
+ *     found, could not resolve body range, pull-diagnostics request failed.
+ *     (Multiple definitions is NOT a failure — it's reported as data.)
  *   - SOFT failures (references/hover; per-language in symbol) are emitted
  *     as a structured row `ERROR  <path>:<line>:<col>  <reason>` (or
  *     `ERROR  [lang]  <reason>` for symbol) that parses with the SAME column
@@ -434,7 +434,7 @@ function collectTreeRows(syms: DocumentSymbol[], re: RegExp): TreeRow[] {
 /**
  * Render one tree row as an indented line mirroring `renderDocSymbol`'s shape,
  * but with an appended signature label (from `detail` or a hover).
- * Format: `<pad><Kind> <name>  <signature>  (line:col)` where the signature
+ * Format: `<pad><Kind> <name>  <signature>  :line:col` where the signature
  * is the server `detail` when present, otherwise the provided hover signature.
  */
 function renderTreeRow(row: TreeRow, signature: string | undefined): string {
@@ -450,7 +450,10 @@ function renderTreeRow(row: TreeRow, signature: string | undefined): string {
     const detail = (sym as unknown as { detail?: string | null }).detail;
     const label = detail ? detail : (signature ?? "");
     const l = label ? `  ${label}` : "";
-    return `${pad}${kindName} ${sym.name}${l}  (${pos})`;
+    // Position column is grep-style `:line:col` (no parens, no path — the path is
+    // the outline's input file) so the row shares the `line:col` grammar every
+    // other tool uses. Consistent with renderDocSymbol / renderSymbolInfo.
+    return `${pad}${kindName} ${sym.name}${l}  :${pos}`;
 }
 
 export async function tree(
@@ -542,7 +545,8 @@ export async function tree(
 //
 // The tool's PRIMARY purpose is retrieving verbatim source code of a
 // function/class/method so the agent can reuse it instantly for editing —
-// like the read tool, but scoped to a symbol's body. Output format:
+// like the read tool, but scoped to a symbol's body. Output format (single
+// site — the common case):
 //
 //   <defPath>:<sl>-<el>
 //   <body verbatim from source code>
@@ -554,16 +558,27 @@ export async function tree(
 // third-party trees). The body is the raw source lines, NO code fence, so an
 // agent can copy it straight into an edit.
 //
+// A position may resolve to MULTIPLE definition sites (overloads,
+// multi-definition symbols, header-vs-source in C++, re-exports). This is a
+// legitimate LSP outcome (`textDocument/definition` returns Location[]), so
+// the tool reports every site rather than refusing the call. The multi-site
+// output is one block per site (each using the SAME `<defPath>:<sl>-<el>`
+// header grammar as the single-site case, so a single-site result is
+// byte-identical), blocks separated by a blank line, with a trailing
+// `# N definitions for <inPath>:<line>:<col>` count. The agent gets every
+// body and can pick the one it meant.
+//
 // Error contract: HARD failures THROW (index.ts's err() sets isError: true).
 // There are NO fallbacks and NO soft-failure rows — if we cannot return
 // verbatim source code for any reason, the tool fails loudly so the agent
 // knows it got nothing reusable. Covers: unknown language, cannot read input
 // file, server unavailable, no definition found, could not read the
-// definition's source file, could not resolve the body range. A clean "no
-// definition found" (e.g. a built-in, or a position that isn't a symbol) is
-// ALSO a hard error now — the tool's contract is "returns source code", so
-// the absence of a definition is a failure to fulfill that contract, not a
-// legitimate empty result.
+// definition's source file, could not resolve the body range, symbol scan
+// failed. A clean "no definition found" (e.g. a built-in, or a position that
+// isn't a symbol) is ALSO a hard error — the tool's contract is "returns
+// source code", so the absence of a definition is a failure to fulfill that
+// contract, not a legitimate empty result. Multiple definitions is NOT a
+// failure (it's data).
 // ---------------------------------------------------------------------------
 
 export interface DefinitionParams {
@@ -610,23 +625,43 @@ export async function definition(
         );
     }
     // A position may resolve to multiple definition sites (overloads,
-    // multi-definition symbols). The contract is ONE verbatim body per call;
-    // multiple sites is an ambiguous result the agent can't consume as a single
-    // edit target, so it's a hard error naming the count and the sites.
-    if (locs.length > 1) {
-        const sites = locs
-            .map((loc) => {
-                const lp = uriToPath(loc.uri);
-                const sl0 = loc.range?.start?.line ?? 0;
-                const sc0 = loc.range?.start?.character ?? 0;
-                return `${lp}:${sl0 + 1}:${sc0 + 1}`;
-            })
-            .join(", ");
-        throw new Error(
-            `Multiple definitions (${locs.length}) for ${params.path}:${params.line}:${params.column}: ${sites}`,
-        );
+    // multi-definition symbols, header-vs-source in C++, re-exports). This is
+    // a legitimate, common LSP outcome — `textDocument/definition` returns a
+    // Location[] and we report every site rather than refusing the call.
+    //
+    // Output is ONE block per site, each using the SAME header grammar as the
+    // single-site case (`<defPath>:<sl>-<el>\n<body>`), so a single-site result
+    // is byte-identical to today. Blocks are separated by a blank line, and a
+    // trailing `# N definitions` count follows the last block (mirroring
+    // code_references' trailing-count convention). The agent gets every body
+    // and can pick the one it meant.
+    const blocks: string[] = [];
+    for (const loc of locs) {
+        const block = await renderDefinitionBlock(client, loc, params, params.list_symbols ?? false);
+        blocks.push(block);
     }
-    const loc = locs[0];
+    // Single site: no separator, no count — byte-identical to the old contract.
+    // Multiple sites: blank-line-separated blocks + trailing count.
+    if (blocks.length === 1) return blocks[0];
+    return blocks.join("\n\n") + `\n# ${blocks.length} definitions for ${params.path}:${params.line}:${params.column}`;
+}
+
+/**
+ * Render one definition site as `<defPath>:<sl>-<el>\n<body>[\n\n<sym table>]`.
+ *
+ * Reads the definition's source file, resolves the enclosing DocumentSymbol to
+ * the full body range (the server's Location is usually just the identifier
+ * span), slices the raw source, and optionally appends a tree-sitter symbol
+ * table over the body. Throws a hard error on any per-site failure (cannot
+ * read source, cannot resolve body, symbol scan failed) — there are no
+ * fallbacks, since the tool's contract is verbatim source code or failure.
+ */
+async function renderDefinitionBlock(
+    client: LspClient,
+    loc: Location,
+    params: DefinitionParams,
+    listSymbols: boolean,
+): Promise<string> {
     const defPath = uriToPath(loc.uri);
     let src: string;
     try {
@@ -663,7 +698,7 @@ export async function definition(
     // parseSymbols helper as code_scan. The snippet's absolute line range is
     // (sl+1 .. el+1) in 1-based coords. Only run when requested: default
     // false keeps code_definition's output focused on the verbatim body.
-    if (params.list_symbols) {
+    if (listSymbols) {
         const tsLang = tsLangForFile(defPath);
         if (tsLang) {
             try {
@@ -697,7 +732,8 @@ export async function definition(
 //
 // Takes a single symbol position (path, line, column) and returns all
 // references to that symbol. Output is one reference location per line
-// (`<path> (<line>:<col>)`) plus a trailing `# N references` count comment.
+// (`<path>:<line>:<col>`, grep-style) plus a trailing `# N references` count
+// comment.
 // A clean empty result (no references) is a parenthesized note, NOT an error —
 // an unused symbol is a legitimate outcome.
 //

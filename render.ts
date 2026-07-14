@@ -173,7 +173,12 @@ export function renderDocSymbol(sym: DocumentSymbol, depth: number, lines: strin
     const pos = sel ? `${sel.line + 1}:${sel.character + 1}` : "";
     const detail = (sym as unknown as { detail?: string | null }).detail;
     const d = detail ? `  ${detail}` : "";
-    lines.push(`${pad}${kindName} ${sym.name}${d}  (${pos})`);
+    // Position column is grep-style `:line:col` (no parens) so the whole row
+    // parses like a jump-target string — consistent with code_references rows,
+    // diagnostics, and rg --column output. The leading `:` (no path, since the
+    // path is implied by the outline's input file) keeps it visually a trailing
+    // column while sharing the `line:col` grammar every other tool uses.
+    lines.push(`${pad}${kindName} ${sym.name}${d}  :${pos}`);
     const children = (sym as unknown as { children?: DocumentSymbol[] }).children ?? [];
     for (const ch of children) renderDocSymbol(ch, depth + 1, lines);
 }
@@ -191,7 +196,10 @@ export function renderSymbolInfo(
     // code_references (which expect 1-based and subtract 1 internally).
     const p = selStart ?? loc.range?.start;
     const pos = p ? `${p.line + 1}:${p.character + 1}` : "";
-    return `${symbolKindName(s.kind)} ${s.name}  ${path} (${pos})`;
+    // grep-style `path:line:col` — matches code_references rows, diagnostics,
+    // error rows, and rg --column. The agent can split on `:` and feed the
+    // position straight into code_hover/code_definition/code_references.
+    return `${symbolKindName(s.kind)} ${s.name}  ${path}:${pos}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -312,13 +320,16 @@ export function posKey(p: { line: number; character: number }): number {
 // Location + Diagnostic rendering
 // ---------------------------------------------------------------------------
 
-/** Render a Location as `<path>:<startLine>:<startCol> - <endLine>:<endCol>` (1-based). */
+/** Render a Location as `<path>:<line>:<col>` (1-based, grep-style).
+ *
+ * Matches the grammar of rg --column, compiler diagnostics, and every other
+ * position string in the toolset, so a consumer splits on `:` uniformly. */
 export function renderLocation(loc: Location): string {
     const start = loc.range?.start;
     const path = uriToPath(loc.uri);
     if (start) {
         // +1 to convert 0-based LSP coords to 1-based output (matches tool input contract).
-        return `${path} (${start.line + 1}:${start.character + 1})`;
+        return `${path}:${start.line + 1}:${start.character + 1}`;
     }
     return path;
 }

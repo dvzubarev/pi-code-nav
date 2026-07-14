@@ -153,7 +153,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         promptSnippet: "List functions/classes/methods in a file via LSP",
         promptGuidelines: [
             "Use code_outline when you need quick overwiev of source code structure. It returns list of class/method/interface.",
-            "Output row format: `<Kind> <name>  [<detail>]  (<line>:<col>)`. To feed a row into code_hover/code_definition/code_references, combine your input path with the row's `(line:col)`.",
+            "Output row format: `<Kind> <name>  [<detail>]  :<line>:<col>`. To feed a row into code_hover/code_definition/code_references, combine your input path with the row's `:line:col`.",
             "When you need signatures for a specific subset of symbols (by name pattern), use code_tree instead. For a full identifier scan (calls, imports, members — not just declarations), use code_scan.",
         ],
         parameters: Type.Object({
@@ -179,7 +179,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         promptSnippet: "Prints source file as tree-like structure.",
         promptGuidelines: [
             "Use code_tree when you need pattern-driven symbol tree with signatures. It takes a regexp that is tested against symbol names — e.g. scan a class name to see it and all its members with signatures, or scan `^get_|^set_` to list getters/setters and their ancestor classes.",
-            "Output row format: `[<pad>]<Kind> <name>  [<signature>]  (<line>:<col>)`.",
+            "Output row format: `[<pad>]<Kind> <name>  [<signature>]  :<line>:<col>`.",
             "Prefer code_outline for a full-file structural overview. Use code_tree for a targeted, signature-enriched view of specific symbols by name. For a full identifier scan (including calls, imports, members) use code_scan.",
         ],
         parameters: Type.Object({
@@ -205,14 +205,13 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_definition",
         label: "Code Definition",
         description:
-            "Retrieve the VERBATIM source code of a function/class/method definition. Given a symbol position (path, line, column), resolves the definition and returns the full body — the complete function/class/method source, ready to copy into an edit. Output format: a header line `<defPath>:<sl>-<el>` (1-based inclusive line range of the body) followed by the raw source lines (no code fence). The definition may live in a different file than the input position (including third-party trees).",
-        promptSnippet: "Retrieve verbatim source code of a function/class.",
+            "Retrieve the source code of a function/class/method definition. Given a symbol position (path, line, column), resolves the definition and returns the full body — the complete function/class/method source, ready to copy into an edit. Output format: a header line `<defPath>:<sl>-<el>` (1-based inclusive line range of the body) followed by the raw source lines (no code fence). The definition may live in a different file than the input position (including third-party trees).",
+        promptSnippet: "Retrieve verbatim source code of a function/class/method.",
         promptGuidelines: [
-            "Use code_definition when you need the FULL source body of a function/class/method — the verbatim text, ready to copy into an edit. You must know the symbol's position (path, line, column) to use this tool; get one from code_outline, code_tree, code_search_symbol, or code_scan.",
-            "Output format: a header line `<defPath>:<sl>-<el>` (the path the definition lives in, plus its 1-based inclusive line range), then the raw source body with NO code fence. defPath may differ from your input path (the definition can be in another file, including third-party trees).",
-            "It accepts absolute paths, including third-party locations (nix store, site-packages, node_modules, system headers).",
-            "HARD ERROR: if the tool cannot return verbatim source code for ANY reason (unknown language, cannot read file, server unavailable, no definition found, multiple definitions, could not resolve body range) it throws an error — there are NO fallbacks. The tool's contract is source code or failure.",
-            "Set list_symbols=true to also append a symbol table after the body (useful for discovering third-party/stdlib APIs used inside). Output row format `  <role> <name>  (<line>:<col>)`. Each row is itself a position you can feed back into code_definition / code_hover / code_references — combine the header's defPath with the row's `(line:col)`.",
+            "Use code_definition when you need the FULL source body of a function/class/method — the verbatim text, ready to copy into an edit. You must know the symbol's position (path, line, column) to use this tool; get one from code_outline, code_tree, code_search_symbol, or code_scan. Path might be absolute (typical for third-party locations in nix store, site-packages, system headers).",
+            "Output format: a header line `<defPath>:<sl>-<el>` (the path the definition lives in, plus its 1-based inclusive line range), then the raw source body. defPath may differ from your input path (the definition can be in another file, including third-party trees).",
+            "Multiple definitions: a position may resolve to several definition sites (overloads, header-vs-source in C++, re-exports). The tool then returns one block per site (each with the same `<defPath>:<sl>-<el>` header + body), separated by a blank line, with a trailing `# N definitions` count. Pick the body you meant.",
+            "Set list_symbols=true to also append a symbol table after the body (useful for discovering third-party/stdlib APIs used inside). Output row format `  <role> <name>  :<line>:<col>`. Each row is itself a position you can feed back into code_definition / code_hover / code_references — combine the header's defPath with the row's `:line:col`.",
         ],
         parameters: Type.Object({
             path: Type.String({ description: "File path (absolute or relative to cwd)" }),
@@ -245,11 +244,11 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_references",
         label: "Code References",
         description:
-            "Find all references to the symbol at the given position (path, line, column). Returns one reference location per line plus a trailing `# N references` count. An empty result (no references) is a parenthesized note, not an error.",
+            "Find all references to the symbol at the given position (path, line, column). Returns one reference location per line (`<path>:<line>:<col>`, grep-style) plus a trailing `# N references` count. An empty result (no references) is a parenthesized note, not an error.",
         promptSnippet: "Find all references to the symbol.",
         promptGuidelines: [
             "Use code_references before renaming or refactoring to find every call site of a symbol. The count is a trailing `# N references`.",
-            "Output row format: `<path> (<line>:<col>)`. To drill into a reference, combine the row's path with its (line:col) and pass to code_definition / code_hover.",
+            "Output row format: `<path>:<line>:<col>` (grep-style). To drill into a reference, take the row's path and (line:col) and pass to code_definition / code_hover.",
         ],
         parameters: Type.Object({
             path: Type.String({ description: "File path (absolute or relative to cwd)" }),
@@ -271,12 +270,12 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_search_symbol",
         label: "Code Symbol Search",
         description:
-            "Symbol search by name across the workspace AND third-party/stdlib trees. Given a query string (a bare name like `loads` or a qualified name like `typing.cast`, `cbor2.loads`, `std::vector::push_back`), return a ranked list of matching symbols (kind, name, <path> (<line>:<col>)). For Python (ty), third-party/stdlib roots are added as workspace folders (discovered from $propagatedBuildInputs / $PYTHONPATH) so the search covers site-packages and the stdlib; ccls already indexes third-parties via its compilation database. Results are ranked: for a bare name, workspace-root exact matches are returned alone; otherwise third-party exact matches come first, then fuzzy matches (trimmed). For a qualified name, only the exact bare-name match whose module/namespace matches the qualifier is kept.",
+            "Symbol search by name across the workspace AND third-party/stdlib trees. Given a query string (a bare name like `loads` or a qualified name like `typing.cast`, `cbor2.loads`, `std::vector::push_back`), return a ranked list of matching symbols (kind, name, <path>:<line>:<col>). For Python (ty), third-party/stdlib roots are added as workspace folders (discovered from $propagatedBuildInputs / $PYTHONPATH) so the search covers site-packages and the stdlib; ccls already indexes third-parties via its compilation database. Results are ranked: for a bare name, workspace-root exact matches are returned alone; otherwise third-party exact matches come first, then fuzzy matches (trimmed). For a qualified name, only the exact bare-name match whose module/namespace matches the qualifier is kept.",
         promptSnippet: "Search for a symbol by name (bare or qualified) across the workspace and third-party/stdlib.",
         promptGuidelines: [
             "Use code_search_symbol to find a location of a symbol by name. Pass a BARE name (e.g. `loads`, `TempC`) to find symbols in your project first; if your project has no symbol by that name, third-party/stdlib exact matches are returned next. Pass a QUALIFIED name (`typing.cast`, `cbor2.loads`, `std::vector::push_back`) to pin a specific third-party/stdlib symbol — the tool strips the qualifier, searches the bare name, then keeps only the match in that module/namespace.",
             "Ranking: a bare name with an exact workspace match returns ONLY that match (the agent's bare name is their own symbol). A bare name with no workspace match returns third-party exact matches first, then fuzzy matches (the fuzzy tail is trimmed with a trailing `# N more result(s) trimmed` note — narrow with a qualified name to get fewer, exact hits).",
-            "Output row format: `[lang] <Kind> <name>  <path> (<line>:<col>)`. Feed a row's path + (line:col) straight into code_definition / code_hover / code_references. The path may be a third-party location (nix store, site-packages, system headers) — those tools accept absolute paths.",
+            "Output row format: `[lang] <Kind> <name>  <path>:<line>:<col>`. Feed a row's path + (line:col) straight into code_definition / code_hover / code_references. The path may be a third-party location (nix store, site-packages, system headers) — those tools accept absolute paths.",
             "For C++ (ccls) the `name` column is a full qualified signature (`constexpr void std::vector::push_back(...)`), so qualified queries (`std::vector::push_back`) rank the exact matches first. For Python (ty) the `name` column is the bare name; use the path (or a qualified query) to disambiguate which module it comes from.",
         ],
         parameters: Type.Object({
@@ -361,7 +360,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         promptGuidelines: [
             "Use code_scan for listing all identifier in a given range.",
             "Pass only `path` to scan the whole file. Add `pattern` (a regexp tested against symbol names) to narrow to e.g. a specific imported module or a method called in a body. Add `startLine`/`endLine` (1-based inclusive) to limit the range — useful for large files where a whole-file scan would be noisy.",
-            "Output row format: `  <role> <name>  (<line>:<col>) [<details>]`. To feed a row into code_hover/code_definition/code_references, combine your input path with the row's `(line:col)`",
+            "Output row format: `  <role> <name>  :<line>:<col> [<details>]`. To feed a row into code_hover/code_definition/code_references, combine your input path with the row's `:line:col`",
             'Roles: type (a type name), call (a function/method being called), member (a field/attribute access like .push_back / .encode), import (a name brought into scope by an import — module names and imported symbols, the primary entry points for third-party discovery), var (a local variable, parameter, or assignment target — hoverable but rarely worth learning about). By default `var` is omitted (noisy locals); pass roles including "var" to include them. The table dedupes by (name, role) and keeps the first occurrence; pass a tighter startLine/endLine to reach a later occurrence.',
             "Use include_docs=true when you need signature returned by code_hover command (note that it will be truncated).",
 
@@ -637,10 +636,10 @@ ENTRY POINT → DETAIL TOOL → DETAIL TOOL, where each step's output literally
 contains the positions the next step needs.
 
 1. ENTRY POINT (you don't have a position yet). Call ONE of:
-   - code_outline(path)                → "Kind name  (<line>:<col>)" per row
-   - code_tree(path, pattern)          → "[pad]Kind name  [<sig>]  (<line>:<col>)" per row
-   - code_search_symbol(query)         → "<lang> <Kind> <name> <path> (<line>:<col>)" per row
-   - code_scan(path[, start, end])     → "  role name  (<line>:<col>)" per identifier
+   - code_outline(path)                → "Kind name  :<line>:<col>" per row
+   - code_tree(path, pattern)          → "[pad]Kind name  [<sig>]  :<line>:<col>" per row
+   - code_search_symbol(query)         → "<lang> <Kind> <name> <path>:<line>:<col>" per row
+   - code_scan(path[, start, end])     → "  role name  :<line>:<col>" per identifier
    Pick a row, copy its (line,col) — and the path, for search_symbol/scan.
 
 2. DETAIL TOOL (you now have a position). Pass it as {path, line, column}.
@@ -651,10 +650,10 @@ contains the positions the next step needs.
 
 3. DRILL DOWN. With list_symbols=true, code_definition ALSO returns a symbol
    table of every identifier used inside the body, formatted as:
-       role name  (<line>:<col>)
+       role name  :<line>:<col>
    Each row is itself a position you can feed straight back into
    code_definition / code_hover / code_references — no outline/scan needed.
-   Combine the header's defPath with the row's (line:col). So the loop is:
+   Combine the header's defPath with the row's :line:col. So the loop is:
    definition → read its symbol table → definition again, following
    identifiers into their definitions, as deep as you need.
 

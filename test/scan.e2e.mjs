@@ -47,8 +47,8 @@ runOrSkip("code_scan with no line range scans the whole file", async () => {
         assert.match(out, /Symbols in svc\.ts:1-7 /, `header missing:\n${out}`);
         // readFile is an import (third-party entry point) — the whole reason
         // code_scan exists. It must appear. Rows carry only `(line:col)` (the
-        // path is in the header once), so match `(1:<col>)` not `svc.ts(1:<col>)`.
-        assert.match(out, /import\s+readFile\s+\(1:\d+\)/, `readFile import missing:\n${out}`);
+        // path is in the header once), so match `:1:<col>` not `svc.ts:1:<col>`.
+        assert.match(out, /import\s+readFile\s+:1:\d+/, `readFile import missing:\n${out}`);
         // greet is a called name (call role) inside the body — wait, greet is
         // a declaration here. Service is a type. getId is a member. Check a few
         // roles are present to confirm the whole file was walked.
@@ -83,8 +83,8 @@ runOrSkip("code_scan pattern filters symbols by name regexp", async () => {
             throw new Error("code_scan default path should not call clientOf");
         };
         const out = await nav.scan({ path: "svc.ts", pattern: "File$" }, ws.root, throwingClientOf);
-        assert.match(out, /import\s+readFile\s+\(1:\d+\)/, `readFile missing:\n${out}`);
-        assert.match(out, /import\s+writeFile\s+\(2:\d+\)/, `writeFile missing:\n${out}`);
+        assert.match(out, /import\s+readFile\s+:1:\d+/, `readFile missing:\n${out}`);
+        assert.match(out, /import\s+writeFile\s+:2:\d+/, `writeFile missing:\n${out}`);
         // Non-matching names are filtered out.
         assert.ok(!/type\s+Service/.test(out), `Service should be filtered out:\n${out}`);
         assert.ok(!/member\s+getId/.test(out), `getId should be filtered out:\n${out}`);

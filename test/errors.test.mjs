@@ -7,7 +7,8 @@
 //   - nav.definition now THROWS on every failure (no fallbacks, no soft-
 //     failure rows) — the tool's contract is "verbatim source code or a hard
 //     error". Covers: unknown language, cannot read, server unavailable, no
-//     definition found, multiple definitions, could not resolve body.
+//     definition found, could not resolve body. (Multiple definitions is NOT
+//     a failure — it returns one block per site.)
 //   - nav.references/hover soft failures emit structured ERROR rows
 //     (unknown language, cannot read, server unavailable)
 //
@@ -238,6 +239,59 @@ test("nav.definition clean empty result: no definition → HARD error (throws)",
             definition({ path: "svc.ts", line: 1, column: 1 }, dir, emptyResultClientOf()),
             /No definition found for svc\.ts:1:1/,
         );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("nav.definition multiple sites: returns one block per site + trailing count (not an error)", async () => {
+    const { definition } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-multidef-"));
+    try {
+        // Two definition source files. Each defines a function `foo` whose
+        // identifier sits at line 1, column 7 (0-based 0:6) — the mock
+        // documentSymbols tree below reports a matching selectionRange so
+        // resolveDefBodyRange resolves the body range to the whole line.
+        await writeFile(resolve(dir, "a.ts"), "function foo() { return 1; }\n", "utf8");
+        await writeFile(resolve(dir, "b.ts"), "function foo() { return 2; }\n", "utf8");
+        await writeFile(resolve(dir, "svc.ts"), "const x = foo();\n", "utf8");
+        // Mock LspClient: definition() returns two Locations (a.ts and b.ts),
+        // documentSymbols() returns a one-child tree whose selectionRange.start
+        // matches each loc.range.start — so resolveDefBodyRange resolves the
+        // body to lines 0-0 (the `function foo` line).
+        const idStart = { line: 0, character: 6 };
+        const makeClient = () => ({
+            definition: async () => [
+                { uri: `file://${resolve(dir, "a.ts")}`, range: { start: idStart, end: idStart } },
+                { uri: `file://${resolve(dir, "b.ts")}`, range: { start: idStart, end: idStart } },
+            ],
+            documentSymbols: async () => [
+                {
+                    name: "foo",
+                    kind: 12,
+                    range: { start: { line: 0, character: 0 }, end: { line: 0, character: 27 } },
+                    selectionRange: { start: idStart, end: { line: 0, character: 9 } },
+                    children: [],
+                },
+            ],
+        });
+        const clientOf = async () => makeClient();
+        const out = await definition(
+            { path: "svc.ts", line: 1, column: 7 },
+            dir,
+            clientOf,
+        );
+        const lines = out.split("\n");
+        // Two header lines (one per site), grep-style <defPath>:<sl>-<el>.
+        const headers = lines.filter((l) => /[/\\](a|b)\.ts:\d+-\d+$/.test(l));
+        assert.equal(headers.length, 2, `expected 2 site headers, got:\n${out}`);
+        // Both bodies present.
+        assert.match(out, /return 1;/, `body of site 1 missing:\n${out}`);
+        assert.match(out, /return 2;/, `body of site 2 missing:\n${out}`);
+        // Trailing count comment.
+        assert.match(out, /# 2 definitions for svc\.ts:1:7$/, `trailing count missing:\n${out}`);
+        // NOT a hard error — no throw, no isError. (If it had thrown, this
+        // test would reject before reaching the asserts above.)
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }
