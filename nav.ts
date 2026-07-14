@@ -45,7 +45,7 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import type {
     DocumentSymbol,
     SymbolInformation,
@@ -765,6 +765,173 @@ export interface SymbolParams {
     language?: string;
 }
 
+/**
+ * The separator used in a qualified symbol name for each language. `.` for
+ * Python/TypeScript (`typing.cast`, `fs.readFileSync`), `::` for C++
+ * (`std::vector::push_back`), none for bash (no qualified-name concept).
+ * Used by code_search_symbol to split an agent-supplied qualified query into
+ * `(qualifier, bareName)` so it can (a) query the server with the bare name on
+ * servers that only match bare names (ty) and (b) filter the results to the
+ * requested module/namespace. ccls (cpp) handles qualified queries natively,
+ * so cpp passes the full query through and uses the separator only for
+ * extracting the bare tail when ranking.
+ */
+const QUALIFIED_SEP: Partial<Record<Lang, string>> = {
+    python: ".",
+    typescript: ".",
+    cpp: "::",
+};
+
+/**
+ * Parse a (possibly qualified) symbol query into `(qualifier, bareName)`.
+ * `qualifier` is null when the query has no separator (a bare name). The bare
+ * name is the last path component after splitting on the language's
+ * separator — e.g. `typing.cast` -> `(qualifier="typing", bare="cast")`,
+ * `std::vector::push_back` -> `(qualifier="std::vector", bare="push_back")`.
+ * For bash (no separator) the whole query is the bare name.
+ */
+function parseSymbolQuery(
+    query: string,
+    lang: Lang,
+): { qualifier: string | null; bare: string } {
+    const sep = QUALIFIED_SEP[lang];
+    if (!sep) return { qualifier: null, bare: query };
+    const idx = query.lastIndexOf(sep);
+    if (idx < 0) return { qualifier: null, bare: query };
+    return {
+        qualifier: query.slice(0, idx),
+        bare: query.slice(idx + sep.length),
+    };
+}
+
+/**
+ * The filesystem path of the workspace folder a result file lives under, or
+ * null when it is under none. `folders` MUST be sorted longest-first so the
+ * most specific folder wins (a broad folder like `lib/python3.13` is a prefix
+ * of `lib/python3.13/site-packages`). Used by code_search_symbol to tell
+ * workspace-root results from third-party ones.
+ */
+function homeFolderOf(uri: string, folders: string[]): string | null {
+    const p = uriToPath(uri);
+    for (const f of folders) {
+        if (p === f || p.startsWith(f + sep)) return f;
+    }
+    return null;
+}
+
+/**
+ * Derive the dotted module path of a result file relative to its home folder
+ * (the longest matching workspace folder), for Python/TypeScript qualified-
+ * name filtering.
+ *
+ * `folders` MUST be sorted longest-first (see `LspClient.workspaceFolderPaths`)
+ * so a specific folder (`lib/python3.13/site-packages`) wins over a broad one
+ * (`lib/python3.13`) that is a prefix of it. Returns e.g. `cbor2._decoder` for
+ * `.../site-packages/cbor2/_decoder.py`, `typing` for `.../python3.13/typing.py`.
+ * `__init__.py` maps to the package name (the containing dir name). For a
+ * workspace-root file the result is the project-relative path (e.g. `second`
+ * for `.../workspace/second.py`); callers distinguish workspace vs third-party
+ * with `homeFolderOf` (the home folder equals `rootPath` or not).
+ */
+function modulePathOf(
+    uri: string,
+    folders: string[],
+): string | null {
+    const p = uriToPath(uri);
+    const f = homeFolderOf(uri, folders);
+    if (!f || p === f) return null;
+    let rel = p.slice(f.length + 1).replace(/\.py[i]?$/, "").replace(/\.ts$/, "").replace(/\.tsx$/, "");
+    // __init__ -> the package (the containing dir name).
+    if (rel.endsWith("/__init__")) rel = rel.slice(0, -9);
+    return rel.split(/[/\\]/).join(".");
+}
+
+/**
+ * Discover third-party / stdlib roots to add as extra workspace folders for
+ * `code_search_symbol`, so servers whose default index is workspace-only
+ * (notably `ty`) can find symbols in third-party trees.
+ *
+ * The discovery is environment-driven and nix-aware (the user's primary
+ * environment), with a generic fallback:
+ *
+ *   - Python (`ty`): from `$propagatedBuildInputs` (nix — each entry is a
+ *     package prefix; we add `lib/pythonX.Y` (stdlib) and
+ *     `lib/pythonX.Y/site-packages` (installed packages)) plus `$PYTHONPATH`
+ *     (set in both nix shells and regular venvs/conda). ccls does NOT use this
+ *     — it indexes third-parties via its compilation database's `-isystem`
+ *     flags, so adding folders to ccls would just re-parse them as source
+ *     trees for no benefit (and real indexing cost).
+ *   - C++ / TypeScript / bash: no env-driven discovery (ccls already covers
+ *     C++; the others have no third-party symbol-search story this improves).
+ *
+ * Returns distinct absolute paths that exist and are not the cwd itself.
+ * Best-effort: never throws — a missing env var or unreadable dir yields [].
+ * Existence is NOT checked here (the caller's `addWorkspaceFolders` is the
+ * source of truth and tolerates missing dirs); we only dedupe and skip the
+ * cwd to avoid adding the workspace root a second time.
+ */
+export async function discoverThirdPartyRoots(lang: Lang, cwd: string): Promise<string[]> {
+    if (lang !== "python") return [];
+    const roots = new Set<string>();
+    const seen = new Set<string>();
+    const add = (p: string | undefined) => {
+        if (!p) return;
+        let abs: string;
+        try {
+            abs = resolve(p);
+        } catch {
+            return;
+        }
+        // Skip the cwd (already the server's root folder).
+        if (abs === resolve(cwd)) return;
+        if (seen.has(abs)) return;
+        seen.add(abs);
+        roots.add(abs);
+    };
+
+    // $propagatedBuildInputs (nix): space-separated package prefixes.
+    const prop = (process.env.propagatedBuildInputs ?? "").split(/\s+/).filter(Boolean);
+    for (const pkg of prop) {
+        // Discover `lib/pythonX.Y` and `lib/pythonX.Y/site-packages` under each.
+        const lib = resolve(pkg, "lib");
+        let entries;
+        try {
+            entries = await readdir(lib, { withFileTypes: true });
+        } catch {
+            continue;
+        }
+        for (const e of entries) {
+            if (!e.isDirectory()) continue;
+            if (!/^python\d+\.\d+$/.test(e.name)) continue;
+            add(resolve(lib, e.name)); // stdlib (e.g. typing.py lives here)
+            add(resolve(lib, e.name, "site-packages")); // installed packages
+        }
+    }
+    // $PYTHONPATH: colon-separated paths (nix shells AND regular venvs/conda).
+    for (const p of (process.env.PYTHONPATH ?? "").split(":").filter(Boolean)) add(p);
+
+    return [...roots];
+}
+
+/**
+ * Tracks which clients have already had their third-party roots added, so
+ * `code_search_symbol` only discovers+adds them once per server per session
+ * (the discovery reads env + readdir, and the didChangeWorkspaceFolders
+ * notification is idempotent but still costs a round-trip). Keyed by the
+ * `LspClient` instance (a per-(cwd, lang) server lives for the session).
+ */
+const clientsWithRoots = new WeakSet<LspClient>();
+
+/**
+ * Soft cap on the number of rows `code_search_symbol` emits per language.
+ * ty's fuzzy search can return hundreds of results for a bare common name
+ * (`cast` -> ~400, `loads` -> ~120) once third-party/stdlib roots are added;
+ * flooding the agent's context with every match defeats the tool's purpose as
+ * a quick entry point. Exact-name matches are ALWAYS kept (they're what the
+ * agent asked for); only the fuzzy tail is trimmed, with a trailing note.
+ */
+const SYMBOL_MAX_ROWS_PER_LANG = 50;
+
 export async function symbol(
     params: SymbolParams,
     cwd: string,
@@ -802,18 +969,133 @@ export async function symbol(
         // language entirely — calling workspace/symbol on a project-less
         // tsserver throws "No Project." and would abort the whole query.
         if (!(await client.ensureProjectLoaded())) continue;
+        // Add third-party/stdlib roots once per server so the symbol search
+        // covers third-party trees. Best-effort: failures (no env var, server
+        // that doesn't support workspaceFolders) are silent — the query still
+        // runs against the workspace root. Only python (ty) discovers roots;
+        // ccls already indexes third-parties via its compile flags, and the
+        // other languages return [] (see discoverThirdPartyRoots).
+        if (!clientsWithRoots.has(client)) {
+            clientsWithRoots.add(client);
+            try {
+                const roots = await discoverThirdPartyRoots(lang, cwd);
+                if (roots.length > 0) await client.addWorkspaceFolders(roots);
+            } catch {
+                // Discovery or folder-add failed — proceed workspace-only.
+            }
+        }
+        // Parse the (possibly qualified) query. For cpp (ccls) the server
+        // handles qualified names natively and ranks them, so we pass the
+        // FULL query through; the qualifier is still extracted for the bare
+        // tail used in ranking. For python/typescript (ty) the server only
+        // matches bare names, so we query with the bare tail and filter
+        // results by module path against the qualifier.
+        const { qualifier, bare } = parseSymbolQuery(params.query, lang);
+        const queryForServer = lang === "cpp" ? params.query : bare;
         let syms: SymbolInformation[];
         try {
-            syms = await client.workspaceSymbol(params.query);
+            syms = await client.workspaceSymbol(queryForServer);
         } catch (e) {
             // One language failing must not discard results already
             // collected from earlier languages.
             out.push(`ERROR  [${lang}]  workspace/symbol failed: ${e}`);
             continue;
         }
+        // For python/typescript: when a qualifier is present, the agent asked
+        // for a SPECIFIC symbol (e.g. `typing.cast`, `cbor2.loads`). Keep ONLY
+        // exact-name matches whose module path matches the qualifier — fuzzy
+        // partials in the same module are noise. A qualifier implies a third-
+        // party request, so workspace-root results (whose home folder is
+        // `rootPath`, i.e. module path is project-relative, not a third-party
+        // dotted module) are dropped — they don't carry the qualifier.
+        if (lang !== "cpp" && qualifier !== null) {
+            const folders = client.workspaceFolderPaths();
+            const bareCmp = bare.toLowerCase();
+            syms = syms.filter((s) => {
+                if (s.name.toLowerCase() !== bareCmp) return false;
+                const home = homeFolderOf(s.location.uri, folders);
+                if (!home || home === client.rootPath) return false; // workspace root
+                const mod = modulePathOf(s.location.uri, folders);
+                if (mod === null) return false;
+                return mod === qualifier || mod.startsWith(qualifier + ".");
+            });
+        } else {
+            // Bare query, or cpp. Tier the results so the agent sees the most
+            // relevant matches first and is not flooded with third-party fuzzy
+            // noise once third-party/stdlib roots are added:
+            //   T1 — exact name in the workspace root (the agent's own code;
+            //        a bare name almost always means their symbol).
+            //   T2 — exact name in third-party/stdlib (e.g. bare `loads` with
+            //        no workspace `loads` -> cbor2.loads, json.loads, ...).
+            //   T3 — fuzzy matches anywhere (kept only if T1+T2 are empty,
+            //        since a bare name with no exact hits anywhere is rare
+            //        and the fuzzy tail is where ty's loose matching shines).
+            // When T1 is non-empty, emit ONLY T1 (drop T2/T3) — the agent's
+            // bare name is their symbol, and third-party fuzzy hits like
+            // `encode_stringref_namespace` for query `tempc` are pure noise.
+            // When T1 is empty, emit T2 then T3 (trimmed). For cpp (ccls) the
+            // `name` is a full signature; "exact" means it contains the
+            // qualified tail (`::push_back`) or equals the bare name.
+            const folders = client.workspaceFolderPaths();
+            // ty's workspace/symbol is case-INSENSITIVE fuzzy, so `s.name`
+            // may differ in case from the bare query (`TempC` for query `tempc`).
+            // The "exact name" check must therefore be case-insensitive for
+            // python/typescript. C++ (ccls) is case-sensitive and `name` is a
+            // full signature, so cpp keeps the case-sensitive `includes(tail)`.
+            const caseInsensitive = lang === "python" || lang === "typescript";
+            const bareCmp = caseInsensitive ? bare.toLowerCase() : bare;
+            const isExact = (s: SymbolInformation): boolean => {
+                const nm = caseInsensitive ? s.name.toLowerCase() : s.name;
+                if (nm === bareCmp) return true;
+                if (lang === "cpp" && qualifier !== null) {
+                    const tail = QUALIFIED_SEP[lang]! + bare;
+                    return s.name.includes(tail);
+                }
+                return false;
+            };
+            const inWorkspaceRoot = (s: SymbolInformation): boolean => {
+                const home = homeFolderOf(s.location.uri, folders);
+                return !!home && home === client.rootPath;
+            };
+            const t1 = syms.filter((s) => isExact(s) && inWorkspaceRoot(s));
+            const t2 = syms.filter((s) => isExact(s) && !inWorkspaceRoot(s));
+            if (t1.length > 0) {
+                // Bare name resolved to the agent's own symbol — drop all
+                // third-party/fuzzy noise.
+                syms = t1;
+            } else {
+                const t3 = syms.filter((s) => !isExact(s));
+                syms = [...t2, ...t3];
+            }
+        }
+        // Dedupe identical (path, line, col, name) rows — ty sometimes
+        // returns the same symbol twice (e.g. cbor2.loads appears once per
+        // re-export path) and the agent gets no value from the duplicate.
+        const seenRows = new Set<string>();
+        const deduped: SymbolInformation[] = [];
         for (const s of syms) {
+            const start = s.location.range?.start;
+            const key = `${s.location.uri}|${start?.line ?? -1}|${start?.character ?? -1}|${s.name}`;
+            if (seenRows.has(key)) continue;
+            seenRows.add(key);
+            deduped.push(s);
+        }
+        syms = deduped;
+        // Render. When the result set is large (third-party/stdlib added),
+        // trim the fuzzy tail to keep the output useful — exact-name matches
+        // are always preserved (they're what the agent asked for).
+        let trimmed = 0;
+        let emit = syms;
+        if (syms.length > SYMBOL_MAX_ROWS_PER_LANG) {
+            emit = syms.slice(0, SYMBOL_MAX_ROWS_PER_LANG);
+            trimmed = syms.length - emit.length;
+        }
+        for (const s of emit) {
             const selStart = await resolveSymbolSelStart(client, s, docCache);
             out.push(`[${lang}] ${renderSymbolInfo(s, selStart)}`);
+        }
+        if (trimmed > 0) {
+            out.push(`[${lang}] # ${trimmed} more result(s) trimmed (narrow with a qualified name like "pkg.symbol")`);
         }
     }
     if (out.length === 0) return `(no symbols matching "${params.query}")`;

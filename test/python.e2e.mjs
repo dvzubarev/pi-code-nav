@@ -17,10 +17,53 @@ import { nav, withWorkspace, serverAvailable, SHOULD_RUN_E2E } from "./e2e-helpe
 // failed. node:test runs tests in a file sequentially, so this is safe.
 const skip = !SHOULD_RUN_E2E;
 const tyOk = SHOULD_RUN_E2E ? await serverAvailable("python") : false;
+
+// Probe whether the environment exposes third-party/stdlib roots for the
+// qualified-name tests. Those tests need `typing` (stdlib) and `cbor2` (an
+// installed third-party) to be discoverable via $propagatedBuildInputs /
+// $PYTHONPATH (the nix shell sets both; a bare venv or CI without the env may
+// not). When the probe finds no roots, the three third-party tests skip
+// (green) instead of failing red — they're exercising env-dependent behavior.
+// We check that at least one root is discoverable AND that `typing`/`cbor2`
+// actually resolve as importable modules from those roots (cheap stat checks
+// would be ideal, but importlib is the authoritative test). We approximate by
+// checking the discovered roots contain both a `typing.py` and a `cbor2`
+// package somewhere; if the env is the project's own nix shell this is true.
+async function thirdPartyAvailable() {
+    if (!tyOk) return false;
+    let roots = [];
+    try {
+        roots = await nav.discoverThirdPartyRoots("python", process.cwd());
+    } catch {
+        return false;
+    }
+    if (roots.length === 0) return false;
+    // Confirm typing.py and cbor2/ exist under some root.
+    const { stat } = await import("node:fs/promises");
+    let hasTyping = false;
+    let hasCbor2 = false;
+    for (const r of roots) {
+        if (!hasTyping) {
+            try { await stat(resolve(r, "typing.py")); hasTyping = true; } catch {}
+        }
+        if (!hasCbor2) {
+            try { await stat(resolve(r, "cbor2")); hasCbor2 = true; } catch {}
+            try { await stat(resolve(r, "cbor2.py")); hasCbor2 = true; } catch {}
+        }
+    }
+    return hasTyping && hasCbor2;
+}
+const thirdPartyOk = await thirdPartyAvailable();
 // runOrSkip registers the test normally when the server is up, or as a skip
 // (passing) test otherwise — so `npm run test:e2e` on a server-less machine
 // reports green skips rather than red failures.
 const runOrSkip = (name, fn) => (skip || !tyOk ? test.skip(name, fn) : test(name, fn));
+// runOrSkipThirdParty: same as runOrSkip but ALSO requires the third-party/
+// stdlib roots (typing + cbor2) to be discoverable — the qualified-name and
+// bare-third-party tests assert env-dependent behavior that only holds in the
+// project's nix shell. Elsewhere they'd fail red; this keeps them green skips.
+const runOrSkipThirdParty = (name, fn) =>
+    (skip || !tyOk || !thirdPartyOk ? test.skip(name, fn) : test(name, fn));
 
 runOrSkip("code_outline on second.py shows Point and TempC classes", async () => {
     const ws = await withWorkspace(["second.py"]);
@@ -111,6 +154,121 @@ runOrSkip("code_search_symbol 'tempc' finds TempC with its identifier position",
         // There must be no other-symbol rows (only TempC should match "tempc").
         const rows = out.split("\n").filter((l) => l.trim());
         for (const r of rows) assert.match(r, /TempC/, `unexpected row for "tempc" query: ${r}`);
+    } finally {
+        await ws.cleanup();
+    }
+});
+
+runOrSkipThirdParty("code_search_symbol qualified 'typing.cast' finds stdlib cast", async () => {
+    // Gated by thirdPartyOk (see probe at module load): requires typing
+    // on the third-party roots (nix shell sets $propagatedBuildInputs).
+    // Qualified query: the agent asks for `typing.cast` specifically. ty does
+    // NOT support qualified names natively (querying "typing.cast" returns 0),
+    // so the tool strips the qualifier, queries "cast", then filters to
+    // exact-name matches whose module path matches `typing`. The stdlib
+    // `typing.py` must be indexed (added as a workspace folder via
+    // $propagatedBuildInputs / $PYTHONPATH) for this to return anything.
+    const ws = await withWorkspace([]);
+    try {
+        await writeFile(resolve(ws.root, "pyproject.toml"), "[project]\nname='t'\nversion='0'\n");
+        await writeFile(resolve(ws.root, "main.py"), "import typing\nx = typing.cast(int, 5)\n");
+        const out = await nav.symbol(
+            { query: "typing.cast", language: "python" },
+            ws.root,
+            ws.clientOf,
+        );
+        // Exactly one row, naming `cast` in typing.py. The trim note (if any)
+        // starts with `#` and is not a data row.
+        const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
+        assert.equal(rows.length, 1, `expected 1 row for typing.cast, got:\n${out}`);
+        assert.match(rows[0], /\[python\] Function cast  .*typing\.py \(\d+:\d+\)/);
+    } finally {
+        await ws.cleanup();
+    }
+});
+
+runOrSkipThirdParty("code_search_symbol qualified 'cbor2.loads' finds the cbor2 function", async () => {
+    // Gated by thirdPartyOk: requires cbor2 on the third-party roots.
+    // Qualified query into an INSTALLED third-party package (cbor2). The
+    // function lives in `cbor2/_decoder.py`, so its module path is
+    // `cbor2._decoder`; the qualifier `cbor2` matches as a package prefix.
+    // Requires $propagatedBuildInputs to expose cbor2's site-packages (the
+    // nix shell sets this); without it the test would return no symbols, so
+    // we assert the cbor2 result is present and exact when env is present.
+    const ws = await withWorkspace([]);
+    try {
+        await writeFile(resolve(ws.root, "pyproject.toml"), "[project]\nname='t'\nversion='0'\n");
+        await writeFile(resolve(ws.root, "main.py"), "import cbor2\nx = cbor2.loads(b'')\n");
+        const out = await nav.symbol(
+            { query: "cbor2.loads", language: "python" },
+            ws.root,
+            ws.clientOf,
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
+        assert.equal(rows.length, 1, `expected 1 row for cbor2.loads, got:\n${out}`);
+        assert.match(rows[0], /\[python\] Function loads  .*cbor2\/_decoder\.py \(\d+:\d+\)/);
+    } finally {
+        await ws.cleanup();
+    }
+});
+
+runOrSkipThirdParty("code_search_symbol bare 'loads' ranks cbor2.loads (third-party) at top", async () => {
+    // Gated by thirdPartyOk: requires cbor2 on the third-party roots.
+    // Bare query with NO workspace symbol named `loads`: the workspace-first
+    // tier (T1) is empty, so third-party exact matches (T2) rank first —
+    // cbor2.loads should appear before any fuzzy `load_*` stdlib noise. The
+    // fuzzy tail is trimmed with a trailing note. (If cbor2 isn't on
+    // PYTHONPATH/propagatedBuildInputs the row won't appear; we assert that
+    // IF a `loads` row in cbor2 appears, it is before any fuzzy row.)
+    const ws = await withWorkspace([]);
+    try {
+        await writeFile(resolve(ws.root, "pyproject.toml"), "[project]\nname='t'\nversion='0'\n");
+        await writeFile(resolve(ws.root, "main.py"), "import cbor2\nx = cbor2.loads(b'')\n");
+        const out = await nav.symbol(
+            { query: "loads", language: "python" },
+            ws.root,
+            ws.clientOf,
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
+        // All exact-name `loads` rows must appear before any non-exact row.
+        // (Fuzzy rows like `load_package_tests` have a different name.)
+        let seenFuzzy = false;
+        for (const r of rows) {
+            const isExact = /\] Function loads  |\] Variable loads  |\] Field loads  /.test(r);
+            if (!isExact) seenFuzzy = true;
+            if (isExact && seenFuzzy) {
+                assert.fail(`exact 'loads' row after a fuzzy row:\n${out}`);
+            }
+        }
+        // And the cbor2 one specifically should be present and first.
+        const cbor2Idx = rows.findIndex((r) => r.includes("cbor2/_decoder.py"));
+        assert.ok(cbor2Idx >= 0, `cbor2.loads missing from:\n${out}`);
+        assert.equal(cbor2Idx, 0, `cbor2.loads should be the first row:\n${out}`);
+    } finally {
+        await ws.cleanup();
+    }
+});
+
+runOrSkip("code_search_symbol bare 'mymethod' returns ONLY the workspace symbol", async () => {
+    // Bare query where the workspace HAS the symbol: T1 (workspace exact) is
+    // non-empty, so ALL third-party fuzzy noise is dropped — the agent's bare
+    // name refers to their own symbol. This is the regression guard for the
+    // `tempc`-style flood that motivated the workspace-first tiering.
+    const ws = await withWorkspace([]);
+    try {
+        await writeFile(resolve(ws.root, "pyproject.toml"), "[project]\nname='t'\nversion='0'\n");
+        await writeFile(
+            resolve(ws.root, "main.py"),
+            "import cbor2, typing\nclass MyThing:\n    def mymethod(self): pass\n",
+        );
+        const out = await nav.symbol(
+            { query: "mymethod", language: "python" },
+            ws.root,
+            ws.clientOf,
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
+        assert.equal(rows.length, 1, `expected ONLY the workspace mymethod, got:\n${out}`);
+        assert.match(rows[0], /\[python\] Method mymethod  .*main\.py \(\d+:\d+\)/);
     } finally {
         await ws.cleanup();
     }

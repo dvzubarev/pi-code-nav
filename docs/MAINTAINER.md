@@ -153,6 +153,55 @@ contains) — some servers return `SymbolInformation[]` from `documentSymbol`
 when hierarchical support isn't advertised, in which case there is no
 `selectionRange` and we fall back to a source-line scan.
 
+### `code_search_symbol` — third-party/stdlib coverage and qualified names
+
+`code_search_symbol` is now the single entry point for finding a symbol by
+name, whether it lives in the workspace OR in third-party/stdlib trees. Two
+mechanisms make this work (see `nav.ts` `symbol()` and `discoverThirdPartyRoots`,
+`lsp-client.ts` `addWorkspaceFolders`):
+
+1. **Third-party/stdlib roots as extra workspace folders (Python / ty).**
+   `discoverThirdPartyRoots(lang, cwd)` reads `$propagatedBuildInputs` (nix —
+   each package prefix yields `lib/pythonX.Y` (stdlib) AND
+   `lib/pythonX.Y/site-packages` (installed packages)) plus `$PYTHONPATH`, and
+   `LspClient.addWorkspaceFolders` sends `workspace/didChangeWorkspaceFolders`
+   to add them. `ty` advertises `workspace.workspaceFolders.supported` with
+   `changeNotifications: true` and INDEXES those folders once added — verified
+   `typing.cast` and `cbor2.loads` become findable. ccls is NOT touched (it
+   already indexes third-parties via its compilation database's `-isystem`
+   flags; adding folders would just re-parse them as source for no benefit), so
+   `discoverThirdPartyRoots` returns `[]` for non-python. Added once per client
+   (WeakSet `clientsWithRoots`); failures are silent — the query still runs
+   against the workspace root.
+2. **Qualified-name parsing + module-path filtering.** `parseSymbolQuery`
+   splits `typing.cast` -> `(qualifier="typing", bare="cast")` on the
+   language's separator (`.` for python/typescript, `::` for cpp). For
+   python/typescript the server is queried with the BARE name (ty only matches
+   bare names — `typing.cast` returns 0), then results are filtered to exact-
+   name matches whose module path (`modulePathOf`, derived from the file's
+   path relative to its home workspace folder, longest-match-first) matches
+   the qualifier as a module or package prefix. For cpp (ccls) the FULL query
+   is passed (ccls handles `::` qualified natively) and the separator is used
+   only to extract the bare tail for ranking.
+3. **Ranking (the workspace-first tiering).** ty's `workspace/symbol` is
+   case-insensitive FUZZY — a bare `cast` returns ~400 results and the exact
+   `typing.cast` is buried. So results are tiered:
+   - T1 = exact-name (case-insensitive for py/ts) matches in the WORKSPACE
+     ROOT. When non-empty, emit ONLY T1 — a bare name almost always means the
+     agent's own symbol, and third-party fuzzy hits (e.g.
+     `encode_stringref_namespace` for `tempc`) are pure noise.
+   - T2 = exact-name matches in third-party/stdlib (e.g. bare `loads` with no
+     workspace `loads` -> `cbor2.loads`, `json.loads`, ...).
+   - T3 = fuzzy matches anywhere. Emitted only when T1 is empty, after T2,
+     and trimmed at `SYMBOL_MAX_ROWS_PER_LANG` (50) with a trailing note.
+   For qualified queries only the exact-name module-matching rows are kept.
+
+Caveat: `$propagatedBuildInputs` is nix-specific. In a regular venv/conda,
+`$PYTHONPATH` is the fallback (set in both). When neither is set, third-party
+search silently degrades to workspace-only — the tool still works for the
+agent's own symbols. Do NOT add roots for ccls (see above) and do NOT make
+folder addition blocking on its success.
+
 ### Server lifecycle — the exact invariants
 
 - `ServerPool` holds `Map<Lang, LspClient>`, keyed by language only (cwd is

@@ -13,6 +13,7 @@
     in
     {
       devShells.${system}.default = pkgs.mkShell {
+        propagatedBuildInputs=[ pkgs.python313 pkgs.python313.pkgs.cbor2 ];
         buildInputs = [
           # Node toolchain for the extension itself
           pkgs.nodejs_22

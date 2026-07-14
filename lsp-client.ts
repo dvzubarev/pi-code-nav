@@ -350,6 +350,13 @@ async function notifyWithTimeout(
 export class LspClient {
     readonly lang: Lang;
     readonly rootUri: string;
+    /**
+     * The filesystem root path this client was initialized with (the
+     * `workspaceFolders[0]` sent at initialize). Kept as a plain path (not
+     * just a URI) so callers can compute `relative(rootPath, file)` for
+     * module-path derivation in code_search_symbol's qualified-name filter.
+     */
+    readonly rootPath: string;
     private proc: ChildProcessWithoutNullStreams | null = null;
     private conn: MessageConnection | null = null;
     private capabilities: ServerCapabilities | null = null;
@@ -357,6 +364,15 @@ export class LspClient {
     private ready: Promise<void> | null = null;
     /** Documents opened on this server, keyed by file URI. */
     private openDocs = new Map<string, { version: number; text: string }>();
+    /**
+     * Extra workspace folders added after initialize via
+     * `workspace/didChangeWorkspaceFolders` (third-party / stdlib roots for
+     * code_search_symbol). Idempotent: `addWorkspaceFolders` dedupes against
+     * this set and against `rootPath`. Plain filesystem paths (not URIs) so
+     * callers can do `relative(folder, file)` for module-path derivation.
+     * Cleared on shutdown/exit alongside the other per-session state.
+     */
+    private extraWorkspaceFolders: string[] = [];
     /**
      * Latest push-model diagnostics per URI, populated by the
      * textDocument/publishDiagnostics notification handler. Latest-wins: each
@@ -371,6 +387,7 @@ export class LspClient {
 
     constructor(lang: Lang, rootPath: string, cfg: ServerConfig, logDir?: string) {
         this.lang = lang;
+        this.rootPath = rootPath;
         this.rootUri = pathToFileURL(rootPath).href;
         this.cfg = cfg;
         this.logDir = logDir;
@@ -464,6 +481,7 @@ export class LspClient {
             this.capabilities = null;
             this.openDocs.clear();
             this.diagnosticsByUri.clear();
+            this.extraWorkspaceFolders = [];
             this.closeLog();
             // Record the spawn failure so the body's post-listen guard can
             // throw it (and skip the initialize write) instead of letting
@@ -569,6 +587,7 @@ export class LspClient {
             this.ready = null;
             this.openDocs.clear();
             this.diagnosticsByUri.clear();
+            this.extraWorkspaceFolders = [];
             // Remove the per-server log file — the server is gone, its log is
             // no longer interesting. Fire-and-forget; closeLog is idempotent.
             this.closeLog();
@@ -888,6 +907,82 @@ export class LspClient {
         return (res as SymbolInformation[] | null) ?? [];
     }
 
+    /**
+     * Add extra workspace folders (third-party / stdlib roots) to this
+     * server's index via `workspace/didChangeWorkspaceFolders`, so that
+     * `workspace/symbol` can find symbols in those trees too.
+     *
+     * This is the mechanism that lets `code_search_symbol` act as a single
+     * entry point for third-party symbol search on servers whose default
+     * index is workspace-only (notably `ty` — ccls already indexes
+     * third-parties via its compilation database, so it does not need this).
+     * Verified: ty advertises `workspace.workspaceFolders.supported` AND
+     * `changeNotifications: true`, and once a `site-packages` / stdlib dir is
+     * added as a workspace folder, ty indexes it and `workspace/symbol`
+     * returns symbols from it.
+     *
+     * Idempotent: paths already present (in `rootPath` or in
+     * `extraWorkspaceFolders`) are skipped. No-op when the server does not
+     * advertise `workspace.workspaceFolders.supported` (defensive — every
+     * server we currently use does, but a future server might not). Silent
+     * on failure: the notification is fire-and-forget under a timeout; if the
+     * server rejects it or the write wedges, we proceed without those roots
+     * rather than breaking the symbol query (the query still runs against
+     * the workspace root). Returns the list of folder paths actually newly
+     * added (empty if none).
+     *
+     * NOTE: a single `ensureReady` must have completed before calling so the
+     * server has its capabilities and a live connection; callers should
+     * `await this.ensureReady()` (or any method that does) first.
+     */
+    async addWorkspaceFolders(paths: string[]): Promise<string[]> {
+        await this.ensureReady();
+        const caps = this.capabilities as { workspace?: { workspaceFolders?: { supported?: boolean } } } | null;
+        if (!caps?.workspace?.workspaceFolders?.supported) return [];
+        const want: string[] = [];
+        const seen = new Set<string>([this.rootPath, ...this.extraWorkspaceFolders]);
+        for (const p of paths) {
+            if (!p) continue;
+            let abs: string;
+            try {
+                abs = resolve(p);
+            } catch {
+                continue;
+            }
+            if (seen.has(abs)) continue;
+            seen.add(abs);
+            want.push(abs);
+        }
+        if (want.length === 0) return [];
+        const added = want.map((p) => ({ uri: pathToFileURL(p).href, name: p.split("/").pop() || p }));
+        try {
+            await notifyWithTimeout(this.conn!, "workspace/didChangeWorkspaceFolders", {
+                event: { added, removed: [] },
+            });
+            this.extraWorkspaceFolders.push(...want);
+        } catch {
+            // Server rejected or the write wedged — proceed without the
+            // roots. The symbol query still runs against the workspace root.
+            return [];
+        }
+        return want;
+    }
+
+    /**
+     * All workspace folder paths this server knows about: the root plus any
+     * extra folders added via `addWorkspaceFolders`. Used by
+     * `code_search_symbol` to derive a result file's module path (relative to
+     * the longest matching folder) for qualified-name filtering. Returns a
+     * copy sorted by length DESCENDING so longest-prefix matches win when a
+     * broad folder (e.g. `lib/python3.13`) is a prefix of a more specific
+     * one (e.g. `lib/python3.13/site-packages`).
+     */
+    workspaceFolderPaths(): string[] {
+        return [this.rootPath, ...this.extraWorkspaceFolders].sort(
+            (a, b) => b.length - a.length,
+        );
+    }
+
     async rename(
         absPath: string,
         line: number,
@@ -987,6 +1082,7 @@ export class LspClient {
         this.ready = null;
         this.openDocs.clear();
         this.diagnosticsByUri.clear();
+        this.extraWorkspaceFolders = [];
         try {
             // Bounded: a silent/wedged server would otherwise hang shutdown
             // forever (the silent-fake regression test hits this in its

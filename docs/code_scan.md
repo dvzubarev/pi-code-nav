@@ -445,6 +445,23 @@ path and line range across a turn.
   workspace-scoped by spec; no client-side fix makes it index third-party.
   `code_scan` is the third-party entry point; `code_search_symbol` remains the
   fuzzy in-workspace search tool. They coexist.
+
+  > **UPDATE (2026-07): this bullet is now PARTIALLY outdated.** We discovered
+  > that `ty` (and `ccls`) advertise `workspace.workspaceFolders.supported`
+  > with `changeNotifications: true`, and that adding `site-packages` / stdlib
+  > dirs as extra workspace folders via `workspace/didChangeWorkspaceFolders`
+  > makes `ty` index them — so `code_search_symbol` CAN now find third-party /
+  > stdlib symbols. `code_search_symbol` was extended to: (a) discover
+  > third-party roots from `$propagatedBuildInputs` / `$PYTHONPATH` (Python)
+  > and add them as workspace folders; (b) parse qualified queries
+  > (`typing.cast`, `cbor2.loads`, `std::vector::push_back`) — strip the
+  > qualifier, query the bare name, then filter by module/namespace path; (c)
+  > rank exact-name matches first (ty's fuzzy search otherwise buries them).
+  > `code_scan` is still the entry point for "I'm looking at a snippet and want
+  > a symbol's position in it" (a file+range, not a name); `code_search_symbol`
+  > is now the entry point for "find this symbol by name, mine OR third-party".
+  > The empirical claim above ("workspace-scoped by spec") was true for the
+  > DEFAULT index but NOT for the multi-root index a client can build.
 - **No overload of `code_hover`/`code_definition` to accept a name instead of
   a column.** Considered (Option B in the design discussion); rejected because
   it forks the coordinate contract the MAINTAINER doc warns about, and because

@@ -82,7 +82,7 @@ tree takes a regexp matched against symbol names. DWYM: a class/interface/struct
   any other match prints NO subtree (just the node + ancestors for context).
   No constant/variable filtering — the pattern scopes the candidate set.
 definition accepts a SINGLE (file line col) triple and returns the verbatim
-  source body of the symbol at that position (header `<defPath>:<sl>-<el>` +
+  source body of the symbol at that position (header \`<defPath>:<sl>-<el>\` +
   raw source, no fence). Throws a hard error if it cannot return source code
   (no definition found, multiple definitions, cannot resolve body, etc.).
   --list-symbols appends a symbol table per the list_symbols parameter.

@@ -271,15 +271,19 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_search_symbol",
         label: "Code Symbol Search",
         description:
-            "Workspace-wide symbol search by name. Given a query string, return a ranked list of matching symbols (kind, name, <path> (<line>:<col>)). Scoped to the workspace root only — cannot find symbols in third-party trees (site-packages, nix store, node_modules, system headers) even though the LSP server resolves them; see the third-party workflow in the system-prompt block.",
-        promptSnippet: "Fuzzy search for a given symbol in the current workspace.",
+            "Symbol search by name across the workspace AND third-party/stdlib trees. Given a query string (a bare name like `loads` or a qualified name like `typing.cast`, `cbor2.loads`, `std::vector::push_back`), return a ranked list of matching symbols (kind, name, <path> (<line>:<col>)). For Python (ty), third-party/stdlib roots are added as workspace folders (discovered from $propagatedBuildInputs / $PYTHONPATH) so the search covers site-packages and the stdlib; ccls already indexes third-parties via its compilation database. Results are ranked: for a bare name, workspace-root exact matches are returned alone; otherwise third-party exact matches come first, then fuzzy matches (trimmed). For a qualified name, only the exact bare-name match whose module/namespace matches the qualifier is kept.",
+        promptSnippet: "Search for a symbol by name (bare or qualified) across the workspace and third-party/stdlib.",
         promptGuidelines: [
-            "Use code_search_symbol to find a location of a symbol in the current project. It returns a ranked list of matching symbols. It doesn't support regexps, but some servers support fuzzy searching.",
-            "Output row format: <lang> <Kind> <name> <path> (<line>:<col>)",
-            "code_search_symbol is workspace-scoped: it will NOT find symbols in third-party trees (site-packages, nix store, system headers).",
+            "Use code_search_symbol to find a location of a symbol by name. Pass a BARE name (e.g. `loads`, `TempC`) to find symbols in your project first; if your project has no symbol by that name, third-party/stdlib exact matches are returned next. Pass a QUALIFIED name (`typing.cast`, `cbor2.loads`, `std::vector::push_back`) to pin a specific third-party/stdlib symbol — the tool strips the qualifier, searches the bare name, then keeps only the match in that module/namespace.",
+            "Ranking: a bare name with an exact workspace match returns ONLY that match (the agent's bare name is their own symbol). A bare name with no workspace match returns third-party exact matches first, then fuzzy matches (the fuzzy tail is trimmed with a trailing `# N more result(s) trimmed` note — narrow with a qualified name to get fewer, exact hits).",
+            "Output row format: `[lang] <Kind> <name>  <path> (<line>:<col>)`. Feed a row's path + (line:col) straight into code_definition / code_hover / code_references. The path may be a third-party location (nix store, site-packages, system headers) — those tools accept absolute paths.",
+            "For C++ (ccls) the `name` column is a full qualified signature (`constexpr void std::vector::push_back(...)`), so qualified queries (`std::vector::push_back`) rank the exact matches first. For Python (ty) the `name` column is the bare name; use the path (or a qualified query) to disambiguate which module it comes from.",
         ],
         parameters: Type.Object({
-            query: Type.String({ description: "Symbol name (or prefix) to search for" }),
+            query: Type.String({
+                description:
+                    "Symbol name to search for. A bare name (e.g. `loads`, `TempC`) searches the workspace first, then third-party/stdlib. A qualified name (`typing.cast`, `cbor2.loads`, `std::vector::push_back`) pins a specific module/namespace — the tool strips the qualifier, searches the bare name, then keeps only the match in that module.",
+            }),
             language: Type.Optional(
                 Type.String({
                     description: "Optional: 'cpp' | 'python' | 'bash' to limit to one language",
@@ -601,7 +605,7 @@ faster, semantic, and return 1-based positions that round-trip between tools.
 Two groups — ENTRY POINTS produce a position; DETAIL TOOLS consume one.
 
 ENTRY POINTS (you don't have a precise position yet):
-- code_search_symbol — find a symbol by name across the workspace
+- code_search_symbol — find a symbol by name across the workspace AND third-party/stdlib (bare or qualified name)
 - code_outline       — list functions/classes/methods in a file
 - code_tree          — pattern-driven pruned symbol tree with signatures
 - code_scan          — list every identifier (with role: type/call/member/import) in a file or a range
@@ -617,14 +621,14 @@ Positions are 1-based throughout. An entry point's printed line:col feeds
 straight into a detail tool's line/column params — no conversion.
 
 Prefer code_* over the grep/read reflex:
-- find a symbol by name           → code_search_symbol then code_definition (not rg + read)
+- find a symbol by name (yours OR third-party/stdlib) → code_search_symbol then code_definition (not rg + read)
 - read a function's source body   → code_outline to find it, then code_definition (not grep -n + read)
 - list identifiers in a snippet   → code_scan (not rg -o '\b\w+\b' — code_scan gives roles + reusable positions)
 - find all call sites of a symbol → code_references (not rg)
 - rename a symbol                 → code_rename (not sed -i across files)
 - check a file for errors         → code_diagnostics (not a hand-written paren/quote checker)
 - learn a symbol's type or docs   → code_hover (not reading the file and eyeballing)
-- read a third-party API's source → code_definition at its position (not
+- read a third-party API's source → code_search_symbol (qualified name) then code_definition (not
   \`python -c "import inspect; inspect.getsource(...)"\` or other hacks for various languages)
 
 
@@ -655,14 +659,28 @@ contains the positions the next step needs.
    identifiers into their definitions, as deep as you need.
 
 
-Retrieving third-party docs/source (site-packages, node_modules, nix store, system headers) workflows:
-1. Use tool call chains described above.
-2. Third-party symbol from a NAME only (no position):
-     (1). resolve the package root.
-        If the project uses nix (the common case), every third-party path is exposed via an environment variable — grep the right one for your language:
-        python: \`echo $PYTHONPATH | tr ':' '\\n' | grep <name>\`,
-        C++: (cmake, the usual case) \`echo $CMAKE_INCLUDE_PATH | tr ':' '\\n' | grep <name>\`,
-        C++: (no cmake) \`echo $NIX_CFLAGS_COMPILE | tr ' ' '\\n' | grep <name>\`;
-     (2). \`rg -n --column <name> <root>\` — the output is \`line:column:content\`, and on ASCII lines the 1-based line and column match what code_definition/code_hover expect.
-     (3). call code_definition/code_hover on that position (they accept absolute paths, including nix store / site-packages / node_modules / system headers).
-    Do NOT rg the whole /nix/store (millions of entries, many versions) — always scope to one resolved package root.`;
+Retrieving third-party docs/source (site-packages, nix store, system headers) workflows:
+1. PREFERRED: code_search_symbol with a QUALIFIED name. Pass \`typing.cast\`,
+   \`cbor2.loads\`, \`std::vector::push_back\` — the tool searches across the
+   workspace AND third-party/stdlib (for Python it adds $propagatedBuildInputs /
+   $PYTHONPATH roots as workspace folders so ty indexes site-packages + the
+   stdlib; ccls already indexes third-parties via its compilation database).
+   You get a position; feed it into code_definition / code_hover.
+2. FALLBACK (symbol not found via search, or you only have a file in view):
+   use the tool call chains above — code_scan the file you're looking at to
+   find the symbol's position, then code_definition / code_hover at that
+   position. code_definition / code_hover accept absolute third-party paths
+   (nix store, site-packages, system headers).
+3. LAST RESORT (symbol from a NAME only, no position, and search found nothing):
+     (1). resolve the package root. If the project uses nix, every
+          third-party path is exposed via an environment variable — grep the
+          right one for your language:
+          python: \`echo $PYTHONPATH | tr ':' '\\n' | grep <name>\`,
+          C++: (cmake, the usual case) \`echo $CMAKE_INCLUDE_PATH | tr ':' '\\n' | grep <name>\`,
+          C++: (no cmake) \`echo $NIX_CFLAGS_COMPILE | tr ' ' '\\n' | grep <name>\`;
+     (2). \`rg -n --column <name> <root>\` — the output is \`line:column:content\`,
+          and on ASCII lines the 1-based line and column match what
+          code_definition/code_hover expect.
+     (3). call code_definition/code_hover on that position.
+    Do NOT rg the whole /nix/store (millions of entries, many versions) —
+    always scope to one resolved package root.`;
