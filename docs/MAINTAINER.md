@@ -173,16 +173,47 @@ mechanisms make this work (see `nav.ts` `symbol()` and `discoverThirdPartyRoots`
    `discoverThirdPartyRoots` returns `[]` for non-python. Added once per client
    (WeakSet `clientsWithRoots`); failures are silent — the query still runs
    against the workspace root.
-2. **Qualified-name parsing + module-path filtering.** `parseSymbolQuery`
+2. **Qualified-name parsing + tiered module-path filtering.** `parseSymbolQuery`
    splits `typing.cast` -> `(qualifier="typing", bare="cast")` on the
    language's separator (`.` for python/typescript, `::` for cpp). For
    python/typescript the server is queried with the BARE name (ty only matches
-   bare names — `typing.cast` returns 0), then results are filtered to exact-
-   name matches whose module path (`modulePathOf`, derived from the file's
-   path relative to its home workspace folder, longest-match-first) matches
-   the qualifier as a module or package prefix. For cpp (ccls) the FULL query
-   is passed (ccls handles `::` qualified natively) and the separator is used
-   only to extract the bare tail for ranking.
+   bare names — `typing.cast` returns 0), then results are tiered by how
+   well the qualifier relates to each hit's defining module path (`modulePathOf`,
+   derived from the file's path relative to its home workspace folder,
+   longest-match-first). For cpp (ccls) the FULL query is passed (ccls handles
+   `::` qualified natively) and the separator is used only to extract the bare
+   tail for ranking.
+   **No Python server populates `SymbolInformation.containerName`** (confirmed:
+   ty, pyrefly, pyright all leave it `null` — the data simply isn't on the
+   wire), so the filter cannot use the enclosing-class field. (ccls likewise
+   leaves it null but encodes the container into `name` as a full C++
+   qualified signature `std::vector::push_back`, which is why the cpp path
+   string-matches the qualifier against `name` instead.) The hierarchical
+   `documentSymbol` tree DOES carry the class container (the ancestor chain
+   of a method is its class), but `workspace/symbol` is flat and discards it.
+   The qualified filter is therefore TIERED (first non-empty wins, so a precise
+   qualifier is never drowned by the broad fallback):
+   - **Q1** = exact name, third-party, module path matches the qualifier
+     precisely (`mod === qualifier` or `mod.startsWith(qualifier + ".")`).
+     Happy path: `typing.cast` -> `typing`, `cbor2.loads` -> `cbor2._decoder`.
+   - **Q2** = exact name, third-party, module path shares the qualifier's
+     LEADING component (first `.`-segment). This is the graceful fallback for
+     the two cases a precise module-path match silently dropped before:
+       * `aiohttp.StreamReader.iter_chunks` — the qualifier's `StreamReader` is
+         a CLASS, not a module; the method lives in `aiohttp.streams`. Shared
+         leading component `aiohttp` matches.
+       * `aiohttp.web.Request` — `Request` is DEFINED in `aiohttp.web_request`
+         (re-exported from `aiohttp.web`). `aiohttp.web_request` does NOT
+         `.startsWith("aiohttp.web.")` (the `_` breaks the `.` boundary), but
+         the leading component `aiohttp` matches.
+   - **Q3** = exact name, third-party, anything else (last resort so a
+     qualified query never returns empty when exact-name third-party hits
+     exist).
+   The name match for a QUALIFIED query is CASE-SENSITIVE (the agent spelled
+   the exact symbol — `Request`, not `request`); the bare-query path stays
+   case-insensitive (ty's fuzzy search returns case variants and a bare name
+   is ambiguous). Fuzzy/partial-name matches are ALWAYS dropped for a
+   qualified query.
 3. **Ranking (the workspace-first tiering).** ty's `workspace/symbol` is
    case-insensitive FUZZY — a bare `cast` returns ~400 results and the exact
    `typing.cast` is buried. So results are tiered:
@@ -194,7 +225,8 @@ mechanisms make this work (see `nav.ts` `symbol()` and `discoverThirdPartyRoots`
      workspace `loads` -> `cbor2.loads`, `json.loads`, ...).
    - T3 = fuzzy matches anywhere. Emitted only when T1 is empty, after T2,
      and trimmed at `SYMBOL_MAX_ROWS_PER_LANG` (50) with a trailing note.
-   For qualified queries only the exact-name module-matching rows are kept.
+   For qualified queries the tiered Q1/Q2/Q3 filter (see point 2) applies;
+   fuzzy/partial-name matches are always dropped.
 
 Caveat: `$propagatedBuildInputs` is nix-specific. In a regular venv/conda,
 `$PYTHONPATH` is the fallback (set in both). When neither is set, third-party

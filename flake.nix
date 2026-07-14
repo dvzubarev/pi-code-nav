@@ -13,7 +13,7 @@
     in
     {
       devShells.${system}.default = pkgs.mkShell {
-        propagatedBuildInputs=[ pkgs.python313 pkgs.python313.pkgs.cbor2 ];
+        propagatedBuildInputs=[ pkgs.python313 pkgs.python313.pkgs.cbor2  pkgs.python313.pkgs.aiohttp];
         buildInputs = [
           # Node toolchain for the extension itself
           pkgs.nodejs_22
@@ -23,6 +23,7 @@
           # for development/testing of the extension.
           pkgs.ccls
           pkgs.ty
+          pkgs.pyrefly
           pkgs.pyright
           pkgs.bash-language-server
           pkgs.typescript-language-server

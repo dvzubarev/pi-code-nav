@@ -19,15 +19,18 @@ const skip = !SHOULD_RUN_E2E;
 const tyOk = SHOULD_RUN_E2E ? await serverAvailable("python") : false;
 
 // Probe whether the environment exposes third-party/stdlib roots for the
-// qualified-name tests. Those tests need `typing` (stdlib) and `cbor2` (an
-// installed third-party) to be discoverable via $propagatedBuildInputs /
-// $PYTHONPATH (the nix shell sets both; a bare venv or CI without the env may
-// not). When the probe finds no roots, the three third-party tests skip
-// (green) instead of failing red — they're exercising env-dependent behavior.
-// We check that at least one root is discoverable AND that `typing`/`cbor2`
-// actually resolve as importable modules from those roots (cheap stat checks
-// would be ideal, but importlib is the authoritative test). We approximate by
-// checking the discovered roots contain both a `typing.py` and a `cbor2`
+// qualified-name tests. Those tests need `typing` (stdlib), `cbor2` (an
+// installed third-party), and `aiohttp` (a third-party with both a
+// class-qualified method and a re-exported class — the two
+// qualified-query edge cases) to be discoverable via
+// $propagatedBuildInputs / $PYTHONPATH (the nix shell sets both; a bare
+// venv or CI without the env may not). When the probe finds no roots, the
+// third-party tests skip (green) instead of failing red — they're
+// exercising env-dependent behavior. We check that at least one root is
+// discoverable AND that `typing`/`cbor2`/`aiohttp` actually resolve as
+// importable modules from those roots (cheap stat checks would be ideal,
+// but importlib is the authoritative test). We approximate by checking the
+// discovered roots contain `typing.py`, a `cbor2` package, and an `aiohttp`
 // package somewhere; if the env is the project's own nix shell this is true.
 async function thirdPartyAvailable() {
     if (!tyOk) return false;
@@ -38,10 +41,11 @@ async function thirdPartyAvailable() {
         return false;
     }
     if (roots.length === 0) return false;
-    // Confirm typing.py and cbor2/ exist under some root.
+    // Confirm typing.py, cbor2/, and aiohttp/ exist under some root.
     const { stat } = await import("node:fs/promises");
     let hasTyping = false;
     let hasCbor2 = false;
+    let hasAiohttp = false;
     for (const r of roots) {
         if (!hasTyping) {
             try { await stat(resolve(r, "typing.py")); hasTyping = true; } catch {}
@@ -50,8 +54,11 @@ async function thirdPartyAvailable() {
             try { await stat(resolve(r, "cbor2")); hasCbor2 = true; } catch {}
             try { await stat(resolve(r, "cbor2.py")); hasCbor2 = true; } catch {}
         }
+        if (!hasAiohttp) {
+            try { await stat(resolve(r, "aiohttp")); hasAiohttp = true; } catch {}
+        }
     }
-    return hasTyping && hasCbor2;
+    return hasTyping && hasCbor2 && hasAiohttp;
 }
 const thirdPartyOk = await thirdPartyAvailable();
 // runOrSkip registers the test normally when the server is up, or as a skip
@@ -269,6 +276,87 @@ runOrSkip("code_search_symbol bare 'mymethod' returns ONLY the workspace symbol"
         const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
         assert.equal(rows.length, 1, `expected ONLY the workspace mymethod, got:\n${out}`);
         assert.match(rows[0], /\[python\] Method mymethod  .*main\.py \(\d+:\d+\)/);
+    } finally {
+        await ws.cleanup();
+    }
+});
+
+runOrSkipThirdParty("code_search_symbol qualified 'aiohttp.StreamReader.iter_chunks' finds the method", async () => {
+    // Gated by thirdPartyOk: requires aiohttp on the third-party roots.
+    // Regression guard for a qualified query whose qualifier contains a CLASS
+    // name (not a module): `iter_chunks` is a method of class `StreamReader`,
+    // defined in `aiohttp/streams.py` (module path `aiohttp.streams`). The
+    // qualifier `aiohttp.StreamReader` is NOT a module path, so the precise
+    // module-path match (Q1) misses; the leading-component fallback (Q2)
+    // matches on the shared `aiohttp` prefix. Before the fix this returned
+    // `(no symbols matching ...)`. ty indexes methods, so the method IS
+    // returned; the case-sensitive name match also drops the lowercase
+    // `request` methods that ty's fuzzy search returns for a `Request` query
+    // (not relevant here, but the same guard).
+    const ws = await withWorkspace([]);
+    try {
+        await writeFile(resolve(ws.root, "pyproject.toml"), "[project]\nname='t'\nversion='0'\n");
+        await writeFile(
+            resolve(ws.root, "main.py"),
+            "import aiohttp\nasync def f():\n    r = aiohttp.StreamReader()\n    async for c in r.iter_chunks(): pass\n",
+        );
+        const out = await nav.symbol(
+            { query: "aiohttp.StreamReader.iter_chunks", language: "python" },
+            ws.root,
+            ws.clientOf,
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
+        // Exactly one `iter_chunks` row in aiohttp/streams.py. The trim note
+        // (if any) starts with `#` and is not a data row.
+        const dataRows = rows.filter((l) => !l.startsWith("[python] #"));
+        assert.equal(dataRows.length, 1, `expected 1 row for iter_chunks, got:\n${out}`);
+        assert.match(
+            dataRows[0],
+            /\[python\] Method iter_chunks  .*aiohttp\/streams\.py \(\d+:\d+\)/,
+        );
+    } finally {
+        await ws.cleanup();
+    }
+});
+
+runOrSkipThirdParty("code_search_symbol qualified 'aiohttp.web.Request' finds the re-exported class", async () => {
+    // Gated by thirdPartyOk: requires aiohttp on the third-party roots.
+    // Regression guard for a qualified query where the symbol is DEFINED in a
+    // submodule whose name shares a prefix with the qualifier but is NOT a
+    // dotted child of it: `Request` is defined in `aiohttp/web_request.py`
+    // (module path `aiohttp.web_request`), but accessed as `aiohttp.web.Request`
+    // because `aiohttp/web.py` re-exports it. The precise match (Q1) misses
+    // because `aiohttp.web_request` does NOT `.startsWith("aiohttp.web.")`
+    // (the `_` breaks the `.` boundary); the leading-component fallback (Q2)
+    // matches on the shared `aiohttp` prefix. Before the fix this returned
+    // `(no symbols matching ...)`. The class `Request` (capital R) must be
+    // present; lowercase `request` methods are dropped by the case-sensitive
+    // name match for qualified queries.
+    const ws = await withWorkspace([]);
+    try {
+        await writeFile(resolve(ws.root, "pyproject.toml"), "[project]\nname='t'\nversion='0'\n");
+        await writeFile(
+            resolve(ws.root, "main.py"),
+            "import aiohttp.web\nasync def f(): req = aiohttp.web.Request(...)\n",
+        );
+        const out = await nav.symbol(
+            { query: "aiohttp.web.Request", language: "python" },
+            ws.root,
+            ws.clientOf,
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
+        const dataRows = rows.filter((l) => !l.startsWith("[python] #"));
+        // The class `Request` in aiohttp/web_request.py MUST be present.
+        assert.ok(
+            dataRows.some((r) => /\[python\] Class Request  .*aiohttp\/web_request\.py \(\d+:\d+\)/.test(r)),
+            `class Request in web_request.py missing from:\n${out}`,
+        );
+        // Lowercase `request` methods (case-variant noise) must NOT appear —
+        // a qualified query is case-sensitive on the bare tail.
+        assert.ok(
+            !dataRows.some((r) => /\] (Method|Function) request  /.test(r)),
+            `lowercase 'request' methods should be dropped (case-sensitive qualified match):\n${out}`,
+        );
     } finally {
         await ws.cleanup();
     }

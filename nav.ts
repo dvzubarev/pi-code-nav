@@ -1009,16 +1009,105 @@ export async function symbol(
         // `rootPath`, i.e. module path is project-relative, not a third-party
         // dotted module) are dropped — they don't carry the qualifier.
         if (lang !== "cpp" && qualifier !== null) {
+            // Qualified query (python/typescript): the agent asked for a
+            // SPECIFIC symbol like `typing.cast`, `cbor2.loads`,
+            // `aiohttp.StreamReader.iter_chunks`, or `aiohttp.web.Request`.
+            // ty does NOT support qualified names natively (querying
+            // "typing.cast" returns 0) and does NOT populate
+            // `SymbolInformation.containerName` (confirmed: every Python
+            // server — ty, pyrefly, pyright — leaves it null), so we query
+            // with the bare tail and tier the results by how well the
+            // qualifier relates to each hit's defining module path.
+            //
+            // The qualifier is split on the language separator; the bare tail
+            // is the last component. `modulePathOf` derives a dotted module
+            // path from the result file's location. Three tiers, first
+            // non-empty wins (so a precise qualifier is never drowned by the
+            // broad fallback):
+            //   Q1 — exact name, third-party, module path matches the
+            //        qualifier precisely (`mod === qualifier` or
+            //        `mod.startsWith(qualifier + ".")`). This is the happy
+            //        path: `typing.cast` -> `typing`, `cbor2.loads` ->
+            //        `cbor2._decoder` (matches `cbor2.`).
+            //   Q2 — exact name, third-party, module path shares the
+            //        qualifier's LEADING component. The qualifier's leading
+            //        component is its first path segment (e.g. `aiohttp` for
+            //        `aiohttp.StreamReader` and `aiohttp.web`). This catches
+            //        the two cases `modulePathOf`-vs-qualifier mismatch that
+            //        a precise match silently dropped before:
+            //          * `aiohttp.StreamReader.iter_chunks`: the qualifier's
+            //            `StreamReader` is a CLASS, not a module — the method
+            //            lives in `aiohttp.streams`. Leading component `aiohttp`
+            //            matches.
+            //          * `aiohttp.web.Request`: `Request` is defined in
+            //            `aiohttp.web_request` (re-exported from `aiohttp.web`).
+            //            `aiohttp.web_request` does NOT `.startsWith("aiohttp.web.")`
+            //            (the `_` breaks the `.` boundary), but its leading
+            //            component `aiohttp` matches.
+            //        A workspace-root hit is excluded (a bare name in the
+            //        workspace almost always means the agent's own symbol,
+            //        not a third-party one).
+            //   Q3 — exact name, third-party, anything else. Last resort so a
+            //        qualified query never returns empty when exact-name
+            //        third-party hits exist; the agent can disambiguate from
+            //        the rendered paths.
+            // Fuzzy/partial-name matches are ALWAYS dropped for a qualified
+            // query — the agent asked for a specific symbol, so fuzzy noise
+            // (e.g. `RequestHandler` for `aiohttp.web.Request`) is not useful.
             const folders = client.workspaceFolderPaths();
-            const bareCmp = bare.toLowerCase();
-            syms = syms.filter((s) => {
-                if (s.name.toLowerCase() !== bareCmp) return false;
+            // Case-SENSITIVE name match for a qualified query: the agent
+            // spelled the exact symbol (`Request`, not `request`), so a
+            // case variant is a different symbol and would be noise. (The
+            // bare-query path below is case-insensitive because ty's fuzzy
+            // search returns case variants and a bare name is ambiguous;
+            // a qualified query is not.)
+            const exactName = (s: SymbolInformation): boolean => s.name === bare;
+            const qualLeading = qualifier.split(QUALIFIED_SEP[lang]!)[0];
+            const isThirdParty = (s: SymbolInformation): boolean => {
                 const home = homeFolderOf(s.location.uri, folders);
-                if (!home || home === client.rootPath) return false; // workspace root
+                return !!home && home !== client.rootPath;
+            };
+            const modLeadingCmp = (uri: string): string | null => {
+                const mod = modulePathOf(uri, folders);
+                if (mod === null) return null;
+                return mod.split(".")[0];
+            };
+            const exactThirdParty = syms.filter(
+                (s) => exactName(s) && isThirdParty(s),
+            );
+            const q1 = exactThirdParty.filter((s) => {
                 const mod = modulePathOf(s.location.uri, folders);
-                if (mod === null) return false;
-                return mod === qualifier || mod.startsWith(qualifier + ".");
+                return mod !== null && (mod === qualifier || mod.startsWith(qualifier + "."));
             });
+            const q2 = exactThirdParty.filter((s) => {
+                const lead = modLeadingCmp(s.location.uri);
+                return lead !== null && lead === qualLeading;
+            });
+            const q3 = exactThirdParty;
+            syms = q1.length > 0 ? q1 : q2.length > 0 ? q2 : q3;
+            // TODO(future): precise container disambiguation via documentSymbol.
+            //   Q2 (leading-component fallback) is deliberately loose — it
+            //   returns every exact-name hit whose module shares the
+            //   qualifier's leading package, so `aiohttp.StreamReader.iter_chunks`
+            //   returns the one `iter_chunks` in `aiohttp.streams` (correct)
+            //   but `aiohttp.SomeClass.method` would return every `method` in
+            //   any `aiohttp.*` module if several existed. When Q2 is ambiguous
+            //   (len > 1) AND the qualifier's tail (last component before the
+            //   bare name, e.g. `StreamReader`) looks like a CLASS name, we
+            //   could `documentSymbol` each Q2 hit's file (cached in `docCache`,
+            //   so shared with the resolveSymbolSelStart path below) and keep
+            //   only the hits whose ancestor chain in the hierarchical
+            //   DocumentSymbol tree contains that tail. workspace/symbol is
+            //   flat and leaves `containerName` null on every Python server
+            //   (ty/pyrefly/pyright) and on ccls, but the hierarchical
+            //   documentSymbol tree DOES carry the class container (verified:
+            //   `iter_chunks`'s ancestor in streams.py is `StreamReader`).
+            //   This is a per-result extra round-trip, so gate it behind Q2
+            //   being non-empty AND ambiguous (len > 1) — the common
+            //   single-hit Q2 case needs no extra work. Not implemented yet:
+            //   the current Q2/Q3 fallback is correct for the reported cases
+            //   and the ambiguous case is rare; add this only if an agent
+            //   hits a genuinely ambiguous Q2 in practice.
         } else {
             // Bare query, or cpp. Tier the results so the agent sees the most
             // relevant matches first and is not flooded with third-party fuzzy
