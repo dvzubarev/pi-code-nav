@@ -163,16 +163,23 @@ mechanisms make this work (see `nav.ts` `symbol()` and `discoverThirdPartyRoots`
 1. **Third-party/stdlib roots as extra workspace folders (Python / ty).**
    `discoverThirdPartyRoots(lang, cwd)` reads `$propagatedBuildInputs` (nix —
    each package prefix yields `lib/pythonX.Y` (stdlib) AND
-   `lib/pythonX.Y/site-packages` (installed packages)) plus `$PYTHONPATH`, and
-   `LspClient.addWorkspaceFolders` sends `workspace/didChangeWorkspaceFolders`
-   to add them. `ty` advertises `workspace.workspaceFolders.supported` with
-   `changeNotifications: true` and INDEXES those folders once added — verified
-   `typing.cast` and `cbor2.loads` become findable. ccls is NOT touched (it
-   already indexes third-parties via its compilation database's `-isystem`
-   flags; adding folders would just re-parse them as source for no benefit), so
-   `discoverThirdPartyRoots` returns `[]` for non-python. Added once per client
-   (WeakSet `clientsWithRoots`); failures are silent — the query still runs
-   against the workspace root.
+   `lib/pythonX.Y/site-packages` (installed packages)). `$PYTHONPATH` is ONLY
+   consulted when `$propagatedBuildInputs` is absent — in a nix shell
+   `$PYTHONPATH` carries the full transitive dependency closure (deep,
+   rarely-queried, costly for ty to index, and inflates the bare-name fuzzy
+   tail), whereas `$propagatedBuildInputs` is the project's direct deps (the
+   targeted set the agent actually searches). In a regular venv/conda (no
+   `$propagatedBuildInputs`) `$PYTHONPATH` is the venv's own small
+   site-packages and is the only source. `LspClient.addWorkspaceFolders`
+   sends `workspace/didChangeWorkspaceFolders` to add them. `ty` advertises
+   `workspace.workspaceFolders.supported` with `changeNotifications: true`
+   and INDEXES those folders once added — verified `typing.cast` and
+   `cbor2.loads` become findable. ccls is NOT touched (it already indexes
+   third-parties via its compilation database's `-isystem` flags; adding
+   folders would just re-parse them as source for no benefit), so
+   `discoverThirdPartyRoots` returns `[]` for non-python. Added once per
+   client (WeakSet `clientsWithRoots`); failures are silent — the query still
+   runs against the workspace root.
 2. **Qualified-name parsing + tiered module-path filtering.** `parseSymbolQuery`
    splits `typing.cast` -> `(qualifier="typing", bare="cast")` on the
    language's separator (`.` for python/typescript, `::` for cpp). For
@@ -229,7 +236,9 @@ mechanisms make this work (see `nav.ts` `symbol()` and `discoverThirdPartyRoots`
    fuzzy/partial-name matches are always dropped.
 
 Caveat: `$propagatedBuildInputs` is nix-specific. In a regular venv/conda,
-`$PYTHONPATH` is the fallback (set in both). When neither is set, third-party
+`$PYTHONPATH` is the fallback (consulted ONLY when
+`$propagatedBuildInputs` is absent, so the nix-shell transitive-closure
+`$PYTHONPATH` doesn't flood the index). When neither is set, third-party
 search silently degrades to workspace-only — the tool still works for the
 agent's own symbols. Do NOT add roots for ccls (see above) and do NOT make
 folder addition blocking on its success.

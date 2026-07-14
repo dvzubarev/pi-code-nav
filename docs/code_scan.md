@@ -452,8 +452,8 @@ path and line range across a turn.
   > dirs as extra workspace folders via `workspace/didChangeWorkspaceFolders`
   > makes `ty` index them — so `code_search_symbol` CAN now find third-party /
   > stdlib symbols. `code_search_symbol` was extended to: (a) discover
-  > third-party roots from `$propagatedBuildInputs` / `$PYTHONPATH` (Python)
-  > and add them as workspace folders; (b) parse qualified queries
+  > third-party roots from `$propagatedBuildInputs` (or `$PYTHONPATH` when
+  > that's absent) (Python) and add them as workspace folders; (b) parse qualified queries
   > (`typing.cast`, `cbor2.loads`, `std::vector::push_back`) — strip the
   > qualifier, query the bare name, then filter by module/namespace path; (c)
   > rank exact-name matches first (ty's fuzzy search otherwise buries them).

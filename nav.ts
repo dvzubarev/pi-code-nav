@@ -892,8 +892,16 @@ function modulePathOf(
  *
  *   - Python (`ty`): from `$propagatedBuildInputs` (nix — each entry is a
  *     package prefix; we add `lib/pythonX.Y` (stdlib) and
- *     `lib/pythonX.Y/site-packages` (installed packages)) plus `$PYTHONPATH`
- *     (set in both nix shells and regular venvs/conda). ccls does NOT use this
+ *     `lib/pythonX.Y/site-packages` (installed packages)). `$PYTHONPATH` is
+ *     ONLY consulted when `$propagatedBuildInputs` is absent — in a typical
+ *     nix shell `$PYTHONPATH` carries the FULL transitive dependency closure
+ *     (every dependency-of-a-dependency's site-packages), which is a large,
+ *     rarely-queried set that would cost ty real index time and inflate the
+ *     fuzzy-result tail for bare-name queries. The project's direct deps
+ *     (from `$propagatedBuildInputs`) is the targeted set the agent actually
+ *     searches. In a regular venv/conda (no `$propagatedBuildInputs`)
+ *     `$PYTHONPATH` is the venv's own (small, direct) site-packages and is
+ *     the only source, so it's fine to use it then. ccls does NOT use this
  *     — it indexes third-parties via its compilation database's `-isystem`
  *     flags, so adding folders to ccls would just re-parse them as source
  *     trees for no benefit (and real indexing cost).
@@ -926,6 +934,8 @@ export async function discoverThirdPartyRoots(lang: Lang, cwd: string): Promise<
     };
 
     // $propagatedBuildInputs (nix): space-separated package prefixes.
+    // Each entry is a DIRECT dependency of the project (not transitive),
+    // so this is the targeted set the agent actually searches.
     const prop = (process.env.propagatedBuildInputs ?? "").split(/\s+/).filter(Boolean);
     for (const pkg of prop) {
         // Discover `lib/pythonX.Y` and `lib/pythonX.Y/site-packages` under each.
@@ -943,8 +953,14 @@ export async function discoverThirdPartyRoots(lang: Lang, cwd: string): Promise<
             add(resolve(lib, e.name, "site-packages")); // installed packages
         }
     }
-    // $PYTHONPATH: colon-separated paths (nix shells AND regular venvs/conda).
-    for (const p of (process.env.PYTHONPATH ?? "").split(":").filter(Boolean)) add(p);
+    // $PYTHONPATH is ONLY consulted when $propagatedBuildInputs is absent.
+    // In a nix shell $PYTHONPATH carries the full transitive closure (deep,
+    // rarely-queried, costly to index); $propagatedBuildInputs gives the
+    // direct deps. In a regular venv/conda (no $propagatedBuildInputs)
+    // $PYTHONPATH is the venv's own small site-packages and is the only source.
+    if (prop.length === 0) {
+        for (const p of (process.env.PYTHONPATH ?? "").split(":").filter(Boolean)) add(p);
+    }
 
     return [...roots];
 }

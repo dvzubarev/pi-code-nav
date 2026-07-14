@@ -23,8 +23,8 @@ const tyOk = SHOULD_RUN_E2E ? await serverAvailable("python") : false;
 // installed third-party), and `aiohttp` (a third-party with both a
 // class-qualified method and a re-exported class — the two
 // qualified-query edge cases) to be discoverable via
-// $propagatedBuildInputs / $PYTHONPATH (the nix shell sets both; a bare
-// venv or CI without the env may not). When the probe finds no roots, the
+// $propagatedBuildInputs (the nix shell sets it; a bare venv/conda without
+// it falls back to $PYTHONPATH). When the probe finds no roots, the
 // third-party tests skip (green) instead of failing red — they're
 // exercising env-dependent behavior. We check that at least one root is
 // discoverable AND that `typing`/`cbor2`/`aiohttp` actually resolve as
@@ -174,7 +174,7 @@ runOrSkipThirdParty("code_search_symbol qualified 'typing.cast' finds stdlib cas
     // so the tool strips the qualifier, queries "cast", then filters to
     // exact-name matches whose module path matches `typing`. The stdlib
     // `typing.py` must be indexed (added as a workspace folder via
-    // $propagatedBuildInputs / $PYTHONPATH) for this to return anything.
+    // $propagatedBuildInputs) for this to return anything.
     const ws = await withWorkspace([]);
     try {
         await writeFile(resolve(ws.root, "pyproject.toml"), "[project]\nname='t'\nversion='0'\n");
@@ -225,7 +225,7 @@ runOrSkipThirdParty("code_search_symbol bare 'loads' ranks cbor2.loads (third-pa
     // tier (T1) is empty, so third-party exact matches (T2) rank first —
     // cbor2.loads should appear before any fuzzy `load_*` stdlib noise. The
     // fuzzy tail is trimmed with a trailing note. (If cbor2 isn't on
-    // PYTHONPATH/propagatedBuildInputs the row won't appear; we assert that
+    // propagatedBuildInputs the row won't appear; we assert that
     // IF a `loads` row in cbor2 appears, it is before any fuzzy row.)
     const ws = await withWorkspace([]);
     try {
