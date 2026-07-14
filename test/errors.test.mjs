@@ -8,8 +8,8 @@
 //     failure rows) — the tool's contract is "verbatim source code or a hard
 //     error". Covers: unknown language, cannot read, server unavailable, no
 //     definition found, multiple definitions, could not resolve body.
-//   - nav.references/hover per-position soft failures emit structured ERROR
-//     rows (with the ### position header when batching)
+//   - nav.references/hover soft failures emit structured ERROR rows
+//     (unknown language, cannot read, server unavailable)
 //
 // The batched-tool soft-failure path is exercised with a `clientOf` that
 // throws — so the language-server spawn fails and we see the ERROR row for
@@ -143,14 +143,14 @@ test("nav.definition hard failure: server unavailable → throws", async () => {
     }
 });
 
-test("nav.references per-position soft failure → ERROR row", async () => {
+test("nav.references soft failure: server unavailable → ERROR row", async () => {
     const { references } = await load("./nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "svc.ts");
         await writeFile(file, "const x = 1;\n", "utf8");
         const out = await references(
-            { positions: [{ path: "svc.ts", line: 1, column: 1 }] },
+            { path: "svc.ts", line: 1, column: 1 },
             dir,
             throwingClientOf,
         );
@@ -160,14 +160,14 @@ test("nav.references per-position soft failure → ERROR row", async () => {
     }
 });
 
-test("nav.hover per-position soft failure → ERROR row", async () => {
+test("nav.hover soft failure: server unavailable → ERROR row", async () => {
     const { hover } = await load("./nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "svc.ts");
         await writeFile(file, "const x = 1;\n", "utf8");
         const out = await hover(
-            { positions: [{ path: "svc.ts", line: 1, column: 1 }] },
+            { path: "svc.ts", line: 1, column: 1 },
             dir,
             throwingClientOf,
         );
@@ -250,7 +250,7 @@ test("nav.references clean empty result: no references → parenthesized note, n
         const file = resolve(dir, "svc.ts");
         await writeFile(file, "const x = 1;\n", "utf8");
         const out = await references(
-            { positions: [{ path: "svc.ts", line: 1, column: 1 }] },
+            { path: "svc.ts", line: 1, column: 1 },
             dir,
             emptyResultClientOf(),
         );

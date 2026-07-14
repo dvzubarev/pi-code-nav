@@ -245,31 +245,21 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_references",
         label: "Code References",
         description:
-            "Find all references to the symbol(s) at the given position(s).",
+            "Find all references to the symbol at the given position (path, line, column). Returns one reference location per line plus a trailing `# N references` count. An empty result (no references) is a parenthesized note, not an error.",
         promptSnippet: "Find all references to the symbol.",
         promptGuidelines: [
             "Use code_references before renaming or refactoring to find every call site of a symbol. The count is a trailing `# N references`.",
+            "Output row format: `<path> (<line>:<col>)`. To drill into a reference, combine the row's path with its (line:col) and pass to code_definition / code_hover.",
         ],
         parameters: Type.Object({
-            positions: Type.Array(
-                Type.Object({
-                    path: Type.String({
-                        description: "File path (absolute or relative to cwd)",
-                    }),
-                    line: Type.Number({ description: "1-based line number" }),
-                    column: Type.Number({ description: "1-based column number" }),
-                }),
-                {
-                    description:
-                        "One or more (path, line, column) positions to look up.",
-                },
-            ),
+            path: Type.String({ description: "File path (absolute or relative to cwd)" }),
+            line: Type.Number({ description: "1-based line number of the symbol" }),
+            column: Type.Number({ description: "1-based column number of the symbol" }),
         }),
         async execute(_id, params, _signal, _onUpdate, ctx) {
-            // nav.references handles batched positions, per-position structured
-            // ERROR rows, the ### headers when batching, and the trailing
-            // `# N references` count comment. Never throws (soft failures are
-            // per-position ERROR rows).
+            // nav.references emits a structured ERROR row on recoverable failures
+            // (unknown language, cannot read, server unavailable); a clean empty
+            // result is a parenthesized note. Never throws.
             return text_result(
                 await nav.references(params, ctx.cwd, (lang) => state.pool.client(lang)),
             );
@@ -337,33 +327,21 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_hover",
         label: "Code Hover / Docs",
         description:
-            "Retrieve hover/documentation for the symbol(s) at the given position(s). Returns a signature-first line (`signature: <collapsed one-line signature>`) when one can be extracted, followed by the full hover markdown body (docstring, signature, type info). Accepts absolute paths, including third-party locations (nix store, site-packages, node_modules, system headers).",
+            "Retrieve hover/documentation for the symbol at the given position (path, line, column). Returns a signature-first line (`signature: <collapsed one-line signature>`) when one can be extracted, followed by the full hover markdown body (docstring, signature, type info). Accepts absolute paths, including third-party locations (nix store, site-packages, node_modules, system headers).",
         promptSnippet: "Get signature and doc string of a given function.",
         promptGuidelines: [
             "Use code_hover when you need signature and docstring of a function. You must know the function position to use this tool.",
             "code_hover emits a signature of a method first line before the raw markdown body — pick the first line cheaply for structured signature info without parsing the markdown.",
-            "When input array contains multiple entries, each is delimited with a `### <path>:<line>:<col>` sub-header.",
             "It accepts absolute paths, including third-party locations.",
         ],
         parameters: Type.Object({
-            positions: Type.Array(
-                Type.Object({
-                    path: Type.String({
-                        description: "File path (absolute or relative to cwd)",
-                    }),
-                    line: Type.Number({ description: "1-based line number" }),
-                    column: Type.Number({ description: "1-based column number" }),
-                }),
-                {
-                    description:
-                        "One or more (path, line, column) positions to look up.",
-                },
-            ),
+            path: Type.String({ description: "File path (absolute or relative to cwd)" }),
+            line: Type.Number({ description: "1-based line number of the symbol" }),
+            column: Type.Number({ description: "1-based column number of the symbol" }),
         }),
         async execute(_id, params, _signal, _onUpdate, ctx) {
-            // nav.hover handles batched positions, per-position structured ERROR
-            // rows, the ### headers when batching, and the signature-first line.
-            // Never throws (soft failures are per-position ERROR rows).
+            // nav.hover emits a structured ERROR row on recoverable failures
+            // (unknown language, cannot read, server unavailable). Never throws.
             return text_result(await nav.hover(params, ctx.cwd, (lang) => state.pool.client(lang)));
         },
     });

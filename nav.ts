@@ -19,13 +19,12 @@
  *     grammar, parse failed, bad params, server unavailable, no definition
  *     found, multiple definitions, could not resolve body range,
  *     pull-diagnostics request failed.
- *   - SOFT failures (per-position in the batched tools: references/hover;
- *     per-language in symbol) are emitted as a structured row
- *     `ERROR  <path>:<line>:<col>  <reason>` (or `ERROR  [lang]  <reason>`
- *     for symbol) that parses with the SAME column grammar as a data row.
- *     The leading `ERROR` token distinguishes them from data; a consumer
- *     splits rows on `\n` and checks the first token. Applies to: unknown
- *     language, cannot read, server unavailable.
+ *   - SOFT failures (references/hover; per-language in symbol) are emitted
+ *     as a structured row `ERROR  <path>:<line>:<col>  <reason>` (or
+ *     `ERROR  [lang]  <reason>` for symbol) that parses with the SAME column
+ *     grammar as a data row. The leading `ERROR` token distinguishes them
+ *     from data; a consumer splits rows on `\n` and checks the first token.
+ *     Applies to: unknown language, cannot read, server unavailable.
  * Clean empty results (no references found, no symbols, no diagnostics, no
  * identifiers) are NOT failures — they're returned as a
  *     parenthesized note like `(no references found for …)`, matching the
@@ -82,13 +81,6 @@ import {
 /** Provides a per-language LspClient on demand (mirrors ServerPool.client). */
 export interface ClientProvider {
     (lang: Lang): Promise<LspClient>;
-}
-
-/** A position triple as accepted by the batched-position tools. */
-export interface Position {
-    path: string;
-    line: number; // 1-based
-    column: number; // 1-based
 }
 
 // ---------------------------------------------------------------------------
@@ -702,10 +694,22 @@ export async function definition(
 
 // ---------------------------------------------------------------------------
 // 3. code_references
+//
+// Takes a single symbol position (path, line, column) and returns all
+// references to that symbol. Output is one reference location per line
+// (`<path> (<line>:<col>)`) plus a trailing `# N references` count comment.
+// A clean empty result (no references) is a parenthesized note, NOT an error —
+// an unused symbol is a legitimate outcome.
+//
+// Recoverable failures (unknown language, cannot read, server unavailable)
+// are emitted as a structured `ERROR  <path>:<line>:<col>  <reason>` row —
+// the leading `ERROR` token distinguishes them from data rows.
 // ---------------------------------------------------------------------------
 
 export interface ReferencesParams {
-    positions: Position[];
+    path: string;
+    line: number; // 1-based
+    column: number; // 1-based
 }
 
 export async function references(
@@ -713,69 +717,43 @@ export async function references(
     cwd: string,
     clientOf: ClientProvider,
 ): Promise<string> {
-    const posList: Position[] = params.positions;
-    const out: string[] = [];
-    const clients = new Map<Lang, LspClient>();
-    for (const pos of posList) {
-        const lang = langForFile(pos.path);
-        if (lang === null) {
-            out.push(
-                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
-                    renderErrorRow(pos.path, pos.line, pos.column, `unknown language for file`),
-            );
-            continue;
-        }
-        let client = clients.get(lang);
-        if (!client) {
-            try {
-                client = await clientOf(lang);
-            } catch (e) {
-                out.push(
-                    (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
-                        renderErrorRow(
-                            pos.path,
-                            pos.line,
-                            pos.column,
-                            `${lang}: server unavailable: ${e}`,
-                        ),
-                );
-                continue;
-            }
-            clients.set(lang, client);
-        }
-        const abs = toAbs(pos.path, cwd);
-        let text: string;
-        try {
-            text = await readFile(abs, "utf8");
-        } catch (e) {
-            out.push(
-                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
-                    renderErrorRow(pos.path, pos.line, pos.column, `cannot read ${abs}: ${e}`),
-            );
-            continue;
-        }
-        const refs = await client.references(abs, pos.line - 1, pos.column - 1, text);
-        if (refs.length === 0) {
-            // Clean empty result (the symbol has no references) — NOT a failure.
-            // Kept as a parenthesized note (matching outline/diagnostics/scan's
-            // empty-result convention) rather than an ERROR row, so an agent
-            // checking the leading token doesn't mistake a legitimate "unused
-            // symbol" for a failure.
-            out.push(
-                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
-                    `(no references found for ${pos.path}:${pos.line}:${pos.column})`,
-            );
-            continue;
-        }
-        const rendered = refs.map((r) => renderLocation(r));
-        const header = posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "";
-        // Drop the leading "N reference(s):" count line — it was prose the
-        // agent had to strip to get the list. The ### header already labels the
-        // position, and a trailing comment line (# N references) is trivially
-        // ignorable while keeping the count for the few callers that want it.
-        out.push(header + rendered.join("\n") + `\n# ${rendered.length} references`);
+    const lang = langForFile(params.path);
+    if (lang === null) {
+        return renderErrorRow(params.path, params.line, params.column, `unknown language for file`);
     }
-    return out.join("\n");
+    let client: LspClient;
+    try {
+        client = await clientOf(lang);
+    } catch (e) {
+        return renderErrorRow(
+            params.path,
+            params.line,
+            params.column,
+            `${lang}: server unavailable: ${e}`,
+        );
+    }
+    const abs = toAbs(params.path, cwd);
+    let text: string;
+    try {
+        text = await readFile(abs, "utf8");
+    } catch (e) {
+        return renderErrorRow(params.path, params.line, params.column, `cannot read ${abs}: ${e}`);
+    }
+    const refs = await client.references(abs, params.line - 1, params.column - 1, text);
+    if (refs.length === 0) {
+        // Clean empty result (the symbol has no references) — NOT a failure.
+        // Kept as a parenthesized note (matching outline/diagnostics/scan's
+        // empty-result convention) rather than an ERROR row, so an agent
+        // checking the leading token doesn't mistake a legitimate "unused
+        // symbol" for a failure.
+        return `(no references found for ${params.path}:${params.line}:${params.column})`;
+    }
+    const rendered = refs.map((r) => renderLocation(r));
+    // Drop the leading "N reference(s):" count line — it was prose the agent
+    // had to strip to get the list. A trailing comment line (# N references)
+    // is trivially ignorable while keeping the count for the few callers that
+    // want it.
+    return rendered.join("\n") + `\n# ${rendered.length} references`;
 }
 
 // ---------------------------------------------------------------------------
@@ -879,10 +857,21 @@ export async function rename(
 
 // ---------------------------------------------------------------------------
 // 6. code_hover
+//
+// Takes a single symbol position (path, line, column) and returns the
+// hover/documentation for that symbol. Output is signature-first: a
+// `signature: <collapsed one-line signature>` line (when one can be
+// extracted), then the full hover markdown body. A clean empty result (no
+// hover info) returns the parenthesized note `(no hover information)`.
+//
+// Recoverable failures (unknown language, cannot read, server unavailable)
+// are emitted as a structured `ERROR  <path>:<line>:<col>  <reason>` row.
 // ---------------------------------------------------------------------------
 
 export interface HoverParams {
-    positions: Position[];
+    path: string;
+    line: number; // 1-based
+    column: number; // 1-based
 }
 
 export async function hover(
@@ -890,61 +879,39 @@ export async function hover(
     cwd: string,
     clientOf: ClientProvider,
 ): Promise<string> {
-    const posList: Position[] = params.positions;
-    const out: string[] = [];
-    const clients = new Map<Lang, LspClient>();
-    for (const pos of posList) {
-        const lang = langForFile(pos.path);
-        if (lang === null) {
-            out.push(
-                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
-                    renderErrorRow(pos.path, pos.line, pos.column, `unknown language for file`),
-            );
-            continue;
-        }
-        let client = clients.get(lang);
-        if (!client) {
-            try {
-                client = await clientOf(lang);
-            } catch (e) {
-                out.push(
-                    (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
-                        renderErrorRow(
-                            pos.path,
-                            pos.line,
-                            pos.column,
-                            `${lang}: server unavailable: ${e}`,
-                        ),
-                );
-                continue;
-            }
-            clients.set(lang, client);
-        }
-        const abs = toAbs(pos.path, cwd);
-        let text: string;
-        try {
-            text = await readFile(abs, "utf8");
-        } catch (e) {
-            out.push(
-                (posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "") +
-                    renderErrorRow(pos.path, pos.line, pos.column, `cannot read ${abs}: ${e}`),
-            );
-            continue;
-        }
-        const h = await client.hover(abs, pos.line - 1, pos.column - 1, text);
-        const body = hoverText(h);
-        const header = posList.length > 1 ? `### ${pos.path}:${pos.line}:${pos.column}\n` : "";
-        // Signature-first: emit the collapsed one-line signature (when one can
-        // be extracted) as the first line, then the full hover markdown. This
-        // surfaces structured signature info that would otherwise be buried in
-        // a ```python fence or a multi-paragraph docstring. The `signature:`
-        // prefix lets a consumer pick the first line cheaply without parsing
-        // the markdown body.
-        const sig = hoverSignature(body);
-        const sigLine = sig ? `signature: ${sig}\n` : "";
-        out.push(header + sigLine + body);
+    const lang = langForFile(params.path);
+    if (lang === null) {
+        return renderErrorRow(params.path, params.line, params.column, `unknown language for file`);
     }
-    return out.join("\n");
+    let client: LspClient;
+    try {
+        client = await clientOf(lang);
+    } catch (e) {
+        return renderErrorRow(
+            params.path,
+            params.line,
+            params.column,
+            `${lang}: server unavailable: ${e}`,
+        );
+    }
+    const abs = toAbs(params.path, cwd);
+    let text: string;
+    try {
+        text = await readFile(abs, "utf8");
+    } catch (e) {
+        return renderErrorRow(params.path, params.line, params.column, `cannot read ${abs}: ${e}`);
+    }
+    const h = await client.hover(abs, params.line - 1, params.column - 1, text);
+    const body = hoverText(h);
+    // Signature-first: emit the collapsed one-line signature (when one can
+    // be extracted) as the first line, then the full hover markdown. This
+    // surfaces structured signature info that would otherwise be buried in
+    // a ```python fence or a multi-paragraph docstring. The `signature:`
+    // prefix lets a consumer pick the first line cheaply without parsing
+    // the markdown body.
+    const sig = hoverSignature(body);
+    const sigLine = sig ? `signature: ${sig}\n` : "";
+    return sigLine + body;
 }
 
 // ---------------------------------------------------------------------------
@@ -1178,10 +1145,10 @@ function renderDiagnostics(path: string, diags: Diagnostic[]): string {
 // ---------------------------------------------------------------------------
 // Error type: the caller (index.ts) decides whether to return isError.
 // Unknown-language is a top-level hard failure for the single-file tools
-// (outline/rename/symbols_in/diagnostics); the batched tools (definition/
-// references/hover) push it inline per-position. We throw here so index.ts can
-// mark isError: true for the single-file case; the batched functions catch it
-// themselves (they never let it escape — they check langForFile inline).
+// (outline/tree/definition/rename/scan/diagnostics); references/hover emit
+// it inline as an ERROR row. We throw here so index.ts can mark
+// isError: true for the single-file case; references/hover check
+// langForFile inline and emit an ERROR row instead of letting it escape.
 // ---------------------------------------------------------------------------
 
 export class UnknownLanguageError extends Error {

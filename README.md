@@ -17,13 +17,9 @@ plus one diagnostic reporter:
 | `code_scan` | tree-sitter (WASM, in-process)     | Identifier table for a line range — the third-party entry point |
 | `code_diagnostics`| LSP `textDocument/diagnostic` (pull) | Errors/warnings for a file, fetched on demand       |
 
-`code_hover` and `code_references` accept an optional `positions` array of
-`{path, line, column}` objects in addition to the scalar `path`/`line`/`column`
-form, so the agent can batch several symbol lookups in one tool call. When more
-than one position is passed, each result block is prefixed with
-`### <path>:<line>:<col>` to correlate results to inputs. `code_definition`
-takes a **scalar** `(path, line, column)` — it returns the verbatim source
-body of ONE symbol (no batching); its output is a header line
+`code_definition`, `code_hover`, and `code_references` each take a **scalar**
+`(path, line, column)` — one symbol per call (no batching). `code_definition`
+returns the verbatim source body of the symbol: a header line
 `<defPath>:<sl>-<el>` followed by the raw source lines (no code fence), ready
 to copy straight into an edit.
 
@@ -117,7 +113,7 @@ see `loads`'s signature/source, but `cbor2` is in `site-packages`:
    Symbols in app.py:42-58 (1-based, reusable as code_* input):
      call   loads   app.py:44:18
 
-2) code_hover(positions=[{path:"app.py", line:44, column:18}])
+2) code_hover(path="app.py", line=44, column=18)
      →
    app.py:44:18 — loads
    def loads(data: bytes, /) -> Any: ...

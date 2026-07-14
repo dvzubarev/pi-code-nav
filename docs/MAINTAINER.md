@@ -391,45 +391,34 @@ found" is a HARD failure there (no source code to return).
 Subcommands (root = cwd or `CODE_NAV_ROOT`):
 ```
   outline <file>
-  hover <file> <line:1> <col:1> [<file> <line> <col> ...]
+  hover <file> <line:1> <col:1>
   definition <file> <line:1> <col:1> [--list-symbols]
-  references <file> <line:1> <col:1> [<file> <line> <col> ...]
+  references <file> <line:1> <col:1>
   rename <file> <line:1> <col:1> <newName>
   symbol <query> [python|cpp|bash]
 ```
-`hover`/`references` accept **one or more** `(file line col)` triples as a
-`positions` array — the extras are batched through one LSP client per
-language. When more than one position is passed, each result block is
-prefixed with `### <path>:<line>:<col>` so the agent/user can correlate
-results to inputs. Single-position calls produce no header.
-`definition` takes a **single** `(file line col)` triple — it returns the
-verbatim source body of one symbol (no batching). Output format: a header
-line `<defPath>:<sl>-<el>` (1-based inclusive line range of the body) then
-the raw source lines (no code fence). It THROWS on any failure (no
-definition found, multiple definitions, cannot resolve body, etc.) — the
-contract is "source code or a hard error", no fallbacks.
+`hover`, `definition`, and `references` each take a **single** `(file line
+col)` triple — one symbol per call (no batching). `definition` returns the
+verbatim source body of the symbol: a header line `<defPath>:<sl>-<el>`
+(1-based inclusive line range of the body) then the raw source lines (no code
+fence). It THROWS on any failure (no definition found, multiple definitions,
+cannot resolve body, etc.) — the contract is "source code or a hard error",
+no fallbacks. `hover` and `references` emit a structured `ERROR` row on
+recoverable failures (unknown language, cannot read, server unavailable);
+a clean empty result (no references / no hover info) is a parenthesized note.
 
-### The `positions` array vs scalar input
+### Scalar `(path, line, column)` input — no `positions` array
 
-`code_hover` and `code_references` take a **required** `positions:
-Position[]` array — there is NO scalar `path`/`line`/`column` form for them.
-Even a single lookup is `{ positions: [{ path, line, column }] }`. This lets
-the agent batch several symbol lookups in a single tool call — one round-trip
-instead of N — which is meaningfully cheaper for the model and for the server
-(one client per language, documents opened once), and it keeps the schema
-simple (one input shape, no XOR validation between a scalar triple and an
-array). (The logic lives in `nav.ts`; both `index.ts` and
-`scripts/nav-cli.mjs` call it.)
-
-`code_definition` takes a **scalar** `(path, line, column)` — NOT a
-`positions` array. Its contract is "return the verbatim source body of ONE
-symbol, ready to copy into an edit"; batching would muddle that (multiple
-bodies, ambiguous edit targets). A single body per call keeps the output
-clean: header `<defPath>:<sl>-<el>` + raw source + optional symbol table.
+`code_definition`, `code_hover`, and `code_references` each take a **scalar**
+`(path, line, column)` — one symbol per call. There is NO `positions` array
+form (the earlier batching design was dropped: one body/result per call
+keeps the output clean and the schema simple — no XOR validation between a
+scalar triple and an array). (The logic lives in `nav.ts`; both `index.ts`
+and `scripts/nav-cli.mjs` call it.)
 
 `code_outline`, `code_search_symbol`, and `code_rename` are inherently
-single-symbol-per-call and do **not** take a `positions` array (rename is
-destructive; outline/symbol are already list-shaped).
+single-symbol-per-call and also take scalar params (rename is destructive;
+outline/symbol are already list-shaped).
 
 ### Dependencies — do not bump without reading
 

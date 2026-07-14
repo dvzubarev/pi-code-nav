@@ -149,7 +149,7 @@ runOrSkip("code_hover on Point.__init__ signature shows x param", async () => {
         // __init__ is at second.py:11:9 (the `def`). Hovering there should
         // surface the signature, which mentions the `x` parameter.
         const out = await nav.hover(
-            { positions: [{ path: "second.py", line: 11, column: 9 }] },
+            { path: "second.py", line: 11, column: 9 },
             ws.root,
             ws.clientOf,
         );
@@ -169,7 +169,7 @@ runOrSkip("code_hover emits a signature-first line before the markdown body", as
         // raw markdown body. This surfaces structured signature info that would
         // otherwise be buried inside a ```python fence.
         const out = await nav.hover(
-            { positions: [{ path: "second.py", line: 11, column: 9 }] },
+            { path: "second.py", line: 11, column: 9 },
             ws.root,
             ws.clientOf,
         );
@@ -193,7 +193,7 @@ runOrSkip("code_references on Point class lists __init__ usages", async () => {
         // Point is defined at second.py:10:7. Its references include its use as
         // a default parameter in TempC.__init__ (p: Point = Point()).
         const out = await nav.references(
-            { positions: [{ path: "second.py", line: 10, column: 7 }] },
+            { path: "second.py", line: 10, column: 7 },
             ws.root,
             ws.clientOf,
         );

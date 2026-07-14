@@ -19,20 +19,17 @@
 // Usage:
 //   node nav-cli.mjs outline <file>
 //   node nav-cli.mjs tree <file> <pattern>
-//   node nav-cli.mjs hover <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
+//   node nav-cli.mjs hover <file> <line:1-based> <col:1-based>
 //   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [--list-symbols]
-//   node nav-cli.mjs references <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
+//   node nav-cli.mjs references <file> <line:1-based> <col:1-based>
 //   node nav-cli.mjs rename <file> <line:1-based> <col:1-based> <newName>
 //   node nav-cli.mjs symbol <query> [python|cpp|bash|typescript]
 //   node nav-cli.mjs scan <file> [<startLine:1-based> <endLine:1-based>] [--pattern <regexp>] [--docs] [--roles type,call,member,import,var]
 //   node nav-cli.mjs diagnostics <file>
 //
-// hover/definition/references accept one or more (file line col) triples; the
-// extra triples are batched through one LSP client per language, mirroring the
-// required `positions` array parameter the code_hover/code_references tools
-// accept in index.ts (the argv triples are collected into that array
-// internally). code_definition takes a SINGLE (file line col) triple — it
-// returns the verbatim source body of one symbol (no batching).
+// hover/definition/references each take a SINGLE (file line col) triple —
+// one symbol per call. definition also accepts a trailing --list-symbols flag
+// (mirrors the list_symbols parameter of the code_definition tool).
 //
 // Examples:
 //   node nav-cli.mjs outline temp.py
@@ -67,17 +64,18 @@ function usage() {
     console.error(`usage (root: ${ROOT}):
   node nav-cli.mjs outline <file>
   node nav-cli.mjs tree <file> <pattern>
-  node nav-cli.mjs hover <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
+  node nav-cli.mjs hover <file> <line:1-based> <col:1-based>
   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [--list-symbols]
-  node nav-cli.mjs references <file> <line:1-based> <col:1-based> [<file> <line> <col> ...]
+  node nav-cli.mjs references <file> <line:1-based> <col:1-based>
   node nav-cli.mjs rename <file> <line:1-based> <col:1-based> <newName>
   node nav-cli.mjs symbol <query> [python|cpp|bash|typescript]
   node nav-cli.mjs scan <file> [<startLine:1-based> <endLine:1-based>] [--pattern <regexp>] [--docs] [--roles type,call,member,import,var]
   node nav-cli.mjs diagnostics <file>
 
-hover/definition/references accept one or more (file line col) triples.
-outline prints a bloat-free structural overview (classes, methods, functions,
-  properties/fields) — constants/variables are dropped, no arguments.
+hover/definition/references each take a SINGLE (file line col) triple — one
+  symbol per call. outline prints a bloat-free structural overview (classes,
+  methods, functions, properties/fields) — constants/variables are dropped, no
+  arguments.
 tree takes a regexp matched against symbol names. DWYM: a class/interface/struct
   match prints ONLY its direct children (methods/properties/fields), each
   enriched with a hover signature when the server detail is empty (tsserver/ty);
@@ -134,21 +132,15 @@ async function main() {
         if (!path || !pattern) usage();
         console.log(await nav.tree({ path, pattern }, ROOT, clientOf));
     } else if (cmd === "hover" || cmd === "references") {
-        // Accept one or more (file line col) triples. Each triple is batched
-        // through one LSP client per language (mirroring the `positions` array
-        // the code_hover/code_references tools accept in nav.ts).
-        if (rest.length < 3 || rest.length % 3 !== 0) usage();
-        const positions = [];
-        for (let i = 0; i + 2 < rest.length; i += 3) {
-            positions.push({
-                path: rest[i],
-                line: parseInt(rest[i + 1], 10),
-                column: parseInt(rest[i + 2], 10),
-            });
-        }
-        if (positions.length === 0) usage();
-        if (cmd === "hover") console.log(await nav.hover({ positions }, ROOT, clientOf));
-        else console.log(await nav.references({ positions }, ROOT, clientOf));
+        // Both take a SINGLE (file line col) triple — one symbol per call.
+        if (rest.length !== 3) usage();
+        const params = {
+            path: rest[0],
+            line: parseInt(rest[1], 10),
+            column: parseInt(rest[2], 10),
+        };
+        if (cmd === "hover") console.log(await nav.hover(params, ROOT, clientOf));
+        else console.log(await nav.references(params, ROOT, clientOf));
     } else if (cmd === "definition") {
         // definition takes a SINGLE (file line col) triple — it returns the
         // verbatim source body of one symbol (no batching). --list-symbols is
