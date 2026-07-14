@@ -14,72 +14,13 @@ Tool params are 1-based; LSP is 0-based — translation happens in the tool
 layer.
 
 ## Files
+See Quick orientation for the maintainer in docs/MAINTAINER.md
 
-- `index.ts` — extension entry. Registers 3 slash commands
-  (`/code-nav`, `/code-nav:off`, `/code-nav:status`), the `session_shutdown`
-  hook, and a `before_agent_start` system-prompt hook (appends a grouped tool
-  overview while enabled) at load; `registerTools()` (only called by
-  `/code-nav`) is now a thin shim around the tool implementations in `nav.ts`.
-  `ServerPool` manages per-language `LspClient` instances.
-- `render.ts` — pure rendering + small helpers (no pi, no LSP, no fs beyond
-  readFile/writeFile in the WorkspaceEdit applier): `symbolKindName`,
-  `renderDocSymbol`, `renderSymbolInfo`, `renderLocation`, `renderDiagnostic`,
-  `hoverText`, `hoverSignature`, `resolveDefBodyRange`, `resolveSymbolSelStart`,
-  `applyWorkspaceEdit`, `langForFile`, `EXT_LANG`. Shared verbatim by
-  `index.ts`, the CLI harness, and the e2e tests — this is what killed the
-  old "keep nav-cli.mjs in sync with index.ts by hand" landmine.
-- `nav.ts` — the nine tool implementations (`outline`, `tree`, `definition`,
-  `references`, `symbol`, `rename`, `hover`, `scan`, `diagnostics`) as
-  plain async functions `(params, cwd, clientOf) => text`. No pi dependency;
-  takes a `ClientProvider` (`(lang) => LspClient`) instead of `ServerPool`.
-  `index.ts`'s `registerTools` and `scripts/nav-cli.mjs` both call these, so
-  the CLI and automated tests exercise the EXACT code path the agent uses.
-- `lsp-client.ts` — `LspClient` class: spawn, initialize handshake, per-method
-  wrappers, shutdown. Pure transport, no pi dependency. Imports from
-  `vscode-languageserver-protocol/node` (NOT the bare package — see below).
-  An optional 4th ctor arg `logDir?` (set by the extension to
-  `~/.pi/agent/logs/code-nav`, unset by the CLI harness/tests) tees each
-  spawned server's stderr to `<logDir>/<lang>-<pid>.log` and removes the file
-  on shutdown/exit (`closeLog()`). Named by PID so concurrent pi instances
-  never collide.
-- `tree-sitter-parse.ts` — `parseSymbols()` parses a line range with WASM
-  tree-sitter, returns a deduplicated symbol table. No pi or LSP dependency.
-- `test/` — unit tests for `tree-sitter-parse.ts` (pure tree-sitter, no
-  servers, `*.test.mjs`) + end-to-end tests for `nav.ts` (real language
-  servers, `*.e2e.mjs`). Run `npm test` (unit) / `npm run test:e2e` (e2e).
-- `scripts/nav-cli.mjs` — CLI harness exercising the eight tools
-  without pi/LLM. Thin argv-parser around `nav.ts` (no duplicated logic).
-- `docs/MAINTAINER.md` — the "why" behind every decision and the landmines.
-  **Read before touching `index.ts` or `lsp-client.ts`.**
-- `docs/code_scan.md` — deep-dive on the tree-sitter tool.
+### Documentation strategy
 
-## Critical landmines (do NOT "fix" these)
-
-1. **Import from `vscode-languageserver-protocol/node`, never the bare
-   package.** The bare package's nested jsonrpc copy doesn't install its RAL;
-   the `/node` subpath does. Switching "to simplify" breaks runtime.
-2. **Use string LSP method names** (`conn.sendRequest("textDocument/hover")`),
-   not `.type` constants. The `.type` overloads fail type-check across
-   protocol versions.
-3. **Tool registration is deferred.** `registerTools()` runs only from the
-   `/code-nav` command, not `session_start`. Most sessions pay zero cost.
-4. **No idle timeout on servers.** ccls re-indexing is expensive; the user
-   wants servers alive for the whole session.
-5. **`code_diagnostics` is pull-first with a bounded push fallback.** It
-   tries the LSP 3.17 `textDocument/diagnostic` request first (pyright/ty
-   answer it); on rejection (tsserver/bash-language-server/ccls) it falls back
-   to the `publishDiagnostics` notification cache — a latest-wins per-URI map
-   populated by a handler in `LspClient.start()`, read with a bounded ~1.2s
-   poll. The tool contract stays synchronous (one call → one result string).
-   Do NOT convert this to an open-ended/unbounded notification collector the
-   tool waits on unpredictably — that's the async collection the user
-   rejected. The push fallback REQUIRES advertising
-   `textDocument.publishDiagnostics` in client caps (tsserver gates its whole
-   diagnostics flow on `Boolean(clientCaps.textDocument.publishDiagnostics)`;
-   without it, zero notifications).
-6. **1-based ↔ 0-based translation.** All tool params are 1-based; every tool
-   does `line - 1` / `column - 1` before calling LSP. Output is uniformly
-   1-based so positions round-trip between tools.
+The docs under `docs/` are split by **theme**, not by source file, so a
+maintainer (human or agent) can load only what a task touches without
+pulling the whole history into context, see **`MAINTAINER.md`** for more details.
 
 ## Development
 

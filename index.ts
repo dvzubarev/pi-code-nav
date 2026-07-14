@@ -11,7 +11,7 @@
  *   code_tree           — pattern-driven pruned DocumentSymbol tree with signatures (parallel hover)
  *   code_search_symbol  — ranked workspace-wide symbol lookup by name
  *   code_scan           — identifier scan of a file or line range (positions + roles)
- *                         (the third-party entry point; see MAINTAINER.md)
+ *                         (the third-party entry point; see docs/code_scan.md)
  *
  *   DETAIL TOOLS (consume path + 1-based line + column):
  *   code_definition     — location + full source body of a symbol's definition

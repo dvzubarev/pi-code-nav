@@ -7,7 +7,7 @@
  * third-party / stdlib / system symbols, where `workspace/symbol`
  * (`code_search_symbol`) is useless because LSP `workspace/symbol` is
  * workspace-scoped by spec (it indexes your project tree, never site-packages
- * or /usr/include). See MAINTAINER.md "The problem the six tools do not solve".
+ * or /usr/include). See code_scan.md "What it solves".
  *
  * The design: parse a line range of a REAL file with tree-sitter, walk the
  * syntax tree collecting identifier-class nodes, and emit a table of
@@ -36,7 +36,7 @@
  * tree-sitter version satisfying all three grammars without --legacy-peer-deps).
  * The WASM path has no native compilation, no peer conflicts, and the grammars
  * ship prebuilt. This is the first runtime dep beyond vscode-jsonrpc /
- * vscode-languageserver-protocol; see MAINTAINER.md "Dependency note".
+ * vscode-languageserver-protocol; see code_scan.md "Dependency — WASM, not native bindings".
  */
 
 import { Parser, Language } from "web-tree-sitter";
@@ -416,7 +416,7 @@ export interface ParseSymbolsOptions {
  * Parse a line range of `text` with tree-sitter and return a deduplicated
  * table of identifier-class symbols with absolute 1-based positions and roles.
  *
- * Steps (mirrors MAINTAINER.md "The design"):
+ * Steps (mirrors code_scan.md "What it solves"):
  *   1. Slice lines [startLine, endLine] (1-based, inclusive) from the full text.
  *   2. Parse the slice directly — NO wrapping, NO scratch file. tree-sitter's
  *      error-recovery handles function-body fragments.

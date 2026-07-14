@@ -2,8 +2,10 @@
 
 A checklist for adding support for a new language to code-nav. Every touch
 point is listed in the order you'll need to touch them, with the constraint or
-landmine behind each step. Read this alongside `MAINTAINER.md` (the "why") and
-the existing python/cpp/bash/typescript branches for reference.
+landmine behind each step. Read this alongside the themed docs in `docs/`
+(`DESIGN.md` for the "why", `lsp.md` for LSP landmines, `IMPL.md` for the
+extension glue, `code_scan.md` for tree-sitter) and the existing
+python/cpp/bash/typescript branches for reference.
 
 The work splits into four independent layers — LSP server, tree-sitter
 parsing, the tool/registration layer, and the CLI test harness — plus docs and
@@ -21,7 +23,7 @@ order but must land together.
    - Auto-detection (like Python's ty/pyright fallback) is the exception, not
      the default. Only add it if there are two real servers for the language
      and one is strictly better (see `resolveConfig`'s Python branch and the
-     "Python server auto-detection" section of MAINTAINER.md). Otherwise a
+     "Python server auto-detection" section of `DESIGN.md`). Otherwise a
      plain `DEFAULTS` entry is correct.
 
 3. **`languageIdFor` — only if the LSP convention distinguishes file kinds.**
@@ -148,14 +150,17 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
 
 16. Update `README.md` (intro line, built-in defaults, file-extension →
     language table, dependencies grammar list) and `AGENTS.md` (the "What
-    this is" language-server list). Update `docs/MAINTAINER.md`: the
-    language-server paragraph, the diagnostics capability table (if the new
-    server rejects the pull model, add a row), the `TsLang`/`Lang`
-    relationship paragraph, the dependency note's grammar list, and add a
+    this is" language-server list). Update `docs/DESIGN.md`: the supported-
+    languages paragraph in the intro. Update `docs/lsp.md`: add a
     server-specific subsection if the server has quirks (lazy project load,
-    no pull diagnostics, non-standard SymbolKind, etc.). Update the
-    node-types table in `docs/code_scan.md` with the new language's
-    row.
+    non-standard SymbolKind, no pull diagnostics, etc.); the
+    `TsLang`/`Lang` relationship lives there too. Update
+    `docs/code_diagnostics.md`: add a row to the capability table if the new
+    server rejects the pull model. Update the node-types table in
+    `docs/code_scan.md` with the new language's row. If the new language has
+    a per-tool design worth recording (e.g. third-party discovery quirks,
+    qualified-name handling), add a `docs/code_<tool>.md` and add a row to
+    the table in `MAINTAINER.md` (plus the `docs/` list in `AGENTS.md`).
 
 ## Final checks
 

@@ -11,7 +11,7 @@
 //     rendered inline, no hover round-trips).
 //   - code_tree uses detail directly and skips the hover for rows that have
 //     it (no redundant round-trip to duplicate the server's own declaration).
-// Both properties are asserted here. See docs/outline-constants.md.
+// Both properties are asserted here. See docs/code_outline.md.
 //
 // Run:  npm run test:e2e
 

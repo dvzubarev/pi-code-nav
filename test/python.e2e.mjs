@@ -94,7 +94,7 @@ runOrSkip("code_outline on second.py shows Point and TempC classes", async () =>
         );
         // code_outline keeps only structural kinds (class/method/function/...).
         // The module-level Constant GLOB (second.py:8) is dropped — no opt-out.
-        // See docs/outline-constants.md.
+        // See docs/code_outline.md.
         assert.ok(
             !lines.some((l) => /Constant GLOB/.test(l)),
             `GLOB should be hidden (not a structural kind):\n${out}`,

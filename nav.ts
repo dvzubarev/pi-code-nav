@@ -263,7 +263,7 @@ export interface OutlineParams {
  * Dropped: Variable(13), Constant(14), Property(7), Field(8), and everything
  * else (Enum/Namespace/etc. — none appear in practice for our servers; if
  * one ever does, dropping it is the safe default for a "compact overview").
- * See docs/outline-constants.md.
+ * See docs/code_outline.md.
  */
 const OUTLINE_KEEP_KINDS = new Set([5, 6, 9, 11, 12, 23]);
 

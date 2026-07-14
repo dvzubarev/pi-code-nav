@@ -1034,7 +1034,7 @@ export class LspClient {
      * Uses string method names (not DocumentDiagnosticRequest.type) for the same
      * reason the other methods do — the .type ProtocolRequestType overloads fail
      * to type-check against the MessageConnection in some 3.17/3.18
-     * configurations (see MAINTAINER.md "LSP method calls").
+     * configurations (see lsp.md "LSP method calls").
      */
     async pullDiagnostics(absPath: string): Promise<Diagnostic[] | null> {
         await this.ensureReady();
@@ -1105,7 +1105,7 @@ export class LspClient {
         // exits fast), and jsonrpc's sendNotification returns a Promise<void>
         // whose rejection would otherwise be unhandled. The try/catch above only
         // catches synchronous throws, not this async rejection. Tolerating it is
-        // consistent with shutdown()'s race-tolerance contract (see MAINTAINER.md).
+        // consistent with shutdown()'s race-tolerance contract (see lsp.md "Server lifecycle").
         try {
             const p = conn.sendNotification("exit", null) as unknown as Promise<void> | undefined;
             if (p && typeof p.catch === "function") p.catch(() => {});
