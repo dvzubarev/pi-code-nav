@@ -125,7 +125,7 @@ user's overrides should be able to *replace* a nested key like
 These are not arbitrary defaults; they mirror:
 ```elisp
 (setq ccls-initialization-options
-      `(:cache (:directory ,(concat (getenv "HOME") "/.cache/ccls"))
+      `(:cache (:directory ,(concat (getenv "HOME") "/.cache/ccls-pi"))
                :compilationDatabaseDirectory "build"))
 (setq lsp-pyright-multi-root nil
       lsp-pyright-use-library-code-for-types t)

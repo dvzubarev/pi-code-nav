@@ -247,7 +247,7 @@ Match the user's Emacs config.
 **ccls** (`cpp`):
 ```json
 {
-  "cache": { "directory": "~/.cache/ccls" },
+  "cache": { "directory": "~/.cache/ccls-pi" },
   "compilationDatabaseDirectory": "build"
 }
 ```

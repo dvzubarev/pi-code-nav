@@ -52,7 +52,7 @@ const CCLS_CONFIG: ServerConfig = {
     command: "ccls",
     args: [],
     initOptions: {
-        cache: { directory: `${process.env.HOME}/.cache/ccls` },
+        cache: { directory: `${process.env.HOME}/.cache/ccls-pi` },
         compilationDatabaseDirectory: "build",
     },
 };
