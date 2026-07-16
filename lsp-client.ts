@@ -384,6 +384,26 @@ export class LspClient {
      * this map. Cleared on server exit/shutdown alongside openDocs.
      */
     private diagnosticsByUri = new Map<string, Diagnostic[]>();
+    /**
+     * ccls project-wide indexing progress, tracked via the LSP work-done-
+     * progress protocol. ccls parses ALL translation units from
+     * compile_commands.json on initialize (cold cache) and reports progress
+     * through $/progress notifications on a token it registers up-front via
+     * a window/workDoneProgress/create SERVER request. We advertise
+     * window.workDoneProgress in initialize and answer that create request
+     * (see start()) so ccls emits begin/report/end on the "index" token.
+     * waitForIndexingComplete() blocks until "end" arrives — on a warm cache
+     * ccls loads indexes from disk and never sends "begin", so a short
+     * no-begin timeout lets us proceed. ensureProjectLoaded() uses this so
+     * code_search_symbol sees symbols from ALL TUs, not just an opened file.
+     * Only ccls emits this; other servers index eagerly on initialize
+     * (pyright/ty/bash) or per-file (tsserver), and we ignore progress on any
+     * token other than "index". State machine: idle (no begin yet) →
+     * in_progress (begin seen) → ended (end seen).
+     */
+    private indexState: "idle" | "in_progress" | "ended" = "idle";
+    private indexBeginResolvers: Array<() => void> = [];
+    private indexEndResolvers: Array<() => void> = [];
 
     constructor(lang: Lang, rootPath: string, cfg: ServerConfig, logDir?: string) {
         this.lang = lang;
@@ -485,6 +505,7 @@ export class LspClient {
             this.openDocs.clear();
             this.diagnosticsByUri.clear();
             this.extraWorkspaceFolders = [];
+            this.resetIndexingState();
             this.closeLog();
             // Record the spawn failure so the body's post-listen guard can
             // throw it (and skip the initialize write) instead of letting
@@ -591,6 +612,7 @@ export class LspClient {
             this.openDocs.clear();
             this.diagnosticsByUri.clear();
             this.extraWorkspaceFolders = [];
+            this.resetIndexingState();
             // Remove the per-server log file — the server is gone, its log is
             // no longer interesting. Fire-and-forget; closeLog is idempotent.
             this.closeLog();
@@ -609,6 +631,29 @@ export class LspClient {
                 const uri = params.uri;
                 const diags = params.diagnostics ?? [];
                 this.diagnosticsByUri.set(uri, diags);
+            },
+        );
+        // ccls reports project-wide indexing via the LSP work-done-progress
+        // protocol. It registers the "index" token through a SERVER-initiated
+        // window/workDoneProgress/create REQUEST (has both id and method) and
+        // then pushes $/progress notifications (begin/report/end) on that
+        // token. We must (a) answer the create request (return null) so ccls
+        // proceeds to emit $/progress, and (b) feed $/progress into
+        // handleIndexProgress so waitForIndexingComplete can gate on "end".
+        // Registered BEFORE initialize (like publishDiagnostics) so the create
+        // request ccls sends ~1s after initialize is never dropped. String
+        // method names per the landmine #2 rule. Only ccls uses this; other
+        // servers send no such request, and the handlers are inert for them.
+        conn.onRequest(
+            "window/workDoneProgress/create",
+            // params: { token: string | number }. Accept any token ccls
+            // registers; the result is void (null on the wire).
+            () => null,
+        );
+        conn.onNotification(
+            "$/progress",
+            (params: { token?: string | number; value?: { kind?: string } }) => {
+                this.handleIndexProgress(params);
             },
         );
         // If the transport closes without the process exiting (reader hits
@@ -691,6 +736,15 @@ export class LspClient {
                 },
                 workspace: {
                     symbol: {},
+                },
+                // Opt into the work-done-progress protocol so ccls reports
+                // project-wide indexing via $/progress (see handleIndexProgress
+                // / waitForIndexingComplete). Without this, ccls still sends the
+                // window/workDoneProgress/create request but does not emit
+                // begin/report/end, leaving us no deterministic "indexing done"
+                // signal. Other servers ignore this capability.
+                window: {
+                    workDoneProgress: true,
                 },
             },
             initializationOptions: initOptions,
@@ -819,31 +873,139 @@ export class LspClient {
 
     /**
      * Ensure the language server has loaded a project (index) before a request
-     * that requires one. Only the TypeScript server (tsserver) needs this: it
-     * loads projects lazily on the first didOpen of a file in that project, and
-     * `workspace/symbol` (navto) throws "No Project." if invoked before any file
-     * has been opened. This is a no-op for servers that index eagerly on
-     * `initialize` (ccls/pyright/ty/bash-language-server).
+     * that requires one. Two servers need a warm-up:
+     *   - tsserver loads its project lazily on the first didOpen of a file in
+     *     that project; `workspace/symbol` (navto) throws "No Project." before
+     *     then. didOpen alone suffices (project load is triggered on open).
+     *   - ccls populates its `workspace/symbol` index by parsing ALL the
+     *     translation units listed in compile_commands.json. On a COLD cache
+     *     this takes several seconds (ccls reports it via $/progress — see
+     *     waitForIndexingComplete); until it finishes, workspace/symbol sees
+     *     symbols from only a subset of TUs. On a WARM cache ccls loads indexes
+     *     from disk near-instantly and no $/progress "begin" is ever sent, so
+     *     waitForIndexingComplete returns after a short no-begin timeout.
+     * pyright/ty/bash index eagerly on `initialize` and need no warm-up.
      *
      * Implementation: if no document has been opened yet, find one source file
-     * of this server's language under the workspace root and open it. The file
-     * stays open for the session (matching the no-close-until-shutdown policy).
-     * Returns true if a project is known to be loaded (a doc is open or one was
-     * just opened); false if no matching file could be found.
+     * of this server's language under the workspace root and open it (the file
+     * stays open for the session — matching the no-close-until-shutdown
+     * policy); for ccls, also wait for background indexing to finish so
+     * workspace/symbol sees the WHOLE project. Returns true if a project is
+     * known to be loaded; false if no matching source file could be found.
      */
     async ensureProjectLoaded(): Promise<boolean> {
         await this.ensureReady();
         if (this.openDocs.size > 0) return true; // a doc is open → project loaded
-        if (this.lang !== "typescript") return true; // only tsserver needs this
+        if (this.lang !== "typescript" && this.lang !== "cpp") return true;
         const file = await findFirstSourceFile(this.rootUri, this.lang);
         if (!file) return false;
         try {
             const text = await readFile(file, "utf8");
             await this.openDocument(file, text);
+            // ccls dispatches the initial index at `initialize`, independent of
+            // didOpen — the $/progress "begin" typically arrives ~1.4s after
+            // initialize. Wait for the whole-project index to finish (or for
+            // the short no-begin timeout on a warm cache) before the caller's
+            // workspace/symbol runs, so symbols from ALL TUs are findable.
+            if (this.lang === "cpp") await this.waitForIndexingComplete();
             return true;
         } catch {
             return false;
         }
+    }
+
+    /**
+     * Drive the ccls indexing state machine from a $/progress notification
+     * on the "index" token. begin → in_progress (resolve anyone waiting for a
+     * begin); end → ended (resolve anyone waiting for end). report is ignored.
+     * Notifications on any other token are ignored (only ccls's "index" token
+     * is meaningful to us). Safe to call for any language — only ccls emits
+     * this, and the token gate makes it inert otherwise.
+     */
+    private handleIndexProgress(params: {
+        token?: string | number;
+        value?: { kind?: string };
+    }): void {
+        if (params?.token !== "index") return;
+        const kind = params?.value?.kind;
+        if (kind === "begin") {
+            this.indexState = "in_progress";
+            const rs = this.indexBeginResolvers;
+            this.indexBeginResolvers = [];
+            for (const r of rs) r();
+        } else if (kind === "end") {
+            this.indexState = "ended";
+            const rs = this.indexEndResolvers;
+            this.indexEndResolvers = [];
+            for (const r of rs) r();
+        }
+        // "report" carries a percentage but we don't render it — ignore.
+    }
+
+    /**
+     * Block until ccls's project-wide indexing is known to be done, with two
+     * bounded outcomes:
+     *   - COLD cache: a $/progress "begin" arrives (we're mid-index) → await
+     *     the "end" notification, up to `endMs` (default 60s — generous; the
+     *     DiskANN project cold-indexes in ~15s, and the bound only guards
+     *     against a wedged server).
+     *   - WARM cache / tiny project: no "begin" is ever sent (ccls loads
+     *     indexes from disk, completes within one mainloop tick, never enters
+     *     the in_progress branch) → return after `noBeginMs` (default 3s —
+     *     long enough to catch a cold "begin" that arrives ~1.4s after
+     *     initialize, short enough not to stall every warm first-search).
+     * Idempotent and cheap to call repeatedly: once "ended" is seen it returns
+     * immediately. Also returns immediately if begin+end both arrive during
+     * the no-begin wait. No-op for non-ccls callers (only ensureProjectLoaded's
+     * cpp branch invokes this).
+     */
+    async waitForIndexingComplete(
+        noBeginMs = 3000,
+        endMs = 60000,
+    ): Promise<void> {
+        if (this.indexState === "ended") return;
+        if (this.indexState === "in_progress") {
+            await this.awaitIndexEnd(endMs);
+            return;
+        }
+        // idle — no "begin" seen yet. Wait briefly for one; a cold "begin"
+        // arrives ~1.4s after initialize, so noBeginMs=3s catches it.
+        let began = false;
+        await Promise.race([
+            new Promise<void>((r) => {
+                this.indexBeginResolvers.push(() => {
+                    began = true;
+                    r();
+                });
+            }),
+            new Promise<void>((r) => setTimeout(r, noBeginMs)),
+        ]);
+        // begin+end may have both landed during the wait. Cast to the union so
+        // TS doesn't narrow this.indexState to "idle" (it can't see the
+        // $/progress handler mutating it across the await).
+        const state = this.indexState as "idle" | "in_progress" | "ended";
+        if (state === "ended") return;
+        if (began || state === "in_progress") {
+            await this.awaitIndexEnd(endMs);
+        }
+        // else: still idle — no "begin" came within noBeginMs (warm cache or
+        // tiny project). Proceed without waiting.
+    }
+
+    /** Resolve when the "end" notification lands, or after `endMs`. */
+    private awaitIndexEnd(endMs: number): Promise<void> {
+        if (this.indexState === "ended") return Promise.resolve();
+        return Promise.race([
+            new Promise<void>((r) => this.indexEndResolvers.push(r)),
+            new Promise<void>((r) => setTimeout(r, endMs)),
+        ]);
+    }
+
+    /** Drop any progress-tracking state (used on shutdown/exit/spawn-fail). */
+    private resetIndexingState(): void {
+        this.indexState = "idle";
+        this.indexBeginResolvers = [];
+        this.indexEndResolvers = [];
     }
 
     supports(method: keyof ServerCapabilities): boolean {
@@ -1086,6 +1248,7 @@ export class LspClient {
         this.openDocs.clear();
         this.diagnosticsByUri.clear();
         this.extraWorkspaceFolders = [];
+        this.resetIndexingState();
         try {
             // Bounded: a silent/wedged server would otherwise hang shutdown
             // forever (the silent-fake regression test hits this in its

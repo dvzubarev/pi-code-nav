@@ -1033,11 +1033,16 @@ export async function symbol(
             continue;
         // tsserver loads its project lazily on the first didOpen of a file in
         // that project; workspace/symbol throws "No Project." before then.
-        // ensureProjectLoaded opens one source file (a no-op for other
-        // servers, which index eagerly on initialize). If it returns false
-        // (no source file of this language exists in the workspace), skip the
-        // language entirely — calling workspace/symbol on a project-less
-        // tsserver throws "No Project." and would abort the whole query.
+        // ccls likewise populates its workspace/symbol index by parsing ALL
+        // translation units from compile_commands.json — on a cold cache that
+        // takes several seconds, and workspace/symbol sees only a subset of
+        // TUs until it finishes. ensureProjectLoaded opens one source file and
+        // (for ccls) waits for the $/progress "end" signal so the whole
+        // project's symbols are findable; for the other servers it's a no-op
+        // (they index eagerly on initialize). If it returns false (no source
+        // file of this language exists in the workspace), skip the language
+        // entirely — calling workspace/symbol on a project-less tsserver throws
+        // "No Project." and would abort the whole query.
         if (!(await client.ensureProjectLoaded())) continue;
         // Add third-party/stdlib roots once per server so the symbol search
         // covers third-party trees. Best-effort: failures (no env var, server
