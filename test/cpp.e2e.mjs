@@ -231,3 +231,126 @@ runOrSkip(
         }
     },
 );
+
+// ---------------------------------------------------------------------------
+// code_definition: the ccls "cursor on a cpp definition" bounce fix.
+//
+// ccls's textDocument/definition, when the cursor is ON a C++ function
+// DEFINITION (out-of-line .cpp member, struct method, template specialization),
+// bounces to the header DECLARATION instead of returning the def position.
+// The editor "go to definition" does the same — it's a ccls quirk in
+// getNonDefDeclarations (textDocument_definition.cc: on_def → returns the
+// non-def declarations). This bounce means code_definition would render the
+// header prototype, not the cpp body the agent asked for.
+//
+// Fix (definition() step 0): before calling textDocument/definition, fetch
+// documentSymbol for the input file (ccls parses the opened file locally,
+// equivalent to tree-sitter — no per-language grammar needed). Find the
+// symbol whose selectionRange.start == cursor. If that symbol's source range
+// has a body (contains `{`), return it directly and skip textDocument/definition
+// entirely → no bounce. Verified against the user's minimal DiskANN-style
+// fbin_file reproducer. This test pins that fix: a cold ccls cache, a real
+// out-of-line struct method, and the assertion that code_definition returns
+// the cpp body — NOT the header declaration.
+// ---------------------------------------------------------------------------
+
+runOrSkip(
+    "code_definition on a cpp def returns the cpp body (not the header decl)",
+    async () => {
+        // Minimal reproducer of the ccls bounce: a struct with an out-of-line
+        // method. Cursor on the cpp definition's method name must return the
+        // cpp body, even though ccls's textDocument/definition bounces to the
+        // header declaration.
+        const ws = await withWorkspace([]);
+        try {
+            const root = ws.root;
+            const hdr = resolve(root, "fbin_file.h");
+            const cpp = resolve(root, "fbin_file.cpp");
+            await writeFile(
+                hdr,
+                [
+                    `#pragma once`,
+                    ``,
+                    `#include <string>`,
+                    `#include <cstdint>`,
+                    ``,
+                    `namespace diskann{`,
+                    ``,
+                    `struct fbin_file_t{`,
+                    `    std::string path;`,
+                    `    size_t num_points;`,
+                    `    size_t dim;`,
+                    ``,
+                    `private:`,
+                    `    void assign(const fbin_file_t& f);`,
+                    `};`,
+                    ``,
+                    `}  // namespace diskann`,
+                    ``,
+                ].join("\n"),
+                "utf8",
+            );
+            await writeFile(
+                cpp,
+                [
+                    `#include "fbin_file.h"`,
+                    ``,
+                    `namespace diskann{`,
+                    ``,
+                    ``,
+                    `void fbin_file_t::assign(const fbin_file_t& f){`,
+                    `    path = f.path;`,
+                    `}`,
+                    ``,
+                    `}  // namespace diskann`,
+                    ``,
+                ].join("\n"),
+                "utf8",
+            );
+            await mkdir(resolve(root, "build"), { recursive: true });
+            await writeFile(
+                resolve(root, "build", "compile_commands.json"),
+                JSON.stringify(
+                    [
+                        {
+                            directory: root,
+                            command: `clang++ -std=c++17 -I. fbin_file.cpp`,
+                            file: cpp,
+                        },
+                    ],
+                    null,
+                    2,
+                ),
+                "utf8",
+            );
+
+            // Cursor on the cpp definition's method name: fbin_file.cpp line 6
+            // (1-based), column 19 — the `a` of `assign`. (verified by probing
+            // ccls: workspace/symbol and documentSymbol both report the
+            // identifier at 0-based 5:18, i.e. 1-based 6:19).
+            const out = await nav.definition(
+                { path: "fbin_file.cpp", line: 6, column: 19 },
+                root,
+                ws.clientOf,
+            );
+            const lines = out.split("\n");
+            // The header must point at the cpp body range (starting line 6),
+            // NOT the header declaration (which would be fbin_file.h:14).
+            assert.match(
+                lines[0],
+                /(^|\/)fbin_file\.cpp:6-\d+$/,
+                `should return the cpp body, not the header declaration:\n${out}`,
+            );
+            assert.match(out, /void fbin_file_t::assign/, `cpp def line missing:\n${out}`);
+            assert.match(out, /path = f\.path/, `cpp body statement missing:\n${out}`);
+            // Must NOT contain the header declaration line — that would mean
+            // the bounce fired and we rendered the prototype instead.
+            assert.ok(
+                !/void assign\(const fbin_file_t& f\);/.test(out),
+                `should not contain the header declaration (bounce fired?):\n${out}`,
+            );
+        } finally {
+            await ws.cleanup();
+        }
+    },
+);

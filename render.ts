@@ -406,6 +406,27 @@ export function renderDiagnostic(path: string, d: Diagnostic): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * Does a source snippet look like a definition BODY (as opposed to a bare
+ * declaration/prototype)?
+ *
+ * Heuristic: the snippet contains an open-brace character. A function/method
+ * body, a class/struct definition, and an inline header definition all contain
+ * an open brace. A prototype, a forward declaration, and a using/typedef do
+ * NOT. Used by code_definition to decide whether the resolved snippet is a
+ * body (returned verbatim) or a declaration (prepend the preceding doc
+ * comment, resolved separately via tree-sitter — see findEnclosingDefWithDoc).
+ *
+ * The check is deliberately simple: an open brace anywhere in the snippet.
+ * Declarations of function-pointer parameters and templates contain no open
+ * brace, so they correctly read as declarations. A lambda capture list only
+ * appears inside a body, which already has one. Good enough for the cases this
+ * tool serves.
+ */
+export function snippetHasBody(snippet: string): boolean {
+    return snippet.includes("{");
+}
+
+/**
  * Resolve the full definition body range for a Location returned by
  * textDocument/definition. LSP servers (pyright/ty/ccls) typically return only
  * the identifier span (e.g. the 9 chars of `punintend`), not the whole

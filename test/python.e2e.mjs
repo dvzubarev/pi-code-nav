@@ -389,6 +389,134 @@ runOrSkip("code_definition on punintend returns its body", async () => {
     }
 });
 
+// ---------------------------------------------------------------------------
+// code_definition: Python coverage.
+//
+// These tests pin code_definition's behavior across the cases that matter for
+// Python (ty): cursor on a top-level def, cursor on a class definition, cursor
+// on a method inside a class, and cursor on a CALL SITE (which must jump to
+// the def — verifying the documentSymbol fast path does not wrongly
+// short-circuit when the cursor is on a use, not a def).
+//
+// Fixture: test/fixtures/defs.py — positions verified by probing ty directly.
+// Python function bodies rarely contain `{` (only dict/set literals), so
+// snippetHasBody returns false for most bodies → the documentSymbol fast path
+// falls through to textDocument/definition (ty doesn't bounce, so this is
+// correct). A few bodies here DO contain `{` (dict literal, f-string interp)
+// which exercises the short-circuit path too.
+// ---------------------------------------------------------------------------
+
+runOrSkip("code_definition on top-level def returns body + docstring", async () => {
+    const ws = await withWorkspace(["defs.py"]);
+    try {
+        // make_config is at defs.py:28:5 (1-based) per code_outline. The body
+        // spans lines 28-30 (def, docstring, return with dict literal).
+        const out = await nav.definition(
+            { path: "defs.py", line: 28, column: 5 },
+            ws.root,
+            ws.clientOf,
+        );
+        const lines = out.split("\n");
+        assert.match(lines[0], /defs\.py:\d+-\d+$/, `header shape wrong:\n${out}`);
+        assert.match(out, /def make_config/, `def line missing:\n${out}`);
+        assert.match(out, /Build a default config/, `docstring missing:\n${out}`);
+        assert.match(out, /"timeout"/, `dict-return body missing:\n${out}`);
+        assert.ok(!/^```$/m.test(out), `should have no code fence:\n${out}`);
+    } finally {
+        await ws.cleanup();
+    }
+});
+
+runOrSkip("code_definition on class def returns whole class body", async () => {
+    const ws = await withWorkspace(["defs.py"]);
+    try {
+        // Greeter is at defs.py:33:7. Its body spans the whole class
+        // (lines 33-44): docstring, __init__, greet, config.
+        const out = await nav.definition(
+            { path: "defs.py", line: 33, column: 7 },
+            ws.root,
+            ws.clientOf,
+        );
+        const lines = out.split("\n");
+        assert.match(lines[0], /defs\.py:33-\d+$/, `should start at line 33:\n${out}`);
+        assert.match(out, /class Greeter/, `class line missing:\n${out}`);
+        // The class body should include all its members.
+        assert.match(out, /def __init__/, `__init__ missing from class body:\n${out}`);
+        assert.match(out, /def greet/, `greet missing from class body:\n${out}`);
+        assert.match(out, /def config/, `config missing from class body:\n${out}`);
+    } finally {
+        await ws.cleanup();
+    }
+});
+
+runOrSkip("code_definition on method inside class returns method body only", async () => {
+    const ws = await withWorkspace(["defs.py"]);
+    try {
+        // greet is at defs.py:39:9 (1-based). Its body spans lines 39-41
+        // (def, docstring, return with f-string). Crucially, the resolved
+        // range should be JUST the method, not the whole enclosing class —
+        // this verifies documentSymbol's hierarchical selectionRange narrows
+        // to the right child, not the parent class.
+        const out = await nav.definition(
+            { path: "defs.py", line: 39, column: 9 },
+            ws.root,
+            ws.clientOf,
+        );
+        const lines = out.split("\n");
+        assert.match(lines[0], /defs\.py:39-\d+$/, `should start at line 39:\n${out}`);
+        assert.match(out, /def greet/, `greet def missing:\n${out}`);
+        assert.match(out, /Return the greeting/, `greet docstring missing:\n${out}`);
+        // The body should NOT include the __init__ or config methods — only greet.
+        assert.ok(!/def __init__/.test(out), `should not include __init__:\n${out}`);
+        assert.ok(!/def config/.test(out), `should not include config:\n${out}`);
+    } finally {
+        await ws.cleanup();
+    }
+});
+
+runOrSkip("code_definition on call site jumps to the def (not the call)", async () => {
+    const ws = await withWorkspace(["defs.py"]);
+    try {
+        // `make_config()` is CALLED inside Greeter.config at defs.py:44:16
+        // (1-based). code_definition here must NOT short-circuit (the cursor
+        // is on a call, not a def) — it must fall through to
+        // textDocument/definition, which jumps to make_config's def at 28:5.
+        // This is the key test for the documentSymbol fast path's gate: the
+        // enclosing symbol at the cursor is Greeter.config (a method), but its
+        // selectionRange doesn't match the cursor, so step 0 falls through.
+        const out = await nav.definition(
+            { path: "defs.py", line: 44, column: 16 },
+            ws.root,
+            ws.clientOf,
+        );
+        const lines = out.split("\n");
+        // The header should point at make_config's def range (starting line 28),
+        // NOT the call site at line 44.
+        assert.match(lines[0], /defs\.py:28-\d+$/, `should jump to make_config def (line 28), got:\n${out}`);
+        assert.match(out, /def make_config/, `should show make_config body:\n${out}`);
+    } finally {
+        await ws.cleanup();
+    }
+});
+
+runOrSkip("code_definition on class call site jumps to class def", async () => {
+    const ws = await withWorkspace(["defs.py"]);
+    try {
+        // `Greeter("world")` is called inside use_all at defs.py:48:9 (1-based).
+        // code_definition should jump to the Greeter class def at 33:7.
+        const out = await nav.definition(
+            { path: "defs.py", line: 48, column: 9 },
+            ws.root,
+            ws.clientOf,
+        );
+        const lines = out.split("\n");
+        assert.match(lines[0], /defs\.py:33-\d+$/, `should jump to Greeter class def (line 33), got:\n${out}`);
+        assert.match(out, /class Greeter/, `should show Greeter class body:\n${out}`);
+    } finally {
+        await ws.cleanup();
+    }
+});
+
 runOrSkip("code_hover on Point.__init__ signature shows x param", async () => {
     const ws = await withWorkspace(["second.py"]);
     try {

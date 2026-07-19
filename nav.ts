@@ -74,6 +74,8 @@ import {
     renderDiagnostic,
     resolveSymbolSelStart,
     resolveDefBodyRange,
+    findDocSymbolBySelStart,
+    snippetHasBody,
     applyWorkspaceEdit,
     langForFile,
 } from "./render";
@@ -620,6 +622,67 @@ export async function definition(
         // code can be retrieved without it.
         throw new Error(`${lang}: server unavailable: ${e}`);
     }
+    // Wait for ccls to finish indexing this TU before querying. On a cold
+    // cache, textDocument/definition bounces to the declaration and
+    // documentSymbol returns stale {0:0} ranges because ccls's preamble
+    // session for this file isn't ready yet. diagnostics() does the same.
+    await client.openDocument(abs, text);
+    if (lang === "cpp") {
+        try { await client.waitForIndexingComplete(); } catch {}
+    }
+    // STEP 0 — documentSymbol fast path (the ccls bounce fix).
+    //
+    // ccls's textDocument/definition, when the cursor is ON a C++ function
+    // DEFINITION (out-of-line .cpp member, template specialization, etc.),
+    // bounces to the header DECLARATION instead of returning the def position.
+    // The editor "go to definition" does the same — it's a ccls quirk in
+    // getNonDefDeclarations (textDocument_definition.cc: on_def → returns
+    // the non-def declarations). This bounce means we'd render the header
+    // prototype, not the cpp body the agent asked for.
+    //
+    // Fix: before calling textDocument/definition, fetch documentSymbol for
+    // THIS file (ccls parses the opened file locally — equivalent to
+    // tree-sitter, no per-language grammar needed) and find the symbol whose
+    // selectionRange.start == cursor. If that symbol's source range has a body
+    // (contains `{` — a real definition, not a prototype), return it directly
+    // and skip textDocument/definition entirely → no bounce. If the symbol at
+    // the cursor is a declaration (no body), fall through to
+    // textDocument/definition, which correctly jumps declaration→definition.
+    // If the cursor isn't on any symbol in this file (e.g. a call site, or
+    // whitespace), also fall through to textDocument/definition.
+    const cursor = { line: params.line - 1, character: params.column - 1 };
+    try {
+        const syms = await client.documentSymbols(abs, text);
+        const flat =
+            syms.length > 0 && "selectionRange" in syms[0]
+                ? (syms as DocumentSymbol[])
+                : [];
+        const atCursor = findDocSymbolBySelStart(flat, cursor);
+        if (atCursor?.range?.start && atCursor?.range?.end) {
+            const sl = atCursor.range.start.line;
+            const el = atCursor.range.end.line;
+            const srcLines = text.split(/\r?\n/);
+            const snippet = srcLines.slice(sl, el + 1).join("\n");
+            if (snippetHasBody(snippet)) {
+                // Cursor is on a body-bearing symbol in this file → it IS the
+                // definition. Render it directly; skip textDocument/definition
+                // (which would bounce to the declaration for ccls).
+                return renderSnippetBlock(
+                    client,
+                    abs,
+                    sl,
+                    el,
+                    text,
+                    params,
+                    params.list_symbols ?? false,
+                );
+            }
+        }
+    } catch {
+        // documentSymbol failed (e.g. ccls "not indexed" on an un-indexed
+        // header — deferred to a future session's tree-sitter fallback).
+        // Fall through to textDocument/definition.
+    }
     const def = await client.definition(abs, params.line - 1, params.column - 1, text);
     const locs = (Array.isArray(def) ? def : def ? [def] : []) as Location[];
     if (locs.length === 0) {
@@ -652,6 +715,68 @@ export async function definition(
     // Multiple sites: blank-line-separated blocks + trailing count.
     if (blocks.length === 1) return blocks[0];
     return blocks.join("\n\n") + `\n# ${blocks.length} definitions for ${params.path}:${params.line}:${params.column}`;
+}
+
+/**
+ * Render a definition snippet as `<defPath>:<sl>-<el>\n<body>[\n\n<sym table>]`.
+ *
+ * Shared by the documentSymbol fast path (step 0, which already has the
+ * body range) and renderDefinitionBlock (which resolves the range from a
+ * textDocument/definition Location). `sl`/`el` are 0-based LSP line numbers
+ * of the body range; `src` is the source text of the file the body lives in;
+ * `defPath` is that file's path (for the header line and the symbol table).
+ * Throws a hard error on a symbol-scan failure (list_symbols only) — there
+ * are no fallbacks, since the tool's contract is verbatim source code or
+ * failure.
+ */
+async function renderSnippetBlock(
+    client: LspClient,
+    defPath: string,
+    sl: number,
+    el: number,
+    src: string,
+    _params: DefinitionParams,
+    listSymbols: boolean,
+): Promise<string> {
+    const srcLines = src.split(/\r?\n/);
+    const snippet = srcLines.slice(sl, el + 1).join("\n");
+    const out: string[] = [];
+    // Header: <defPath>:<sl>-<el> (1-based inclusive line range of the body).
+    // defPath is the path the definition lives in — relative or absolute as
+    // the server returned it (the agent can feed it back into code_* tools).
+    out.push(`${defPath}:${sl + 1}-${el + 1}`);
+    out.push(snippet);
+    // Optional tree-sitter symbol table over the snippet. Reuses the same
+    // parseSymbols helper as code_scan. The snippet's absolute line range is
+    // (sl+1 .. el+1) in 1-based coords. Only run when requested: default
+    // false keeps code_definition's output focused on the verbatim body.
+    if (listSymbols) {
+        const tsLang = tsLangForFile(defPath);
+        if (tsLang) {
+            try {
+                const entries = await parseSymbols(tsLang, {
+                    text: src,
+                    startLine: sl + 1,
+                    endLine: el + 1,
+                });
+                if (entries && entries.length > 0) {
+                    // Blank line separates the verbatim body from the symbol
+                    // table so an agent can unambiguously tell where the body
+                    // ends and the table begins (the body itself may contain
+                    // lines that look table-like).
+                    out.push("");
+                    out.push(renderSymbolTable(defPath, sl + 1, el + 1, entries));
+                }
+            } catch (e) {
+                // Hard failure: the symbol scan failed. The verbatim body was
+                // already retrieved (the primary contract), but list_symbols
+                // is an explicit request the agent is relying on — surface the
+                // failure rather than silently omitting the table.
+                throw new Error(`symbol scan failed for ${defPath}:${sl + 1}-${el + 1}: ${e}`);
+            }
+        }
+    }
+    return out.join("\n");
 }
 
 /**
@@ -692,47 +817,7 @@ async function renderDefinitionBlock(
             `Could not resolve definition body for ${defPath} at ${params.path}:${params.line}:${params.column}`,
         );
     }
-    const sl = body.startLine; // 0-based LSP line
-    const el = body.endLine; // 0-based LSP line
-    const srcLines = src.split(/\r?\n/);
-    const snippet = srcLines.slice(sl, el + 1).join("\n");
-    const out: string[] = [];
-    // Header: <defPath>:<sl>-<el> (1-based inclusive line range of the body).
-    // defPath is the path the definition lives in — relative or absolute as
-    // the server returned it (the agent can feed it back into code_* tools).
-    out.push(`${defPath}:${sl + 1}-${el + 1}`);
-    out.push(snippet);
-    // Optional tree-sitter symbol table over the snippet. Reuses the same
-    // parseSymbols helper as code_scan. The snippet's absolute line range is
-    // (sl+1 .. el+1) in 1-based coords. Only run when requested: default
-    // false keeps code_definition's output focused on the verbatim body.
-    if (listSymbols) {
-        const tsLang = tsLangForFile(defPath);
-        if (tsLang) {
-            try {
-                const entries = await parseSymbols(tsLang, {
-                    text: src,
-                    startLine: sl + 1,
-                    endLine: el + 1,
-                });
-                if (entries && entries.length > 0) {
-                    // Blank line separates the verbatim body from the symbol
-                    // table so an agent can unambiguously tell where the body
-                    // ends and the table begins (the body itself may contain
-                    // lines that look table-like).
-                    out.push("");
-                    out.push(renderSymbolTable(defPath, sl + 1, el + 1, entries));
-                }
-            } catch (e) {
-                // Hard failure: the symbol scan failed. The verbatim body was
-                // already retrieved (the primary contract), but list_symbols
-                // is an explicit request the agent is relying on — surface the
-                // failure rather than silently omitting the table.
-                throw new Error(`symbol scan failed for ${defPath}:${sl + 1}-${el + 1}: ${e}`);
-            }
-        }
-    }
-    return out.join("\n");
+    return renderSnippetBlock(client, defPath, body.startLine, body.endLine, src, params, listSymbols);
 }
 
 // ---------------------------------------------------------------------------

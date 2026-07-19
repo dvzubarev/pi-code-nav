@@ -248,6 +248,15 @@ test("nav.symbol accepts a valid `language` without throwing on validation", asy
 /** A mock LspClient that returns empty definition/reference results. */
 function emptyResultClientOf() {
     const client = {
+        // nav.definition now opens the document and waits for indexing (cpp)
+        // before querying, and resolves the DocumentSymbol at the cursor BEFORE
+        // calling textDocument/definition (the cursor-on-a-definition fast
+        // path). Return an empty tree so the fast path finds nothing and the
+        // tool falls through to textDocument/definition (which also returns
+        // empty) → "No definition found" hard error.
+        openDocument: async () => {},
+        waitForIndexingComplete: async () => {},
+        documentSymbols: async () => [],
         definition: async () => [],
         references: async () => [],
         hover: async () => null,
@@ -290,6 +299,8 @@ test("nav.definition multiple sites: returns one block per site + trailing count
         // body to lines 0-0 (the `function foo` line).
         const idStart = { line: 0, character: 6 };
         const makeClient = () => ({
+            openDocument: async () => {},
+            waitForIndexingComplete: async () => {},
             definition: async () => [
                 { uri: `file://${resolve(dir, "a.ts")}`, range: { start: idStart, end: idStart } },
                 { uri: `file://${resolve(dir, "b.ts")}`, range: { start: idStart, end: idStart } },
