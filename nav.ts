@@ -1417,29 +1417,60 @@ export async function symbol(
             //        a bare name almost always means their symbol).
             //   T2 — exact name in third-party/stdlib (e.g. bare `loads` with
             //        no workspace `loads` -> cbor2.loads, json.loads, ...).
-            //   T3 — fuzzy matches anywhere (kept only if T1+T2 are empty,
-            //        since a bare name with no exact hits anywhere is rare
-            //        and the fuzzy tail is where ty's loose matching shines).
+            //   T3 — fuzzy matches whose name CONTAINS the bare query as a
+            //        substring (kept only when T1 is empty, after T2, and
+            //        trimmed at SYMBOL_MAX_ROWS_PER_LANG). Fuzzy hits that
+            //        don't even share a substring with the query (e.g.
+            //        `using thrust::iterator_traversal<...>` for `occlude_list`,
+            //        `encode_stringref_namespace` for `tempc`) are pure noise
+            //        that bloats context — they're dropped. The agent almost
+            //        always wants results that at least match by substring.
             // When T1 is non-empty, emit ONLY T1 (drop T2/T3) — the agent's
             // bare name is their symbol, and third-party fuzzy hits like
             // `encode_stringref_namespace` for query `tempc` are pure noise.
             // When T1 is empty, emit T2 then T3 (trimmed). For cpp (ccls) the
-            // `name` is a full signature; "exact" means it contains the
-            // qualified tail (`::push_back`) or equals the bare name.
+            // `name` is a full signature; "exact" means the bare query appears
+            // as a substring — for a QUALIFIED query (`std::vector::push_back`)
+            // the `::<bare>` boundary is required so the qualifier's scope is
+            // honored, but for a BARE query (`occlude_list`) a plain substring
+            // match suffices (the agent asked for any symbol containing this
+            // name; before this, bare cpp queries fell through to the unfiltered
+            // T3 and let the `thrust::iterator_*` noise through).
             const folders = client.workspaceFolderPaths();
             // ty's workspace/symbol is case-INSENSITIVE fuzzy, so `s.name`
             // may differ in case from the bare query (`TempC` for query `tempc`).
             // The "exact name" check must therefore be case-insensitive for
             // python/typescript. C++ (ccls) is case-sensitive and `name` is a
-            // full signature, so cpp keeps the case-sensitive `includes(tail)`.
+            // full signature, so cpp keeps the case-sensitive substring checks.
             const caseInsensitive = lang === "python" || lang === "typescript";
             const bareCmp = caseInsensitive ? bare.toLowerCase() : bare;
+            // Loose substring match — the name contains the bare query as a
+            // substring. Used to filter out the ccls/ty fuzzy tail that
+            // doesn't even share a substring with the query. Without this
+            // guard a bare cpp query like `occlude_list` lets through
+            // `using thrust::iterator_traversal<...>` (no `occlude_list`
+            // substring at all) and a bare python query like `tempc` lets
+            // through `encode_stringref_namespace` — both pure context-bloat.
+            const nameHasBare = (s: SymbolInformation): boolean => {
+                const nm = caseInsensitive ? s.name.toLowerCase() : s.name;
+                return nm.includes(bareCmp);
+            };
             const isExact = (s: SymbolInformation): boolean => {
                 const nm = caseInsensitive ? s.name.toLowerCase() : s.name;
                 if (nm === bareCmp) return true;
-                if (lang === "cpp" && qualifier !== null) {
-                    const tail = QUALIFIED_SEP[lang]! + bare;
-                    return s.name.includes(tail);
+                if (lang === "cpp") {
+                    // cpp `name` is a full C++ qualified signature
+                    // (`void diskann::Index::occlude_list(...)`). For a
+                    // QUALIFIED query require the `::<bare>` boundary so the
+                    // qualifier's scope is honored and `occlude_list` doesn't
+                    // rank `occlude_list_v2`-style cousins as exact; for a
+                    // BARE query a plain substring match suffices (the agent
+                    // asked for any symbol containing this name).
+                    if (qualifier !== null) {
+                        const tail = QUALIFIED_SEP[lang]! + bare;
+                        return s.name.includes(tail);
+                    }
+                    return nm.includes(bareCmp);
                 }
                 return false;
             };
@@ -1454,7 +1485,13 @@ export async function symbol(
                 // third-party/fuzzy noise.
                 syms = t1;
             } else {
-                const t3 = syms.filter((s) => !isExact(s));
+                // T3 fuzzy tail: keep only results whose name contains the
+                // bare query as a substring. The agent almost always wants
+                // results that at least match by substring; fuzzy hits
+                // without a shared substring are pure noise that bloats
+                // context. Exact matches are already in t2; this only
+                // scopes the fuzzy tail.
+                const t3 = syms.filter((s) => !isExact(s) && nameHasBare(s));
                 syms = [...t2, ...t3];
             }
         }

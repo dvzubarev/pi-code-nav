@@ -86,11 +86,36 @@ ty's `workspace/symbol` is case-insensitive FUZZY — a bare `cast` returns
   `encode_stringref_namespace` for `tempc`) are pure noise.
 - **T2** = exact-name matches in third-party/stdlib (e.g. bare `loads` with
   no workspace `loads` -> `cbor2.loads`, `json.loads`, ...).
-- **T3** = fuzzy matches anywhere. Emitted only when T1 is empty, after T2,
-  and trimmed at `SYMBOL_MAX_ROWS_PER_LANG` (50) with a trailing note.
+- **T3** = fuzzy matches whose name CONTAINS the bare query as a
+  substring. Emitted only when T1 is empty, after T2, and trimmed at
+  `SYMBOL_MAX_ROWS_PER_LANG` (50) with a trailing note. Fuzzy hits that
+  don't even share a substring with the query (e.g.
+  `using thrust::iterator_traversal<...>` for `occlude_list`,
+  `encode_stringref_namespace` for `tempc`) are pure noise that bloats
+  context — they are dropped. The agent almost always wants results that
+  at least match by substring; this filter enforces that without losing
+  ty's loose matching for legitimate prefix/extension hits (`TempC` for
+  `tempc`, `load_package_tests` for `load`, `occlude_list_v2` for
+  `occlude_list`).
 
 For qualified queries the tiered Q1/Q2/Q3 filter above applies; fuzzy/
 partial-name matches are always dropped.
+
+### cpp bare-query "exact" = substring
+
+For cpp (ccls) the workspace/symbol `name` is a full C++ qualified
+signature (`void diskann::Index::occlude_list(...)`) rather than a bare
+identifier, so the "exact name" check used by the T1/T2/T3 tiering is a
+SUBSTRING match against the bare query, not equality. For a QUALIFIED
+query (`std::vector::push_back`) the `::<bare>` boundary is required
+(`::push_back`) so the qualifier's scope is honored and `push_back`
+doesn't rank `push_back_v2`-style cousins as exact; for a BARE query
+(`occlude_list`) a plain substring match suffices — the agent asked for
+any symbol containing this name. Before the substring match was added
+for bare cpp queries, every cpp result fell through to the unfiltered T3
+fuzzy tail and the `using thrust::iterator_*` rows (which ccls's fuzzy
+ranker surfaces for almost any query) drowned the actual hits. The T3
+substring filter above then drops the rest of the noise.
 
 ## Caveats
 
