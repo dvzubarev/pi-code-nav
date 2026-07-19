@@ -354,3 +354,115 @@ runOrSkip(
         }
     },
 );
+
+// code_definition on a call site of a third-party HEADER-ONLY declaration
+// must prepend the preceding doc comment. ccls's textDocument/definition
+// jumps from the use in the .cpp to the prototype in the (un-indexed)
+// header; resolveDefBodyRange narrows the Location to the declaration line,
+// and renderSnippetBlock (when the snippet has NO body) extends the snippet
+// upward via findEnclosingDefWithDoc to include the preceding `/** ... */` /
+// `///` / `//!` doc comment. Without the doc prefix the agent loses the
+// docstring for every header-only / stdlib / third-party API it asks about.
+//
+// This test pins Case B from docs/code_definition.md (LSP-resolved Location
+// whose body resolves to a declaration): a .cpp uses a function declared in
+// a header NOT in compile_commands.json, the cursor is on the call site in
+// the .cpp, and the rendered output must contain BOTH the doc comment AND
+// the prototype — with the header line reflecting the expanded (doc + decl)
+// line range.
+runOrSkip(
+    "code_definition on a call site of a header-only decl prepends the doc comment",
+    async () => {
+        const ws = await withWorkspace([]);
+        try {
+            const root = ws.root;
+            const hdr = resolve(root, "thirdparty.h");
+            const cpp = resolve(root, "main.cpp");
+            await writeFile(
+                hdr,
+                [
+                    `#pragma once`,
+                    ``,
+                    `#include <cstdint>`,
+                    `#include <vector>`,
+                    ``,
+                    `/** this is doc string for this function`,
+                    ` *  line two of the doc string`,
+                    ` *  line three of the doc string`,
+                    ` */`,
+                    `void thirdparty_func(const uint32_t location, std::vector<int> &pool);`,
+                    ``,
+                ].join("\n"),
+                "utf8",
+            );
+            await writeFile(
+                cpp,
+                [
+                    `#include "thirdparty.h"`,
+                    ``,
+                    `int main(){`,
+                    `    std::vector<int> v;`,
+                    `    thirdparty_func(0u, v);`,
+                    `    return 0;`,
+                    `}`,
+                    ``,
+                ].join("\n"),
+                "utf8",
+            );
+            await mkdir(resolve(root, "build"), { recursive: true });
+            await writeFile(
+                resolve(root, "build", "compile_commands.json"),
+                JSON.stringify(
+                    [
+                        {
+                            directory: root,
+                            command: `clang++ -std=c++17 -I. main.cpp`,
+                            file: cpp,
+                        },
+                    ],
+                    null,
+                    2,
+                ),
+                "utf8",
+            );
+
+            // Cursor on the call site: main.cpp line 5 (1-based), column 5 —
+            // the `t` of `thirdparty_func`. ccls's textDocument/definition
+            // jumps to the header prototype at thirdparty.h line 10 (1-based).
+            const out = await nav.definition(
+                { path: "main.cpp", line: 5, column: 5 },
+                root,
+                ws.clientOf,
+            );
+            const lines = out.split("\n");
+            // The header line must point at the third-party header, and its
+            // line range must START at the doc comment opener (line 6, 1-based)
+            // and END at the prototype (line 10, 1-based) — i.e. the doc prefix
+            // was prepended and the reported range was extended upward.
+            assert.match(
+                lines[0],
+                /(^|\/)thirdparty\.h:6-10$/,
+                `header line should cover the doc comment + prototype (got:\n${out})`,
+            );
+            // The doc comment must be present verbatim.
+            assert.match(
+                out,
+                /\/\*\* this is doc string for this function/,
+                `doc comment opener missing:\n${out}`,
+            );
+            assert.match(
+                out,
+                /line three of the doc string/,
+                `doc comment body line missing:\n${out}`,
+            );
+            // The prototype must still be present.
+            assert.match(
+                out,
+                /void thirdparty_func\(const uint32_t location, std::vector<int> &pool\);/,
+                `prototype line missing:\n${out}`,
+            );
+        } finally {
+            await ws.cleanup();
+        }
+    },
+);

@@ -60,6 +60,7 @@ import {
     hoverFirstLine,
     tsLangForFile,
     tsLangToLspLang,
+    findEnclosingDefWithDoc,
 } from "./tree-sitter-parse";
 import {
     toAbs,
@@ -651,6 +652,14 @@ export async function definition(
     // If the cursor isn't on any symbol in this file (e.g. a call site, or
     // whitespace), also fall through to textDocument/definition.
     const cursor = { line: params.line - 1, character: params.column - 1 };
+    // When step 0 finds a DECLARATION (no body) at the cursor, remember its
+    // range in the input file. If textDocument/definition then returns empty
+    // (ccls only resolves use→def, never decl→decl — so a cursor ON a
+    // header-only third-party declaration yields `[]`), we fall back to
+    // rendering that declaration + its preceding doc comment from the input
+    // file instead of throwing "No definition found". The doc comment is
+    // resolved by findEnclosingDefWithDoc inside renderSnippetBlock.
+    let declInInput: { sl: number; el: number } | null = null;
     try {
         const syms = await client.documentSymbols(abs, text);
         const flat =
@@ -677,6 +686,8 @@ export async function definition(
                     params.list_symbols ?? false,
                 );
             }
+            // Declaration (no body): remember it for the empty-locs fallback.
+            declInInput = { sl, el };
         }
     } catch {
         // documentSymbol failed (e.g. ccls "not indexed" on an un-indexed
@@ -686,10 +697,33 @@ export async function definition(
     const def = await client.definition(abs, params.line - 1, params.column - 1, text);
     const locs = (Array.isArray(def) ? def : def ? [def] : []) as Location[];
     if (locs.length === 0) {
-        // Hard failure: no definition found. The tool's contract is "returns
-        // verbatim source code"; the absence of a definition means we cannot
-        // fulfill it. No parenthesized-note fallback — throw so the agent knows
-        // it got nothing reusable and can try another approach (code_hover,
+        // ccls's textDocument/definition only resolves use→def, never
+        // decl→decl: a cursor ON a header-only declaration (no out-of-line
+        // definition exists — third-party / stdlib / header-only library)
+        // returns `[]`. Step 0 already located the declaration in the input
+        // file in that case (declInInput). Fall back to rendering that
+        // declaration + its preceding doc comment from the input file so the
+        // agent gets the docstring instead of a hard "No definition found"
+        // error. renderSnippetBlock prepends the doc comment via
+        // findEnclosingDefWithDoc (tree-sitter, no LSP round-trip).
+        if (declInInput) {
+            return renderSnippetBlock(
+                client,
+                abs,
+                declInInput.sl,
+                declInInput.el,
+                text,
+                params,
+                params.list_symbols ?? false,
+                { line: params.line, column: params.column },
+            );
+        }
+        // Hard failure: no definition found and the cursor isn't on a
+        // declaration in this file either (e.g. a use of a built-in, or
+        // whitespace). The tool's contract is "returns verbatim source code";
+        // the absence of a definition means we cannot fulfill it. No
+        // parenthesized-note fallback — throw so the agent knows it got
+        // nothing reusable and can try another approach (code_hover,
         // code_search_symbol, etc.).
         throw new Error(
             `No definition found for ${params.path}:${params.line}:${params.column}`,
@@ -728,6 +762,17 @@ export async function definition(
  * Throws a hard error on a symbol-scan failure (list_symbols only) — there
  * are no fallbacks, since the tool's contract is verbatim source code or
  * failure.
+ *
+ * Doc-comment prefix: when the snippet has NO body (it's a declaration /
+ * prototype, e.g. a third-party header-only API), prepend the preceding doc
+ * comment (slash-star star, triple-slash, or bang-slash-slash) so the agent
+ * gets the docstring. Resolved with findEnclosingDefWithDoc (tree-sitter,
+ * local parse — works on un-indexed headers without an LSP round-trip).
+ * `docAnchor` is a 1-based position inside the declaration used to anchor
+ * the tree-sitter lookup (the identifier column when known from the LSP
+ * Location, else the cursor position from the tool input, else the start of
+ * the snippet line). Bodies are returned verbatim — the snippetHasBody gate
+ * stays.
  */
 async function renderSnippetBlock(
     client: LspClient,
@@ -737,18 +782,52 @@ async function renderSnippetBlock(
     src: string,
     _params: DefinitionParams,
     listSymbols: boolean,
+    docAnchor?: { line: number; column: number }, // 1-based, inside the declaration
 ): Promise<string> {
     const srcLines = src.split(/\r?\n/);
-    const snippet = srcLines.slice(sl, el + 1).join("\n");
+    let snippet = srcLines.slice(sl, el + 1).join("\n");
+    let renderSl = sl; // start line actually rendered (0-based) — may move up
+                       // to include a preceding doc comment.
+    if (!snippetHasBody(snippet)) {
+        // Declaration (prototype): try to prepend the preceding doc comment.
+        // findEnclosingDefWithDoc parses the file locally with tree-sitter so
+        // it works on un-indexed third-party headers (no LSP round-trip). On
+        // any failure (no grammar, parse error, no preceding comment) we
+        // return the bare declaration — strictly better than throwing.
+        const tsLang = tsLangForFile(defPath);
+        if (tsLang) {
+            try {
+                const anchor = docAnchor ?? { line: sl + 1, column: 1 };
+                const enc = await findEnclosingDefWithDoc(tsLang, src, anchor.line, anchor.column);
+                if (
+                    enc &&
+                    enc.docStartLine != null &&
+                    enc.docEndLine != null &&
+                    enc.docStartLine < sl
+                ) {
+                    // Extend the snippet UPWARD to include the doc comment.
+                    // Keep LSP's `el` as the declaration's end (the doc range
+                    // and LSP range come from different parses; only the
+                    // upward extension is safe — overlapping downward risks
+                    // pulling in trailing lines LSP didn't intend).
+                    renderSl = enc.docStartLine;
+                    snippet = srcLines.slice(renderSl, el + 1).join("\n");
+                }
+            } catch {
+                // tree-sitter parse failed — fall through with the bare
+                // declaration (renderSl == sl, snippet unchanged).
+            }
+        }
+    }
     const out: string[] = [];
     // Header: <defPath>:<sl>-<el> (1-based inclusive line range of the body).
     // defPath is the path the definition lives in — relative or absolute as
     // the server returned it (the agent can feed it back into code_* tools).
-    out.push(`${defPath}:${sl + 1}-${el + 1}`);
+    out.push(`${defPath}:${renderSl + 1}-${el + 1}`);
     out.push(snippet);
     // Optional tree-sitter symbol table over the snippet. Reuses the same
     // parseSymbols helper as code_scan. The snippet's absolute line range is
-    // (sl+1 .. el+1) in 1-based coords. Only run when requested: default
+    // (renderSl+1 .. el+1) in 1-based coords. Only run when requested: default
     // false keeps code_definition's output focused on the verbatim body.
     if (listSymbols) {
         const tsLang = tsLangForFile(defPath);
@@ -756,7 +835,7 @@ async function renderSnippetBlock(
             try {
                 const entries = await parseSymbols(tsLang, {
                     text: src,
-                    startLine: sl + 1,
+                    startLine: renderSl + 1,
                     endLine: el + 1,
                 });
                 if (entries && entries.length > 0) {
@@ -765,14 +844,14 @@ async function renderSnippetBlock(
                     // ends and the table begins (the body itself may contain
                     // lines that look table-like).
                     out.push("");
-                    out.push(renderSymbolTable(defPath, sl + 1, el + 1, entries));
+                    out.push(renderSymbolTable(defPath, renderSl + 1, el + 1, entries));
                 }
             } catch (e) {
                 // Hard failure: the symbol scan failed. The verbatim body was
                 // already retrieved (the primary contract), but list_symbols
                 // is an explicit request the agent is relying on — surface the
                 // failure rather than silently omitting the table.
-                throw new Error(`symbol scan failed for ${defPath}:${sl + 1}-${el + 1}: ${e}`);
+                throw new Error(`symbol scan failed for ${defPath}:${renderSl + 1}-${el + 1}: ${e}`);
             }
         }
     }
@@ -817,7 +896,18 @@ async function renderDefinitionBlock(
             `Could not resolve definition body for ${defPath} at ${params.path}:${params.line}:${params.column}`,
         );
     }
-    return renderSnippetBlock(client, defPath, body.startLine, body.endLine, src, params, listSymbols);
+    return renderSnippetBlock(
+        client,
+        defPath,
+        body.startLine,
+        body.endLine,
+        src,
+        params,
+        listSymbols,
+        // Anchor the doc-comment lookup at the definition's identifier
+        // position (1-based) so tree-sitter walks up from the right token.
+        { line: body.startLine + 1, column: (loc.range?.start?.character ?? 0) + 1 },
+    );
 }
 
 // ---------------------------------------------------------------------------
