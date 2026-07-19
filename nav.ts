@@ -247,6 +247,47 @@ export function clearDetectedLanguagesCache(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Per-file query readiness (openDocument + cpp indexing wait)
+// ---------------------------------------------------------------------------
+
+/**
+ * Open `abs` on its server and, for cpp, wait for ccls to finish indexing
+ * this translation unit before per-file LSP queries. On a cold ccls cache,
+ * queries issued before indexing finishes return stale/incomplete results
+ * — e.g. `code_outline` on a freshly-opened .cpp shows only the namespace
+ * with `{0:0}` ranges, `textDocument/definition` bounces to the declaration,
+ * `documentSymbol` returns placeholder ranges. The wait is best-effort
+ * (try/catch around `waitForIndexingComplete`): a wedged server must not
+ * block the query — the caller still gets whatever (possibly stale) result
+ * the server can produce, which is strictly better than hanging.
+ *
+ * Idempotent: `openDocument` dedupes by URI, and `waitForIndexingComplete`
+ * is a no-op once ccls's `indexState === "ended"` (warm cache). So on a warm
+ * cache this is essentially free — `openDocument` is a single dedup'd didOpen
+ * (or no-op) and the indexing wait returns immediately. No behavior change
+ * on a warm cache; the cold-cache path becomes reliable.
+ *
+ * `definition()` and `diagnostics()` did this inline; the helper deduplicates
+ * and applies the same wait to `outline`/`tree`/`hover`/`references`/`rename`,
+ * which previously queried on a not-yet-indexed TU.
+ */
+async function awaitReadyForQuery(
+    lang: Lang,
+    client: LspClient,
+    abs: string,
+    text: string,
+): Promise<void> {
+    await client.openDocument(abs, text);
+    if (lang === "cpp") {
+        try {
+            await client.waitForIndexingComplete();
+        } catch {
+            // Best-effort: a wedged server shouldn't block the query.
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 1. code_outline
 // ---------------------------------------------------------------------------
 
@@ -327,6 +368,10 @@ export async function outline(
         throw new Error(`Cannot read ${abs}: ${e}`);
     }
     const client = await clientOf(lang);
+    // Wait for ccls to finish indexing this TU before querying documentSymbol.
+    // On a cold cache, documentSymbol returns stale {0:0} ranges until the
+    // file's preamble session is ready. No-op on a warm cache.
+    await awaitReadyForQuery(lang, client, abs, text);
     const syms = await client.documentSymbols(abs, text);
     if (syms.length === 0) return `(no symbols found in ${params.path})`;
     const lines: string[] = [];
@@ -495,6 +540,11 @@ export async function tree(
         );
     }
     const client = await clientOf(lang);
+    // Wait for ccls to finish indexing this TU before querying documentSymbol.
+    // On a cold cache, documentSymbol returns stale {0:0} ranges and the
+    // tree's body ranges / hover signatures are wrong until the file's
+    // preamble session is ready. No-op on a warm cache.
+    await awaitReadyForQuery(lang, client, abs, text);
     const syms = await client.documentSymbols(abs, text);
     if (syms.length === 0) return `(no symbols found in ${params.path})`;
     // code_tree is pattern-driven and does NOT drop constants/variables — the
@@ -627,10 +677,7 @@ export async function definition(
     // cache, textDocument/definition bounces to the declaration and
     // documentSymbol returns stale {0:0} ranges because ccls's preamble
     // session for this file isn't ready yet. diagnostics() does the same.
-    await client.openDocument(abs, text);
-    if (lang === "cpp") {
-        try { await client.waitForIndexingComplete(); } catch {}
-    }
+    await awaitReadyForQuery(lang, client, abs, text);
     // STEP 0 — documentSymbol fast path (the ccls bounce fix).
     //
     // ccls's textDocument/definition, when the cursor is ON a C++ function
@@ -958,6 +1005,10 @@ export async function references(
     } catch (e) {
         return renderErrorRow(params.path, params.line, params.column, `cannot read ${abs}: ${e}`);
     }
+    // Wait for ccls to finish indexing this TU before querying references.
+    // On a cold cache, textDocument/references can miss cross-TU call sites
+    // until indexing finishes. No-op on a warm cache.
+    await awaitReadyForQuery(lang, client, abs, text);
     const refs = await client.references(abs, params.line - 1, params.column - 1, text);
     if (refs.length === 0) {
         // Clean empty result (the symbol has no references) — NOT a failure.
@@ -1469,6 +1520,10 @@ export async function rename(
         throw new Error(`Cannot read ${abs}: ${e}`);
     }
     const client = await clientOf(lang);
+    // Wait for ccls to finish indexing this TU before computing rename edits.
+    // On a cold cache, textDocument/rename can miss cross-TU occurrences until
+    // indexing finishes, producing a partial rename. No-op on a warm cache.
+    await awaitReadyForQuery(lang, client, abs, text);
     const edit = await client.rename(abs, params.line - 1, params.column - 1, text, params.newName);
     const applied = await applyWorkspaceEdit(edit);
     if (applied.length === 0) return `(rename produced no edits)`;
@@ -1522,6 +1577,10 @@ export async function hover(
     } catch (e) {
         return renderErrorRow(params.path, params.line, params.column, `cannot read ${abs}: ${e}`);
     }
+    // Wait for ccls to finish indexing this TU before querying hover. On a
+    // cold cache, textDocument/hover can return empty or partial signatures
+    // until the file's preamble session is ready. No-op on a warm cache.
+    await awaitReadyForQuery(lang, client, abs, text);
     const h = await client.hover(abs, params.line - 1, params.column - 1, text);
     const body = hoverText(h);
     // Signature-first: emit the collapsed one-line signature (when one can
@@ -1682,11 +1741,14 @@ export async function diagnostics(
         // Hard failure: the language server could not be spawned.
         throw new Error(`${lang}: server unavailable: ${e}`);
     }
-    // Open the document on the server. didOpen is required for the server
-    // to analyze the file; both the pull model (textDocument/diagnostic) and
-    // the push model (textDocument/publishDiagnostics) operate on opened
-    // documents. Idempotent (openDocument dedupes by URI).
-    await client.openDocument(abs, text);
+    // Open the document on the server and (for cpp) wait for ccls to finish
+    // indexing this TU. didOpen is required for the server to analyze the
+    // file; both the pull model (textDocument/diagnostic) and the push model
+    // (textDocument/publishDiagnostics) operate on opened documents. The cpp
+    // indexing wait is best-effort (see awaitReadyForQuery); the push
+    // fallback below no longer needs to repeat it. Idempotent (openDocument
+    // dedupes by URI).
+    await awaitReadyForQuery(lang, client, abs, text);
     // Try the pull model first (LSP 3.17 textDocument/diagnostic). We do NOT
     // pre-gate on supportsPullDiagnostics(): pyright answers without
     // advertising diagnosticProvider, while bash-language-server rejects with
@@ -1714,19 +1776,15 @@ export async function diagnostics(
     //
     // For cpp specifically, ccls publishes publishDiagnostics for a file only
     // once its translation unit has compiled — which on a cold cache happens
-    // DURING whole-project indexing. So we wait for indexing to complete
-    // first (event-driven via ccls's $/progress "end"), then wait for the
-    // push. This is the user's "wait while it is ready" ask: the tool no
-    // longer times out mid-index and surfaces a misleading pull-error.
+    // DURING whole-project indexing. We already waited for indexing to
+    // complete above (awaitReadyForQuery, event-driven via ccls's $/progress
+    // "end"), so the push is ready to arrive; here we just wait for it. This
+    // is the user's "wait while it is ready" ask: the tool no longer times
+    // out mid-index and surfaces a misleading pull-error.
     if (pullError || diags === null) {
-        if (lang === "cpp") {
-            try {
-                await client.waitForIndexingComplete();
-            } catch {
-                // indexing wait is best-effort (a wedged server shouldn't
-                // block the push wait too); proceed to wait for the publish.
-            }
-        }
+        // cpp indexing was already waited for above (awaitReadyForQuery), so
+        // ccls's publishDiagnostics (which fires only after the TU compiles)
+        // is now ready to arrive. We just wait for the push.
         const pushed = await client.waitForPushedDiagnostics(abs, lang === "cpp" ? 30000 : 5000);
         if (pushed !== undefined) {
             // Push succeeded. If the push cache is ALSO empty but pull rejected,
