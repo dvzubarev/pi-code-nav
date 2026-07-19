@@ -665,26 +665,8 @@ contains the positions the next step needs.
    identifiers into their definitions, as deep as you need.
 
 
-Retrieving third-party docs/source (site-packages, nix store, system headers) workflows:
-1. PREFERRED: code_search_symbol with a QUALIFIED name. Pass \`typing.cast\`,
-   \`cbor2.loads\`, \`std::vector::push_back\` — the tool searches across the
-   workspace AND third-party/stdlib.
-   You get a position; feed it into code_definition / code_hover.
-2. FALLBACK (symbol not found via search, or you only have a file in view):
-   use the tool call chains above — code_scan the file you're looking at to
-   find the symbol's position, then code_definition / code_hover at that
-   position. code_definition / code_hover accept absolute third-party paths
-   (nix store, site-packages, system headers).
-3. LAST RESORT (symbol from a NAME only, no position, and search found nothing):
-     (1). resolve the package root. If the project uses nix, every
-          third-party path is exposed via an environment variable — grep the
-          right one for your language:
-          python: \`echo $PYTHONPATH | tr ':' '\\n' | grep <name>\`,
-          C++: (cmake, the usual case) \`echo $CMAKE_INCLUDE_PATH | tr ':' '\\n' | grep <name>\`,
-          C++: (no cmake) \`echo $NIX_CFLAGS_COMPILE | tr ' ' '\\n' | grep <name>\`;
-     (2). \`rg -n --column <name> <root>\` — the output is \`line:column:content\`,
-          and on ASCII lines the 1-based line and column match what
-          code_definition/code_hover expect.
-     (3). call code_definition/code_hover on that position.
-    Do NOT rg the whole /nix/store (millions of entries, many versions) —
-    always scope to one resolved package root.`;
+Retrieving third-party docs/source (site-packages, nix store, system headers) workflow:
+PREFERRED: code_search_symbol with a QUALIFIED name. Pass \`typing.cast\`,
+\`cbor2.loads\`, \`std::vector::push_back\` — the tool searches across the
+workspace AND third-party/stdlib.
+You get a position; feed it into code_definition / code_hover.`;
