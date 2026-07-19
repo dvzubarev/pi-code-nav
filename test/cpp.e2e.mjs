@@ -17,7 +17,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { writeFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { nav, withWorkspace, serverAvailable, SHOULD_RUN_E2E } from "./e2e-helpers.mjs";
 
@@ -108,3 +108,126 @@ runOrSkip("code_tree on a .cpp file uses ccls detail (no redundant hover)", asyn
         await ws.cleanup();
     }
 });
+
+// ---------------------------------------------------------------------------
+// code_diagnostics on ccls — the push-fallback + event-driven indexing wait.
+// ---------------------------------------------------------------------------
+//
+// ccls rejects the LSP 3.17 pull model (textDocument/diagnostic -> "unknown
+// request"), so code_diagnostics falls back to textDocument/publishDiagnostics.
+// ccls publishes push diagnostics for a file only once its translation unit has
+// compiled — which on a cold cache happens DURING whole-project indexing (ccls
+// reports progress via $/progress begin/report/end on the "index" token).
+// The old fixed-budget ~1.2s poll returned NOTHING mid-index and surfaced a
+// misleading pull-error; the new flow waits for indexing to complete (event-
+// driven via $/progress "end") and then waits event-drivenly for the actual
+// publishDiagnostics notification. This reproduces the DiskANN report.
+
+runOrSkip(
+    "code_diagnostics on a .cpp file reports an error after whole-project indexing (push fallback)",
+    async () => {
+        // A TU with an obvious type error. We provide a compile_commands.json
+        // so ccls indexes the TU at initialize (cold cache — fresh mkdtemp path),
+        // exactly like the DiskANN scenario. The error must show up after the
+        // indexing-driven publish, proving the event-driven push wait works.
+        const ws = await withWorkspace([]);
+        try {
+            const root = ws.root;
+            const file = resolve(root, "bad.cpp");
+            await writeFile(
+                file,
+                [
+                    `int main() {`,
+                    `    int x = "not an int";`,
+                    `    return x;`,
+                    `}`,
+                    ``,
+                ].join("\n"),
+                "utf8",
+            );
+            await mkdir(resolve(root, "build"), { recursive: true });
+            await writeFile(
+                resolve(root, "build", "compile_commands.json"),
+                JSON.stringify(
+                    [
+                        {
+                            directory: root,
+                            command: `clang++ -std=c++17 bad.cpp`,
+                            file,
+                        },
+                    ],
+                    null,
+                    2,
+                ),
+                "utf8",
+            );
+
+            const out = await nav.diagnostics({ path: "bad.cpp" }, root, ws.clientOf);
+            // Must NOT be the misleading pull-error string the old code returned
+            // mid-index. ccls doesn't implement the pull model, so the pull
+            // request is expected to fail — the tool must reach the push path.
+            assert.ok(
+                !/textDocument\/diagnostic request failed/.test(out),
+                `should not surface the pull error after the push fallback:\n${out}`,
+            );
+            // ccls (clang) reports the type mismatch. Wording can drift across
+            // clang versions, so assert on the error category, not exact text.
+            assert.match(
+                out,
+                /\d+ diagnostic\(s\) for bad\.cpp:/,
+                `diagnostic header missing:\n${out}`,
+            );
+            assert.match(
+                out,
+                /(?:cannot initialize|no viable conversion|incompatible|not assignable)/i,
+                `expected a type-mismatch diagnostic, got:\n${out}`,
+            );
+        } finally {
+            await ws.cleanup();
+        }
+    },
+);
+
+runOrSkip(
+    "code_diagnostics on a clean .cpp file reports no diagnostics (push fallback)",
+    async () => {
+        // A clean TU. After indexing + the event-driven push wait, ccls publishes
+        // an empty set, and the tool reports "no diagnostics" — distinguishing a
+        // clean file from a silent/broken server.
+        const ws = await withWorkspace([]);
+        try {
+            const root = ws.root;
+            const file = resolve(root, "good.cpp");
+            await writeFile(
+                file,
+                [`int main() { return 0; }`, ``].join("\n"),
+                "utf8",
+            );
+            await mkdir(resolve(root, "build"), { recursive: true });
+            await writeFile(
+                resolve(root, "build", "compile_commands.json"),
+                JSON.stringify(
+                    [
+                        {
+                            directory: root,
+                            command: `clang++ -std=c++17 good.cpp`,
+                            file,
+                        },
+                    ],
+                    null,
+                    2,
+                ),
+                "utf8",
+            );
+
+            const out = await nav.diagnostics({ path: "good.cpp" }, root, ws.clientOf);
+            assert.match(
+                out,
+                /no diagnostics for good\.cpp/,
+                `expected no diagnostics, got:\n${out}`,
+            );
+        } finally {
+            await ws.cleanup();
+        }
+    },
+);

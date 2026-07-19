@@ -1529,13 +1529,30 @@ export async function diagnostics(
     // the pull model (typescript-language-server, bash-language-server, ccls)
     // still emit publishDiagnostics notifications after didOpen, but only if the
     // client advertised textDocument.publishDiagnostics in initialize (which
-    // LspClient.start() now does). The notification handler in LspClient caches
-    // the latest set per URI; we poll it for up to ~1.2s to let the server's
-    // diagnostics delayer fire (tsserver delays 300-800ms by line count; ccls
-    // publishes after indexing). The tool contract stays synchronous - this is
-    // a bounded wait, not open-ended collection.
+    // LspClient.start() does). This wait is now EVENT-DRIVEN: instead of polling
+    // the push cache on a fixed ~1.2s budget (far too short for ccls, which
+    // publishes only after whole-project indexing — often 10-60s on a cold
+    // cache), we block on a promise that resolves the instant the server
+    // actually pushes diagnostics for this URI. The contract stays
+    // synchronous (one bounded wait → one result); it is NOT an open-ended
+    // notification collector.
+    //
+    // For cpp specifically, ccls publishes publishDiagnostics for a file only
+    // once its translation unit has compiled — which on a cold cache happens
+    // DURING whole-project indexing. So we wait for indexing to complete
+    // first (event-driven via ccls's $/progress "end"), then wait for the
+    // push. This is the user's "wait while it is ready" ask: the tool no
+    // longer times out mid-index and surfaces a misleading pull-error.
     if (pullError || diags === null) {
-        const pushed = await pollPushedDiagnostics(client, abs);
+        if (lang === "cpp") {
+            try {
+                await client.waitForIndexingComplete();
+            } catch {
+                // indexing wait is best-effort (a wedged server shouldn't
+                // block the push wait too); proceed to wait for the publish.
+            }
+        }
+        const pushed = await client.waitForPushedDiagnostics(abs, lang === "cpp" ? 30000 : 5000);
         if (pushed !== undefined) {
             // Push succeeded. If the push cache is ALSO empty but pull rejected,
             // mention the pull failure so the user can tell a clean file from a
@@ -1559,25 +1576,13 @@ export async function diagnostics(
 }
 
 /**
- * Poll the client's push-diagnostics cache for `absPath` until it has a value
- * or the budget (~1.2s) is exhausted. Returns undefined if nothing arrived.
- * Servers that push publishDiagnostics do so on their own schedule (tsserver:
- * a Delayer(300) + a 300-800ms computed delay after didOpen). The first poll
- * is immediate (the server may have already fired during initialize/didOpen
- * round-trips); later polls back off.
+ * Removed: the old `pollPushedDiagnostics` polled the push cache on a fixed
+ * ~1.2s budget. That was too short for ccls (publishes only after indexing)
+ * and not event-driven. `code_diagnostics` now uses
+ * `LspClient.waitForPushedDiagnostics()`, which resolves on the actual
+ * `textDocument/publishDiagnostics` notification. See
+ * `docs/code_diagnostics.md`.
  */
-async function pollPushedDiagnostics(
-    client: LspClient,
-    absPath: string,
-): Promise<Diagnostic[] | undefined> {
-    const waits = [0, 100, 200, 300, 600]; // ~1.2s total budget
-    for (const w of waits) {
-        if (w > 0) await new Promise((r) => setTimeout(r, w));
-        const diags = client.getPushedDiagnostics(absPath);
-        if (diags !== undefined) return diags;
-    }
-    return undefined;
-}
 
 /** Shared renderer for the diagnostic list (pull or push origin). */
 function renderDiagnostics(path: string, diags: Diagnostic[]): string {

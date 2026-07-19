@@ -377,13 +377,26 @@ export class LspClient {
      * Latest push-model diagnostics per URI, populated by the
      * textDocument/publishDiagnostics notification handler. Latest-wins: each
      * notification replaces the previous set for that URI (the spec sends a
-     * full set, not a delta). Used as a synchronous fallback for
-     * code_diagnostics on servers that reject the LSP 3.17 pull model
-     * (typescript-language-server, bash-language-server, ccls) — the tool opens
-     * the document, waits briefly for the server's delayer to fire, then reads
-     * this map. Cleared on server exit/shutdown alongside openDocs.
+     * full set, not a delta). `code_diagnostics` reads this via
+     * `waitForPushedDiagnostics()` (event-driven) on servers that reject the
+     * LSP 3.17 pull model (typescript-language-server, bash-language-server,
+     * ccls). Cleared on server exit/shutdown alongside openDocs.
      */
     private diagnosticsByUri = new Map<string, Diagnostic[]>();
+    /**
+     * Per-URI resolvers waiting on the NEXT textDocument/publishDiagnostics
+     * notification. Populated by `waitForPushedDiagnostics()` and drained by
+     * the publishDiagnostics handler (which resolves each waiter with the
+     * freshly-published set). This is the EVENT-DRIVEN push wait: instead of
+     * polling `diagnosticsByUri` on a fixed budget (which is too short for
+     * ccls — it publishes only after indexing, often 10-60s on a cold cache),
+     * the caller awaits a promise that resolves the moment the server
+     * actually pushes diagnostics for that URI. The contract stays
+     * synchronous (one bounded wait → one result); it is NOT an open-ended
+     * notification collector. Resolvers left dangling on shutdown/exit are
+     * rejected with undefined via `resetPushState()`.
+     */
+    private diagnosticWaiters = new Map<string, Set<(diags: Diagnostic[] | undefined) => void>>();
     /**
      * ccls project-wide indexing progress, tracked via the LSP work-done-
      * progress protocol. ccls parses ALL translation units from
@@ -503,7 +516,7 @@ export class LspClient {
             this.conn = null;
             this.capabilities = null;
             this.openDocs.clear();
-            this.diagnosticsByUri.clear();
+            this.resetPushState();
             this.extraWorkspaceFolders = [];
             this.resetIndexingState();
             this.closeLog();
@@ -610,7 +623,7 @@ export class LspClient {
             this.capabilities = null;
             this.ready = null;
             this.openDocs.clear();
-            this.diagnosticsByUri.clear();
+            this.resetPushState();
             this.extraWorkspaceFolders = [];
             this.resetIndexingState();
             // Remove the per-server log file — the server is gone, its log is
@@ -631,6 +644,16 @@ export class LspClient {
                 const uri = params.uri;
                 const diags = params.diagnostics ?? [];
                 this.diagnosticsByUri.set(uri, diags);
+                // Resolve any event-driven waiters blocked in
+                // waitForPushedDiagnostics() for this URI. Drain the set so a
+                // later notification starts a fresh wait. Copy diags so a
+                // waiter can't be mutated by a subsequent set() on the same
+                // URI before it returns.
+                const waiters = this.diagnosticWaiters.get(uri);
+                if (waiters) {
+                    this.diagnosticWaiters.delete(uri);
+                    for (const r of waiters) r([...diags]);
+                }
             },
         );
         // ccls reports project-wide indexing via the LSP work-done-progress
@@ -1008,6 +1031,21 @@ export class LspClient {
         this.indexEndResolvers = [];
     }
 
+    /**
+     * Drop push-diagnostics cache AND reject any event-driven waiters
+     * (used on shutdown/exit/spawn-fail). A waiter still pending in
+     * `waitForPushedDiagnostics()` would otherwise hang forever on a dead
+     * server — we resolve it with `undefined` so the caller falls through to
+     * the honest "no diagnostics" / pull-error path instead of timing out.
+     */
+    private resetPushState(): void {
+        this.diagnosticsByUri.clear();
+        for (const set of this.diagnosticWaiters.values()) {
+            for (const r of set) r(undefined);
+        }
+        this.diagnosticWaiters.clear();
+    }
+
     supports(method: keyof ServerCapabilities): boolean {
         return Boolean(this.capabilities && this.capabilities[method]);
     }
@@ -1218,11 +1256,12 @@ export class LspClient {
     /**
      * Read the latest push-model diagnostics cached for `absPath` from the
      * textDocument/publishDiagnostics handler, or undefined if none have arrived
-     * yet. This is the FALLBACK for code_diagnostics on servers that reject the
-     * pull model (typescript-language-server, bash-language-server, ccls): the
-     * tool opens the document, waits for the server's diagnostics delayer to
-     * fire, then polls this. Returns a snapshot copy so the caller can iterate
-     * without the notification handler mutating the array mid-loop.
+     * yet. Snapshot reader; `code_diagnostics` no longer polls this on a fixed
+     * budget — it uses `waitForPushedDiagnostics()` instead, which resolves the
+     * moment the publish arrives (event-driven). This method remains for
+     * introspection / tests and as `waitForPushedDiagnostics`' fast path.
+     * Returns a snapshot copy so the caller can iterate without the notification
+     * handler mutating the array mid-loop.
      *
      * The push model is only active because start() advertises
      * textDocument.publishDiagnostics in client capabilities — without that,
@@ -1236,6 +1275,59 @@ export class LspClient {
         return diags ? [...diags] : undefined;
     }
 
+    /**
+     * Event-driven wait for the NEXT `textDocument/publishDiagnostics`
+     * notification for `absPath`, bounded by `timeoutMs`. Unlike the old
+     * fixed-budget poll, this resolves the instant the server pushes
+     * diagnostics for that URI — which for ccls is AFTER whole-project
+     * indexing finishes (often 10-60s on a cold cache; the caller should
+     * `waitForIndexingComplete()` first for cpp, or pass a generous budget).
+     *
+     * Returns:
+     *   - the freshly-published `Diagnostic[]` (a copy) if a notification
+     *     arrives within `timeoutMs`, or if the cache already holds a set
+     *     for this URI at call time (covers the "already published during
+     *     initialize/didOpen round-trip" race);
+     *   - `undefined` if the budget elapses with no notification, or if the
+     *     server exits/shuts down mid-wait (the exit handler resolves the
+     *     waiter with undefined via `resetPushState`).
+     *
+     * The contract stays synchronous (one bounded wait → one result). It is
+     * NOT an open-ended notification collector — `timeoutMs` is the upper
+     * bound the caller chose; the waiter is unregistered on resolve.
+     */
+    waitForPushedDiagnostics(absPath: string, timeoutMs = 10000): Promise<Diagnostic[] | undefined> {
+        const uri = pathToFileURL(absPath).href;
+        // Fast path: the server already published for this URI (e.g. during
+        // the initialize/didOpen round-trip, or a prior tool call primed the
+        // cache). Return a snapshot so the caller can't be mutated by a
+        // later notification.
+        const existing = this.diagnosticsByUri.get(uri);
+        if (existing !== undefined) return Promise.resolve([...existing]);
+        return new Promise<Diagnostic[] | undefined>((resolve) => {
+            let done = false;
+            const finish = (v: Diagnostic[] | undefined) => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                const set = this.diagnosticWaiters.get(uri);
+                if (set) {
+                    set.delete(resolver);
+                    if (set.size === 0) this.diagnosticWaiters.delete(uri);
+                }
+                resolve(v);
+            };
+            const resolver = (diags: Diagnostic[] | undefined) => finish(diags);
+            const timer = setTimeout(() => finish(undefined), timeoutMs);
+            let set = this.diagnosticWaiters.get(uri);
+            if (!set) {
+                set = new Set();
+                this.diagnosticWaiters.set(uri, set);
+            }
+            set.add(resolver);
+        });
+    }
+
     /** Graceful LSP shutdown + exit. Safe to call multiple times. */
     async shutdown(): Promise<void> {
         const conn = this.conn;
@@ -1246,7 +1338,7 @@ export class LspClient {
         this.capabilities = null;
         this.ready = null;
         this.openDocs.clear();
-        this.diagnosticsByUri.clear();
+        this.resetPushState();
         this.extraWorkspaceFolders = [];
         this.resetIndexingState();
         try {
