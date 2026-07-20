@@ -41,6 +41,8 @@
 //   node nav-cli.mjs references temp.py 5 5
 //   node nav-cli.mjs rename temp.py 5 5 new_name
 //   node nav-cli.mjs symbol "parse" python
+//   node nav-cli.mjs symbol "push_back" cpp --info code,references
+//   node nav-cli.mjs symbol "foo" --kind function --regex "^foo$"
 //   node nav-cli.mjs diagnostics temp.py
 
 import { createJiti } from "/home/denin/.npm-local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs";
@@ -162,10 +164,55 @@ async function main() {
             column = parseInt(colStr, 10);
         console.log(await nav.rename({ path, line, column, newName }, ROOT, clientOf));
     } else if (cmd === "symbol") {
-        const [query, langArg] = rest;
+        // symbol <query> [python|cpp|bash|typescript] [--info code,hover,references] [--kind function,method] [--regex <re>]
+        const langArg = rest.find(
+            (a) =>
+                /^[a-z]+$/.test(a) && a !== rest[0] && !["--info", "--kind", "--regex"].includes(a),
+        );
+        const query = rest[0];
         if (!query) usage();
         const params = { query };
-        if (langArg) params.language = langArg;
+        // Optional --info <comma list of code|hover|references>
+        const infoIdx = rest.indexOf("--info");
+        if (infoIdx >= 0) {
+            const val = rest[infoIdx + 1] ?? "";
+            const list = val
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean);
+            const valid = ["code", "hover", "references"];
+            const info = list.filter((s) => valid.includes(s));
+            if (info.length > 0) params.info = info;
+        }
+        // Optional --kind <comma list of friendly kind names>
+        const kindIdx = rest.indexOf("--kind");
+        if (kindIdx >= 0) {
+            const val = rest[kindIdx + 1] ?? "";
+            params.filter_by_kind = val
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean);
+        }
+        // Optional --regex <regexp>
+        const regexIdx = rest.indexOf("--regex");
+        if (regexIdx >= 0) {
+            params.filter_by_regex = rest[regexIdx + 1];
+            if (!params.filter_by_regex) throw new Error("--regex requires a regexp argument");
+        }
+        // Optional language (positional after query, not a flag).
+        const flags = new Set(["--info", "--kind", "--regex"]);
+        const flagVals = new Set([rest[infoIdx + 1], rest[kindIdx + 1], rest[regexIdx + 1]]);
+        const langCandidate = rest
+            .slice(1)
+            .find(
+                (a) =>
+                    !a.startsWith("--") &&
+                    a !== query &&
+                    !flags.has(a) &&
+                    !flagVals.has(a) &&
+                    ["python", "cpp", "bash", "typescript"].includes(a),
+            );
+        if (langCandidate) params.language = langCandidate;
         console.log(await nav.symbol(params, ROOT, clientOf));
     } else if (cmd === "scan") {
         // scan <file> [<startLine> <endLine>] [--pattern <re>] [--docs] [--roles ...]

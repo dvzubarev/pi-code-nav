@@ -68,15 +68,21 @@ function sym(name, kind, relPath, line, character) {
     };
 }
 
-test("cpp bare 'occlude_list' drops fuzzy rows with no shared substring", async () => {
+test("cpp bare 'occlude_list' keeps only the token-exact workspace match (T1 wins, fuzzy + thrust dropped)", async () => {
     const { symbol } = await load("./nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symfilter-cpp-"));
     try {
         // Canned ccls results for query `occlude_list`. cpp `name` is a
-        // full C++ qualified signature.
-        //   - rows 1-3: contain `occlude_list` as a substring → kept
-        //   - rows 4-5: the thrust::iterator_* noise that motivated the fix
-        //     (no `occlude_list` substring at all) → must be dropped
+        // full C++ qualified signature. Under the TOKEN-LEVEL exact rule
+        // (isCppExactMatch: bare equality), only row 1 is exact (its bare
+        // identifier IS `occlude_list`); rows 2-3 have bare identifiers
+        // `occlude_list_output` / `_occlude_list_output` — different symbols,
+        // so they're fuzzy T3. Since row 1 is a workspace exact (T1
+        // non-empty), T1 wins and the fuzzy tail (rows 2-3) is dropped along
+        // with the thrust::iterator_* noise (rows 4-5, no `occlude_list`
+        // substring at all). The old substring-based rule counted rows 2-3
+        // as "exact" (they contain `occlude_list`); the token rule correctly
+        // treats them as fuzzy cousins.
         const root = dir;
         const canned = [
             sym(
@@ -121,22 +127,22 @@ test("cpp bare 'occlude_list' drops fuzzy rows with no shared substring", async 
             mockClientOf(dir, canned),
         );
         const rows = out.split("\n").filter((l) => l.startsWith("[cpp]"));
-        // Exactly the three substring-matching rows; the two thrust rows
-        // (no `occlude_list` substring) must be dropped.
-        assert.equal(
-            rows.length,
-            3,
-            `expected 3 substring-matching rows, got:\n${out}`,
-        );
+        // Only the token-exact workspace match (row 1). The fuzzy cousins
+        // (rows 2-3) are dropped because T1 wins; the thrust noise (rows 4-5)
+        // is dropped (no `occlude_list` substring).
+        assert.equal(rows.length, 1, `expected ONLY the token-exact workspace row, got:\n${out}`);
         // The thrust::iterator_* noise must NOT appear.
         assert.ok(
             !/thrust::iterator_/.test(out),
             `thrust::iterator_* noise should be dropped, but appeared in:\n${out}`,
         );
-        // The good rows ARE present.
+        // The exact row IS present.
         assert.match(out, /Index::occlude_list/, `Index::occlude_list missing:\n${out}`);
-        assert.match(out, /occlude_list_output/, `occlude_list_output missing:\n${out}`);
-        assert.match(out, /_occlude_list_output/, `_occlude_list_output missing:\n${out}`);
+        // The fuzzy cousins are dropped (T1 wins).
+        assert.ok(
+            !/occlude_list_output/.test(out),
+            `occlude_list_output (fuzzy cousin) should be dropped when T1 wins:\n${out}`,
+        );
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }
@@ -238,6 +244,444 @@ test("python bare 'tempc' with workspace TempC returns ONLY TempC (case-insensit
         const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
         assert.equal(rows.length, 1, `expected ONLY the workspace TempC row, got:\n${out}`);
         assert.match(rows[0], /\] Class TempC /);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+// ---------------------------------------------------------------------------
+// New: token-level exact rule for cpp, filter_by_kind / filter_by_regex,
+// and the `info` fan-out (dedup, cap, references cap).
+// ---------------------------------------------------------------------------
+
+/** A richer mock for the fan-out path: the client's documentSymbols / definition
+ * / hover / references are canned so the fan-out section renderers (which call
+ * nav.definition / nav.hover / nav.references) return deterministic output
+ * without a real language server. The fan-out's `--- code ---` section drives
+ * nav.definition, which reads the file from disk — so the test writes a real
+ * temp file whose contents match the mock documentSymbol's range. */
+function mockClientOfRich(
+    rootPath,
+    { cannedSyms, docSymsByPath, defLocsByPath, hoverTextByPath, refsByPath },
+) {
+    const client = {
+        rootPath,
+        supports: () => true,
+        ensureProjectLoaded: async () => true,
+        workspaceSymbol: async () => cannedSyms,
+        workspaceFolderPaths: () => [rootPath],
+        documentSymbols: async (path) => docSymsByPath.get(path) ?? [],
+        definition: async (path, line, char) => defLocsByPath.get(path) ?? null,
+        hover: async (path, line, char) => hoverTextByPath.get(path) ?? null,
+        references: async (path, line, char) => refsByPath.get(path) ?? [],
+        openDocument: async () => {},
+        waitForIndexingComplete: async () => {},
+    };
+    return async () => client;
+}
+
+/** Build a DocumentSymbol (hierarchical) with a selectionRange (identifier
+ * span) and a range (full body). */
+function docSymbol(name, kind, selStart, rangeEnd) {
+    return {
+        name,
+        kind,
+        range: { start: selStart, end: rangeEnd },
+        selectionRange: {
+            start: selStart,
+            end: { line: selStart.line, character: selStart.character + name.length },
+        },
+        children: [],
+    };
+}
+
+test("cpp qualified 'vector::push_back' exact = token-suffix of qualifier (std::vector and mystd::vector, NOT std::my_vector)", async () => {
+    const { symbol } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symqual-"));
+    try {
+        const root = dir;
+        const canned = [
+            // std::vector::push_back — qualifier [std, vector]; query [vector]
+            // is a token suffix → exact.
+            sym("void std::vector<int>::push_back(int x)", 6, `${root}/a.cpp`, 10, 17),
+            // mystd::vector::push_back — qualifier [mystd, vector]; [vector]
+            // is still a token suffix → exact.
+            sym("void mystd::vector<int>::push_back(int x)", 6, `/nix/store/fake/b.cpp`, 5, 18),
+            // std::my_vector::push_back — qualifier [std, my_vector]; [vector]
+            // is NOT a token suffix (my_vector != vector) → NOT exact → T3
+            // (has `push_back` substring) → dropped because T1 is non-empty
+            // (the workspace a.cpp hit above is exact).
+            sym("void std::my_vector<int>::push_back(double x)", 6, `/nix/store/fake/c.cpp`, 1, 18),
+        ];
+        const out = await symbol(
+            { query: "vector::push_back", language: "cpp" },
+            dir,
+            mockClientOf(dir, canned),
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[cpp]"));
+        // The two token-suffix exact matches (workspace T1 wins → ONLY the
+        // workspace one is emitted; mystd is third-party T2, dropped when T1
+        // non-empty; my_vector is T3, dropped).
+        assert.equal(rows.length, 1, `expected ONLY the workspace exact row, got:\n${out}`);
+        assert.match(rows[0], /std::vector.*push_back/);
+        assert.ok(
+            !/my_vector/.test(out),
+            `std::my_vector::push_back should NOT be exact (token mismatch):\n${out}`,
+        );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("cpp qualified 'vector::push_back' with NO workspace exact returns BOTH third-party token-suffix matches", async () => {
+    const { symbol } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symqual2-"));
+    try {
+        const root = dir;
+        const canned = [
+            // Both third-party, both token-suffix exact. T1 empty → T2 (exact
+            // third-party) = both; T3 (my_vector, not exact) dropped because
+            // T2 non-empty (T3 only added when T1 empty AND we're not in
+            // wantInfo... actually T3 is [...t2, t3] when not wantInfo).
+            sym("void std::vector<int>::push_back(int x)", 6, `/nix/store/fake/b.cpp`, 5, 18),
+            sym("void mystd::vector<int>::push_back(int x)", 6, `/nix/store/fake/d.cpp`, 5, 18),
+            // NOT exact (my_vector) → T3 (has substring) → kept after T2 in
+            // list mode.
+            sym("void std::my_vector<int>::push_back(double x)", 6, `/nix/store/fake/c.cpp`, 1, 18),
+        ];
+        const out = await symbol(
+            { query: "vector::push_back", language: "cpp" },
+            dir,
+            mockClientOf(dir, canned),
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[cpp]") && !l.includes("# "));
+        // T2 (2 exact) + T3 (1 fuzzy my_vector) = 3 rows in list mode.
+        assert.equal(rows.length, 3, `expected 2 exact + 1 fuzzy, got:\n${out}`);
+        assert.match(out, /std::vector.*push_back/);
+        assert.match(out, /mystd::vector.*push_back/);
+        // my_vector is fuzzy (T3), still present in list mode.
+        assert.match(out, /my_vector.*push_back/);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("cpp bare 'push_back' exact = bare equality (std::vector::push_back yes, push_back_int no)", async () => {
+    const { symbol } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symbare-"));
+    try {
+        const root = dir;
+        const canned = [
+            // bare `push_back`: bare equality → exact.
+            sym("void std::vector<int>::push_back(int x)", 6, `${root}/a.cpp`, 10, 17),
+            // bare `push_back_int` != query → NOT exact → T3 (has substring).
+            sym("void std::vector<int>::push_back_int(int x)", 6, `/nix/store/fake/b.cpp`, 5, 17),
+        ];
+        const out = await symbol(
+            { query: "push_back", language: "cpp" },
+            dir,
+            mockClientOf(dir, canned),
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[cpp]"));
+        // T1 (workspace exact) wins → only the exact `push_back` row.
+        assert.equal(rows.length, 1, `expected ONLY the token-exact workspace row, got:\n${out}`);
+        assert.match(rows[0], /std::vector.*push_back\(/);
+        assert.ok(
+            !/push_back_int/.test(out),
+            `push_back_int should be fuzzy (different bare), dropped when T1 wins:\n${out}`,
+        );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("filter_by_kind narrows to the requested SymbolKind", async () => {
+    const { symbol } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-kindfilter-"));
+    try {
+        const root = dir;
+        const canned = [
+            // A function `foo` (kind 12) and a class `foo` (kind 5) — same
+            // bare name, different kinds, both workspace. Without the filter
+            // both are T1 exact and emitted. With filter_by_kind=["function"],
+            // only the Function survives.
+            sym("foo", 12, `${root}/mod.py`, 10, 4),
+            sym("foo", 5, `${root}/mod.py`, 20, 6),
+        ];
+        const out = await symbol(
+            { query: "foo", language: "python", filter_by_kind: ["function"] },
+            dir,
+            mockClientOf(dir, canned),
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
+        assert.equal(rows.length, 1, `expected only the Function row, got:\n${out}`);
+        assert.match(rows[0], /\] Function foo /);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("filter_by_kind accepts case-insensitive kind names", async () => {
+    const { symbol } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-kindci-"));
+    try {
+        const root = dir;
+        const canned = [
+            sym("foo", 12, `${root}/mod.py`, 10, 4),
+            sym("foo", 5, `${root}/mod.py`, 20, 6),
+        ];
+        const out = await symbol(
+            { query: "foo", language: "python", filter_by_kind: ["Class"] },
+            dir,
+            mockClientOf(dir, canned),
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
+        assert.equal(rows.length, 1, `expected only the Class row, got:\n${out}`);
+        assert.match(rows[0], /\] Class foo /);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("filter_by_regex (icase) narrows by the rendered name column", async () => {
+    const { symbol } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-regexfilter-"));
+    try {
+        const root = dir;
+        const canned = [
+            // Two workspace exact matches (same bare name `foo`) in different
+            // files. filter_by_regex matches the rendered name column; for
+            // python that's the bare identifier, so this can't distinguish
+            // overloads — but it CAN filter by name pattern when the query is
+            // a substring match (e.g. query `load` returns `loads` and
+            // `load_package_tests`; a regex `^load$` keeps only the bare `load`).
+            sym("load", 12, `${root}/a.py`, 1, 4),
+            sym("loads", 12, `${root}/b.py`, 1, 4),
+        ];
+        // Query `load` (bare): both `load` and `loads` contain `load` as a
+        // substring → both are T3 fuzzy (neither is exact-equal to `load`
+        // except `load` itself which IS exact → T1). Actually `load` IS
+        // exact (bare equality) and workspace → T1 non-empty → only `load`.
+        // To exercise the regex filter on a multi-row set, use a query where
+        // T1 is empty so T2+T3 are emitted. Query `loa` (substring, no exact):
+        const canned2 = [
+            sym("load", 12, `${root}/a.py`, 1, 4),
+            sym("loads", 12, `${root}/b.py`, 1, 4),
+            sym("loader", 12, `${root}/c.py`, 1, 4),
+        ];
+        const out = await symbol(
+            { query: "loa", language: "python", filter_by_regex: "^loads$" },
+            dir,
+            mockClientOf(dir, canned2),
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
+        // `loa` is not exact-equal to any → T1/T2 empty → T3 (substring) =
+        // all three. filter_by_regex `^loads$` keeps only `loads`.
+        assert.equal(
+            rows.length,
+            1,
+            `expected only the loads row after regex filter, got:\n${out}`,
+        );
+        assert.match(rows[0], /\] Function loads /);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("filter_by_regex with an invalid regexp is a hard error (isError)", async () => {
+    const { symbol } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-badregex-"));
+    try {
+        await assert.rejects(
+            () =>
+                symbol(
+                    { query: "foo", language: "python", filter_by_regex: "(" },
+                    dir,
+                    mockClientOf(dir, []),
+                ),
+            /Invalid filter_by_regex/,
+        );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("info fan-out: single match with [code, hover] dedups hover (only --- code ---)", async () => {
+    const { symbol } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-dedup-"));
+    try {
+        const root = dir;
+        // A temp .ts file with a real function body. nav.definition reads it
+        // from disk and (step 0) finds the body-bearing DocumentSymbol at the
+        // cursor → returns the body directly (snippetHasBody true for `{`).
+        const tsFile = resolve(root, "mod.ts");
+        await import("node:fs/promises").then((fs) =>
+            fs.writeFile(tsFile, "function foo(x: number): number {\n  return x;\n}\n", "utf8"),
+        );
+        const selStart = { line: 0, character: 9 }; // `foo` identifier span start (0-based)
+        const rangeEnd = { line: 2, character: 1 };
+        const canned = [sym("foo", 12, tsFile, 0, 9)];
+        const docSymsByPath = new Map([[tsFile, [docSymbol("foo", 12, selStart, rangeEnd)]]]);
+        const hoverTextByPath = new Map([
+            [
+                tsFile,
+                {
+                    contents: {
+                        kind: "markdown",
+                        value: "```typescript\nfunction foo(x: number): number\n```\n\nDoes foo.",
+                    },
+                },
+            ],
+        ]);
+        const out = await symbol(
+            { query: "foo", language: "typescript", info: ["code", "hover"] },
+            dir,
+            mockClientOfRich(dir, { cannedSyms: canned, docSymsByPath, hoverTextByPath }),
+        );
+        // Header line for 1 match.
+        assert.match(
+            out,
+            /^# 1 match for "foo" — info: code\b/m,
+            `missing/incorrect header:\n${out}`,
+        );
+        // One match block.
+        assert.match(out, /== \[1\] \[typescript\] Function foo /);
+        // `--- code ---` section present.
+        assert.match(out, /--- code ---/, `missing code section:\n${out}`);
+        // `--- hover ---` MUST be absent (deduped because code is present).
+        assert.ok(
+            !/--- hover ---/.test(out),
+            `hover should be deduped when code is present:\n${out}`,
+        );
+        // The body appears in the code section.
+        assert.match(out, /function foo\(x: number\): number/, `code body missing:\n${out}`);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("info fan-out: single match with [hover] only (no code) renders --- hover ---", async () => {
+    const { symbol } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-hover-"));
+    try {
+        const root = dir;
+        const tsFile = resolve(root, "mod.ts");
+        await import("node:fs/promises").then((fs) =>
+            fs.writeFile(tsFile, "function foo(x: number): number {\n  return x;\n}\n", "utf8"),
+        );
+        const selStart = { line: 0, character: 9 };
+        const rangeEnd = { line: 2, character: 1 };
+        const canned = [sym("foo", 12, tsFile, 0, 9)];
+        const docSymsByPath = new Map([[tsFile, [docSymbol("foo", 12, selStart, rangeEnd)]]]);
+        const hoverTextByPath = new Map([
+            [
+                tsFile,
+                {
+                    contents: {
+                        kind: "markdown",
+                        value: "```typescript\nfunction foo(x: number): number\n```\n\nDoes foo.",
+                    },
+                },
+            ],
+        ]);
+        const out = await symbol(
+            { query: "foo", language: "typescript", info: ["hover"] },
+            dir,
+            mockClientOfRich(dir, { cannedSyms: canned, docSymsByPath, hoverTextByPath }),
+        );
+        assert.match(out, /^# 1 match for "foo" — info: hover\b/m);
+        assert.match(out, /--- hover ---/);
+        assert.match(out, /signature: /);
+        assert.ok(
+            !/--- code ---/.test(out),
+            `code section should be absent when only hover requested:\n${out}`,
+        );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("info fan-out: over-cap (6 matches) returns a row list + narrow note, no fan-out", async () => {
+    const { symbol } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-cap-"));
+    try {
+        const root = dir;
+        // 6 workspace exact matches (same bare name `foo`, different files).
+        // Over SYMBOL_FANOUT_MAX_MATCHES (5) → row list + narrow note.
+        const canned = [];
+        for (let i = 0; i < 6; i++) {
+            canned.push(sym("foo", 12, `${root}/m${i}.py`, 1 + i, 4));
+        }
+        const out = await symbol(
+            { query: "foo", language: "python", info: ["code"] },
+            dir,
+            mockClientOf(dir, canned),
+        );
+        // No fan-out blocks.
+        assert.ok(!/== \[1\]/.test(out), `should NOT fan out over the cap:\n${out}`);
+        assert.ok(
+            !/--- code ---/.test(out),
+            `should NOT render code sections over the cap:\n${out}`,
+        );
+        // A narrow note.
+        assert.match(out, /# 6 exact matches — narrow with filter_by_kind/);
+        // 6 rows.
+        const rows = out.split("\n").filter((l) => l.startsWith("[python]"));
+        assert.equal(rows.length, 6);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("info fan-out: references capped at 25 with a (N of M, use code_references) note", async () => {
+    const { symbol } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-refs-"));
+    try {
+        const root = dir;
+        const tsFile = resolve(root, "mod.ts");
+        await import("node:fs/promises").then((fs) =>
+            fs.writeFile(tsFile, "function foo(x: number): number {\n  return x;\n}\n", "utf8"),
+        );
+        const selStart = { line: 0, character: 9 };
+        const rangeEnd = { line: 2, character: 1 };
+        const canned = [sym("foo", 12, tsFile, 0, 9)];
+        const docSymsByPath = new Map([[tsFile, [docSymbol("foo", 12, selStart, rangeEnd)]]]);
+        // 30 references — over the 25 cap.
+        const refs = [];
+        for (let i = 0; i < 30; i++) {
+            refs.push({
+                uri: `file://${root}/caller${i}.ts`,
+                range: { start: { line: i, character: 4 }, end: { line: i, character: 7 } },
+            });
+        }
+        const refsByPath = new Map([[tsFile, refs]]);
+        const out = await symbol(
+            { query: "foo", language: "typescript", info: ["references"] },
+            dir,
+            mockClientOfRich(dir, { cannedSyms: canned, docSymsByPath, refsByPath }),
+        );
+        assert.match(out, /--- references ---/);
+        // Exactly 25 reference rows (one per `caller<N>.ts`), plus the note.
+        const refsSection = out.split(/--- references ---\n/)[1] ?? "";
+        const refLines = refsSection.split("\n").filter((l) => l.includes("caller"));
+        assert.equal(refLines.length, 25, `expected 25 capped reference rows, got:\n${out}`);
+        // The cap note.
+        assert.match(out, /\(25 of 30, use code_references for all\)/);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("info fan-out: no matches returns the parenthesized note", async () => {
+    const { symbol } = await load("./nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-empty-"));
+    try {
+        const out = await symbol(
+            { query: "nonexistent", language: "python", info: ["code"] },
+            dir,
+            mockClientOf(dir, []),
+        );
+        assert.equal(out, `(no symbols matching "nonexistent")`);
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }

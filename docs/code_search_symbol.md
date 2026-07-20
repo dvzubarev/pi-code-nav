@@ -101,21 +101,149 @@ ty's `workspace/symbol` is case-insensitive FUZZY — a bare `cast` returns
 For qualified queries the tiered Q1/Q2/Q3 filter above applies; fuzzy/
 partial-name matches are always dropped.
 
-### cpp bare-query "exact" = substring
+### cpp exact-match = token-level (bare equality + qualifier suffix)
 
 For cpp (ccls) the workspace/symbol `name` is a full C++ qualified
 signature (`void diskann::Index::occlude_list(...)`) rather than a bare
-identifier, so the "exact name" check used by the T1/T2/T3 tiering is a
-SUBSTRING match against the bare query, not equality. For a QUALIFIED
-query (`std::vector::push_back`) the `::<bare>` boundary is required
-(`::push_back`) so the qualifier's scope is honored and `push_back`
-doesn't rank `push_back_v2`-style cousins as exact; for a BARE query
-(`occlude_list`) a plain substring match suffices — the agent asked for
-any symbol containing this name. Before the substring match was added
-for bare cpp queries, every cpp result fell through to the unfiltered T3
-fuzzy tail and the `using thrust::iterator_*` rows (which ccls's fuzzy
-ranker surfaces for almost any query) drowned the actual hits. The T3
-substring filter above then drops the rest of the noise.
+identifier, so the "exact name" check is a TOKEN-LEVEL rule
+(`isCppExactMatch` in `nav.ts`), NOT a substring check. The rule:
+
+  1. Parse the candidate `name` into `(qualifierTokens, bare)` via
+     `parseCppSymbolName`: strip the parameter list (everything from the
+     first `(`), take the last whitespace-separated token (the qualified
+     declarator, after stripping leading `&`/`*`), drop one `<...>` template-arg
+     group, then split on `::`. The last component is the bare identifier;
+     the rest is the qualifier-token chain.
+  2. The candidate is **exact** iff its `bare` equals the query's bare name
+     AND, for a qualified query, the query's qualifier-token chain is a
+     SUFFIX of the candidate's qualifier-token chain (token-level, so
+     `vector` matches `std::vector` and `mystd::vector` but NOT
+     `std::my_vector` — the `_` token boundary is honored). For a bare query
+     (empty qualifier tokens), only bare equality is required.
+
+Examples:
+  - `vector::push_back` (qual=[vector], bare=push_back):
+    - `std::vector::push_back(int)` → qual=[std,vector], `[vector]` is a
+      token suffix → **exact**.
+    - `mystd::vector::push_back(int)` → qual=[mystd,vector], `[vector]` is
+      a token suffix → **exact**.
+    - `std::my_vector::push_back(double)` → qual=[std,my_vector],
+      `[vector]` is NOT a token suffix (`my_vector` != `vector`) → **not
+      exact** → T3 fuzzy (has `push_back` substring) → dropped when T1/T2
+      non-empty.
+  - `push_back` (bare, qual=[]):
+    - `std::vector::push_back(int)` → bare=push_back → **exact**.
+    - `std::vector::push_back_int(int)` → bare=push_back_int != push_back
+      → **not exact** → T3 fuzzy → dropped when T1 non-empty.
+
+This replaces the OLD substring check (`name.includes("::" + bare)`), which
+ranked `std::my_vector::push_back` as exact for `vector::push_back` (the
+`_` token boundary wasn't honored). The T3 substring filter (`nameHasBare`,
+unchanged) still drops the rest of the ccls fuzzy noise (the
+`using thrust::iterator_*` rows ccls's ranker surfaces for almost any query).
+
+For Python/TypeScript (ty), the `name` is the bare identifier and "exact" is
+case-insensitive bare equality (case-insensitive because ty's fuzzy search
+returns case variants). Disambiguation across modules uses the Q1/Q2/Q3
+tiered module-path filter above; disambiguation across overloads (identical
+name columns) cannot be done with `filter_by_regex` — see the `info` fan-out
+section below.
+
+## `info` fan-out (the omni entry point)
+
+`code_search_symbol` is the tool agents actually reach for. To close the
+round-trip gap (search → pick a row → call `code_definition` by hand), the
+optional `info` parameter makes the tool ALSO retrieve per-match detail in
+the SAME call. When `info` is non-empty, the post-tier, post-filter,
+post-dedupe exact-match set is fanned out: up to
+`SYMBOL_FANOUT_MAX_MATCHES` (5) matches each get a `== [i] [lang] <row> ==`
+block containing the requested `--- section ---` blocks.
+
+Pipeline (when `info` is non-empty):
+
+```
+workspace/symbol → tier (Q1/Q2/Q3 or T1/T2/T3) → drop T3 fuzzy tail
+  → filter_by_kind → filter_by_regex → dedupe
+  → len==0 ? "(no symbols matching ...)"
+  : len≤5 ? fan-out per match
+  : row list + "narrow with filter_by_kind / filter_by_regex / a qualified name"
+```
+
+The T3 fuzzy tail is DROPPED entirely in fan-out mode — the agent asked
+for detail on specific symbols, so fuzzy partial-name matches are noise that
+would inflate the match count past the cap. Only exact matches fan out.
+
+### Sections
+
+- `--- code ---` — the verbatim source body via `nav.definition`,
+  head-snippeted to `floor(SYMBOL_FANOUT_CODE_BUDGET_LINES / N)` lines per
+  match (2000 split evenly across N matches). The header
+  `<defPath>:<sl>-<el>` shows the FULL body range (not the snippet range) so
+  the agent has the real position for a follow-up `code_definition`. A
+  `# (showing X of Y lines; use code_definition for full body)` note marks
+  truncation. Single match → full 2000-line budget (effectively the whole
+  body — matches `code_definition`'s direct output). Per-match hard failures
+  (no definition found, cannot resolve body) are caught and reported inline as
+  `ERROR: ...` so one bad match doesn't abort the whole fan-out.
+- `--- hover ---` — signature-first line + full hover markdown body via
+  `nav.hover`, uncapped (docstrings are auxiliary; the 2000-line code budget
+  is the single dominant knob).
+- `--- references ---` — all call sites via `nav.references`, trimmed to
+  `SYMBOL_FANOUT_REFS_CAP` (25) rows with a
+  `(N of M, use code_references for all)` note.
+
+### `hover` is auto-dropped when `code` is present
+
+`code` is a superset of `hover` for the function/class/method case (which is
+what `code` retrieves): the signature lives in the body, and the doc comment
+is already prepended by `renderSnippetBlock`'s `findEnclosingDefWithDoc` path.
+So `info: ["code", "hover"]` is normalized to `info: ["code"]` before
+rendering — the `--- hover ---` section is omitted. The minor loss
+tsserver/ty's inferred type annotation in the hover (e.g.
+`: Promise<number>` on a bare `async function`) is acceptable; the agent can
+still call `code_hover` directly if it needs it.
+
+### Overloads and the cap
+
+The cap (5) protects the common-name case (10 `__init__` methods, 15
+`clone` functions) while serving the overload case (2-3 sites) the fan-out
+was designed for. The tool cannot distinguish these, so over the cap the
+agent gets a row list + a "narrow with filters" note. Filters run BEFORE the
+cap check, so an agent narrows 10 → 3 with `filter_by_kind` /
+`filter_by_regex` / a qualified name and gets the fan-out.
+
+For Python/TypeScript (ty) the `name` column is the bare identifier, so two
+overloads have identical name columns and `filter_by_regex` CANNOT separate
+them — they fan out together (which is usually what the agent wants: every
+overload's body). For cpp (ccls) the `name` is the full signature
+(`void foo(int)` vs `void foo(double)`), so `filter_by_regex: "foo\\(int\\"` can
+single out a specific overload.
+
+## `filter_by_kind` and `filter_by_regex`
+
+Two optional filters narrow the post-tier result set. Both run AFTER the
+tier filter (so they narrow the exact-match set rather than re-introducing
+fuzzy hits the tier dropped) and BEFORE dedupe + the fan-out/cap branch.
+
+- `filter_by_kind` — array of friendly LSP SymbolKind names (case-
+  insensitive): `function`, `method`, `class`, `interface`, `struct`,
+  `constructor`, `property`, `field`, `variable`, `constant`, `enum`,
+  `enummember`, `module`, `namespace`, `package`, `file`, `event`,
+  `operator`, `typeparameter`. Reverse-mapped via `symbolKindFromName`
+  (`render.ts`). Unknown names silently match nothing — the agent gets an
+  empty result and notices, which is better than a hard error that blocks a
+  partially-correct filter.
+- `filter_by_regex` — a case-insensitive regexp tested against each match's
+  RENDERED name column. For cpp that's the full signature
+  (`void std::vector::push_back(int)`), so it can distinguish overloads; for
+  py/ts it's the bare identifier, so it cannot (see the overloads note
+  above). An invalid regexp is a hard error (`isError: true`), matching
+  `code_tree` / `code_scan`'s pattern contract.
+
+The intended workflow is: first call without `info` (or with `info` but over
+the cap) → see the row list → add `filter_by_kind` / `filter_by_regex` to
+narrow to ≤5 (ideally 1) exact matches → the fan-out fires automatically.
+
 
 ## Caveats
 

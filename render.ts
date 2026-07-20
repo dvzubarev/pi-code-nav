@@ -122,41 +122,59 @@ export function hoverSignature(hoverText: string): string {
 // Symbol kind naming + DocumentSymbol / SymbolInformation rendering
 // ---------------------------------------------------------------------------
 
+/** LSP SymbolKind (1-based) → short label. Index 0 is unused by the spec;
+ * padded so names[kind] resolves correctly. Single source of truth for kind
+ * naming AND the reverse lookup (`symbolKindFromName`, used by
+ * code_search_symbol's `filter_by_kind`). */
+export const LSP_SYMBOL_KIND_NAMES: readonly string[] = [
+    "",
+    "File",
+    "Module",
+    "Namespace",
+    "Package",
+    "Class",
+    "Method",
+    "Property",
+    "Field",
+    "Constructor",
+    "Enum",
+    "Interface",
+    "Function",
+    "Variable",
+    "Constant",
+    "String",
+    "Number",
+    "Boolean",
+    "Array",
+    "Object",
+    "Key",
+    "Null",
+    "EnumMember",
+    "Struct",
+    "Event",
+    "Operator",
+    "TypeParameter",
+];
+
 /** LSP SymbolKind (1-based) → short label. */
 export function symbolKindName(kind: number | undefined): string {
-    // LSP SymbolKind is 1-based (File=1, Class=5, Method=6, Function=12, Variable=13, …).
-    // Index 0 is unused by the spec; pad so names[kind] resolves correctly.
-    const names = [
-        "",
-        "File",
-        "Module",
-        "Namespace",
-        "Package",
-        "Class",
-        "Method",
-        "Property",
-        "Field",
-        "Constructor",
-        "Enum",
-        "Interface",
-        "Function",
-        "Variable",
-        "Constant",
-        "String",
-        "Number",
-        "Boolean",
-        "Array",
-        "Object",
-        "Key",
-        "Null",
-        "EnumMember",
-        "Struct",
-        "Event",
-        "Operator",
-        "TypeParameter",
-    ];
     if (kind == null || kind === 0) return "Symbol";
-    return names[kind] ?? "Symbol";
+    return LSP_SYMBOL_KIND_NAMES[kind] ?? "Symbol";
+}
+
+/**
+ * Reverse of `symbolKindName`: a friendly kind name (case-insensitive) → the
+ * LSP SymbolKind number. Returns `undefined` for an unknown name. Used by
+ * `code_search_symbol`'s `filter_by_kind` parameter to map the agent's
+ * kind strings (e.g. `"function"`, `"Method"`) back to LSP kind numbers so
+ * they can be matched against `SymbolInformation.kind`.
+ */
+export function symbolKindFromName(name: string): number | undefined {
+    const lower = name.toLowerCase();
+    for (let i = 1; i < LSP_SYMBOL_KIND_NAMES.length; i++) {
+        if (LSP_SYMBOL_KIND_NAMES[i].toLowerCase() === lower) return i;
+    }
+    return undefined;
 }
 
 /** Render a DocumentSymbol tree (hierarchical) as an indented outline. */
@@ -351,12 +369,7 @@ export function renderLocation(loc: Location): string {
  * grammar, parse failed, cannot read, bad params, server unavailable) THROW
  * instead — index.ts's err() sets isError: true on those.
  */
-export function renderErrorRow(
-    path: string,
-    line: number,
-    column: number,
-    reason: string,
-): string {
+export function renderErrorRow(path: string, line: number, column: number, reason: string): string {
     return `ERROR  ${path}:${line}:${column}  ${reason}`;
 }
 
