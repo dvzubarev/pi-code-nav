@@ -1,7 +1,7 @@
 /**
  * code-nav extension
  *
- * Provides eight LLM-callable tools backed by real LSP servers (ccls for C++,
+ * Provides seven LLM-callable tools backed by real LSP servers (ccls for C++,
  * ty/pyright for Python, bash-language-server for bash,
  * typescript-language-server for TypeScript & JavaScript) plus tree-sitter for
  * third-party symbol discovery. They split into two groups:
@@ -10,8 +10,6 @@
  *   code_outline        — paginated file structure (functions, classes, methods)
  *                         with signatures, body line ranges, and doc snippets
  *   code_search_symbol  — ranked workspace-wide symbol lookup by name
- *   code_scan           — identifier scan of a file or line range (positions + roles)
- *                         (the third-party entry point; see docs/code_scan.md)
  *
  *   DETAIL TOOLS (consume path + 1-based line + column):
  *   code_definition     — location + full source body of a symbol's definition
@@ -22,7 +20,6 @@
  *
  * Servers are scoped by (ctx.cwd, language): one server per language per
  * workspace, spawned lazily on first tool call, shut down on session close.
- * code_scan parses syntax in-process — no LSP server required for its default path.
  *
  * The tools are NOT registered at session_start. Run `/code-nav` to enable
  * them for the current session; `/code-nav:off` disables them and stops all
@@ -154,7 +151,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             "Retrieve the structure of a source file: functions, classes, methods, with signatures, body line ranges, and a one-line doc snippet per entry. Only structural kinds are kept (class, method, function, constructor, interface, struct) — constants, variables, and other leaf bindings are dropped. Each row is grep-style `:line:col` (the identifier position) plus a body range `:sl-el` so it is directly reusable as input to code_hover/code_definition/code_references. Output is paginated (default 20 entries per page) to bound the per-row hover cost; use offset/limit to page further. Example output:\n  Class Foo  class Foo  :12-45:1  docs: A widget.\n    Method bar  def bar(self, x: int) -> None  :15-42:3  docs: Do the thing.\n  [3 more entries in foo.py. Use offset=3 to continue.]",
         promptSnippet: "List functions/classes/methods in a file with signatures + docs",
         promptGuidelines: [
-            "Prefer code_outline for a structural overview of a file — it returns signatures, body line ranges, and a one-line doc snippet per entry, paginated. Use code_scan for every identifier (calls/imports/members), or code_search_symbol to find a symbol by name across the workspace.",
+            "Prefer code_outline for a structural overview of a file — it returns signatures, body line ranges, and a one-line doc snippet per entry, paginated. Use code_search_symbol to find a symbol by name across the workspace.",
         ],
         parameters: Type.Object({
             path: Type.String({ description: "File path (absolute or relative to cwd)" }),
@@ -188,7 +185,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             'Retrieve the source code of a function/class/method definition. Given a symbol position (path, line, column), resolves the definition and returns the full body — the complete function/class/method source, ready to copy into an edit. Output format: a header line `<defPath>:<sl>-<el>` (1-based inclusive line range) followed by the raw source lines (no code fence). The definition may live in a different file than the input position (including third-party trees). A position may resolve to several definition sites (overloads, header-vs-source in C++, re-exports): one block per site, separated by a blank line, with a trailing `# N definitions` count. Set list_symbols=true to also append a symbol table of the identifiers used inside the body.',
         promptSnippet: "Retrieve verbatim source code of a function/class/method.",
         promptGuidelines: [
-            "Use code_definition to retrieve the FULL source body of a function/class/method — verbatim text ready to copy into an edit. You need a position first (from code_outline/code_scan/code_search_symbol).",
+            "Use code_definition to retrieve the FULL source body of a function/class/method — verbatim text ready to copy into an edit. You need a position first (from code_outline/code_search_symbol).",
             "Set list_symbols=true to also get a symbol table of identifiers used inside the body; each row is itself a position you can feed back into code_definition/code_hover/code_references (combine the header's defPath with the row's :line:col).",
         ],
         parameters: Type.Object({
@@ -198,7 +195,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             list_symbols: Type.Optional(
                 Type.Boolean({
                     description:
-                        'If true, append a symbol table for the returned body (default: false). The table lists identifiers with their position and syntactic role (type/call/member/import). Local-variable (var) are omitted by default to keep the output focused on external APIs; use code_scan with roles including "var" if you need locals.',
+                        'If true, append a symbol table for the returned body (default: false). The table lists identifiers with their position and syntactic role (type/call/member/import). Local-variable (var) are omitted by default to keep the output focused on external APIs.',
                 }),
             ),
         }),
@@ -315,7 +312,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             // nav.symbol never throws on RECOVERABLE errors (unknown server,
             // failed workspace/symbol call — those become ERROR rows), but it
             // DOES throw on an invalid `language` value (a hard input-validation
-            // error, same contract as code_scan's pattern/range validation) so
+            // error, same contract as other validating tools) so
             // wrap in try/catch like the other validating tools.
             try {
                 return text_result(
@@ -376,64 +373,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         },
     });
 
-    // 7. code_scan (identifier scan of a file or line range)
-    pi.registerTool({
-        name: "code_scan",
-        label: "Code Scan",
-        description:
-            "Scan a source file for identifiers — type names, calls, member accesses, imports — and return each with its position and syntactic role. Optionally filter by a name pattern and/or limit to a line range. Output has a header line, then one row per identifier: `<role> <name>  :<line>:<col>` (plus a trailing hover label if include_docs=true). Example:\n  Symbols in foo.py:1-40 (roles: type|call|member|import|var, 1-based, reusable as code_* input):\n    import  cbor2   :3:8\n    call    loads   :10:12",
-        promptSnippet:
-            "List identifiers (with positions + roles) in a file or range; optionally filter by name pattern",
-        promptGuidelines: [
-            "Use code_scan to list every identifier (type/call/member/import) in a file or line range — the primary entry point for third-party discovery via imports. Pass `pattern` to narrow by name and `startLine`/`endLine` to limit the range; roles default to [type,call,member,import] (omit `var`), pass `[\"var\"]` to include locals. Set include_docs=true to append a one-line hover label per symbol.",
-        ],
-        parameters: Type.Object({
-            path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-            startLine: Type.Optional(
-                Type.Number({
-                    description:
-                        "1-based inclusive start line of the range to scan. Omit to scan from the start of the file.",
-                }),
-            ),
-            endLine: Type.Optional(
-                Type.Number({
-                    description:
-                        "1-based inclusive end line of the range to scan. Omit to scan to the end of the file.",
-                }),
-            ),
-            pattern: Type.Optional(
-                Type.String({
-                    description:
-                        "Optional JavaScript case-sensitive regexp. When set, only symbols whose name matches are kept. An invalid regexp is a hard error — escape/anchor as needed.",
-                }),
-            ),
-            roles: Type.Optional(
-                Type.Array(
-                    StringEnum(["type", "call", "member", "import", "var"] as const, {
-                        description:
-                            'Which roles to emit. Default: [type, call, member, import] (all except var, which are noisy locals). Pass e.g. ["var"] to see only locals, or the full ["type","call","member","import","var"] to see everything.',
-                    }),
-                ),
-            ),
-            include_docs: Type.Optional(
-                Type.Boolean({
-                    description:
-                        "If true, hover each symbol and append the first line of the hover as a label column (default: false). Makes one LSP hover call per unique symbol.",
-                }),
-            ),
-        }),
-        async execute(_id, params, _signal, _onUpdate, ctx) {
-            try {
-                return text_result(
-                    await nav.scan(params, ctx.cwd, (lang) => state.pool.client(lang)),
-                );
-            } catch (e) {
-                return err(e instanceof Error ? e.message : String(e));
-            }
-        },
-    });
-
-    // 8. code_diagnostics
+    // 7. code_diagnostics
     //
     // Pure request/response: the tool opens the document on the server (didOpen
     // is required for the server to analyze it) and then sends a single
@@ -526,7 +466,7 @@ export default function codeNavExtension(pi: ExtensionAPI) {
         registerTools(pi, s);
         s.pool.setEnabled(true);
         ctx.ui.notify(
-            "code-nav enabled — tools: code_outline, code_definition, code_references, code_search_symbol, code_rename, code_hover, code_scan, code_diagnostics",
+            "code-nav enabled — tools: code_outline, code_definition, code_references, code_search_symbol, code_rename, code_hover, code_diagnostics",
             "info",
         );
     }
@@ -545,7 +485,7 @@ export default function codeNavExtension(pi: ExtensionAPI) {
 
     pi.registerCommand("code-nav", {
         description:
-            "Enable LSP-backed code navigation tools (code_outline, code_definition, code_references, code_search_symbol, code_rename, code_hover, code_scan, code_diagnostics)",
+            "Enable LSP-backed code navigation tools (code_outline, code_definition, code_references, code_search_symbol, code_rename, code_hover, code_diagnostics)",
         handler: async (_args, ctx) => {
             await enable(ctx);
         },
@@ -610,7 +550,7 @@ export default function codeNavExtension(pi: ExtensionAPI) {
 /**
  * The grouped tool overview injected into the system prompt while code-nav is
  * active. Two purposes the flat per-tool promptGuidelines cannot serve:
- *   1. Group the eight tools into ENTRY POINTS (produce positions) vs DETAIL
+ *   1. Group the seven tools into ENTRY POINTS (produce positions) vs DETAIL
  *      TOOLS (consume positions), making the round-trip obvious.
  *   2. Reframe common grep/read/sed reflexes as code_* calls.
  *   3. Show concrete code_search_symbol filtering examples (narrowing bare
@@ -633,7 +573,6 @@ ENTRY POINTS (no precise position yet):
   \`["hover"]\` = signature+docstring, \`["references"]\` = up to 25 call sites.
   Pass \`filter_by_kind\` / \`filter_by_regex\` to narrow to one match.
 - code_outline  — list functions/classes/methods in a file (with signatures + doc snippets)
-- code_scan     — list every identifier (type/call/member/import) in a file or range
 
 DETAIL TOOLS (take a position from an entry point):
 - code_definition   — verbatim source body of a symbol's definition
@@ -648,7 +587,6 @@ straight into a detail tool's line/column params — no conversion.
 Prefer code_* over the grep/read reflex:
 - find a symbol by name AND get its body/call sites in one call → code_search_symbol(query, info:["code","references"])
 - read a function's source body   → code_outline then code_definition (not grep -n + read)
-- list identifiers in a snippet   → code_scan (not rg -o)
 - find all call sites of a symbol → code_references (not rg)
 - rename a symbol                 → code_rename (not sed -i)
 - check a file for errors         → code_diagnostics (not a hand-written checker)
