@@ -38,10 +38,12 @@ Otherwise it returns `{}` (no-op). This is the one place the agent gets a
 Why `before_agent_start` and not `promptGuidelines`? `promptGuidelines` are
 appended **flat** to the Guidelines section with no tool-name grouping (see
 pi docs), so they can't express the two-group framing or the old-vs-new table.
-Per-tool `promptGuidelines` stay for tool-specific gotchas (the third-party rg
-workflow in `code_scan`, batching in `code_definition`, etc.); the system-prompt
-block carries the *structural* overview that flat bullets can't. The block is
-~30 lines — acceptable because it's gated on `/code-nav` (the user opted in).
+Per-tool `promptGuidelines` stay for tool-specific "when to use" nudges and
+cross-tool routing; the system-prompt block carries the *structural* overview
+that flat bullets can't, plus concrete `code_search_symbol` filtering examples
+(narrowing a bare name with many matches / overloads down to one fanned-out
+result). The block is ~75 lines — acceptable because it's gated on `/code-nav`
+(the user opted in).
 
 Do not ungate it (no appending when `enabled()` is false — that would spam
 every session). Do not move it into `registerTools()` — the handler must be
