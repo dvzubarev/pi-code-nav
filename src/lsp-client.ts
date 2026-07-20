@@ -982,10 +982,7 @@ export class LspClient {
      * the no-begin wait. No-op for non-ccls callers (only ensureProjectLoaded's
      * cpp branch invokes this).
      */
-    async waitForIndexingComplete(
-        noBeginMs = 3000,
-        endMs = 60000,
-    ): Promise<void> {
+    async waitForIndexingComplete(noBeginMs = 3000, endMs = 60000): Promise<void> {
         if (this.indexState === "ended") return;
         if (this.indexState === "in_progress") {
             await this.awaitIndexEnd(endMs);
@@ -1140,7 +1137,9 @@ export class LspClient {
      */
     async addWorkspaceFolders(paths: string[]): Promise<string[]> {
         await this.ensureReady();
-        const caps = this.capabilities as { workspace?: { workspaceFolders?: { supported?: boolean } } } | null;
+        const caps = this.capabilities as {
+            workspace?: { workspaceFolders?: { supported?: boolean } };
+        } | null;
         if (!caps?.workspace?.workspaceFolders?.supported) return [];
         const want: string[] = [];
         const seen = new Set<string>([this.rootPath, ...this.extraWorkspaceFolders]);
@@ -1157,7 +1156,10 @@ export class LspClient {
             want.push(abs);
         }
         if (want.length === 0) return [];
-        const added = want.map((p) => ({ uri: pathToFileURL(p).href, name: p.split("/").pop() || p }));
+        const added = want.map((p) => ({
+            uri: pathToFileURL(p).href,
+            name: p.split("/").pop() || p,
+        }));
         try {
             await notifyWithTimeout(this.conn!, "workspace/didChangeWorkspaceFolders", {
                 event: { added, removed: [] },
@@ -1181,9 +1183,7 @@ export class LspClient {
      * one (e.g. `lib/python3.13/site-packages`).
      */
     workspaceFolderPaths(): string[] {
-        return [this.rootPath, ...this.extraWorkspaceFolders].sort(
-            (a, b) => b.length - a.length,
-        );
+        return [this.rootPath, ...this.extraWorkspaceFolders].sort((a, b) => b.length - a.length);
     }
 
     async rename(
@@ -1296,7 +1296,10 @@ export class LspClient {
      * NOT an open-ended notification collector — `timeoutMs` is the upper
      * bound the caller chose; the waiter is unregistered on resolve.
      */
-    waitForPushedDiagnostics(absPath: string, timeoutMs = 10000): Promise<Diagnostic[] | undefined> {
+    waitForPushedDiagnostics(
+        absPath: string,
+        timeoutMs = 10000,
+    ): Promise<Diagnostic[] | undefined> {
         const uri = pathToFileURL(absPath).href;
         // Fast path: the server already published for this URI (e.g. during
         // the initialize/didOpen round-trip, or a prior tool call primed the

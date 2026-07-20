@@ -29,7 +29,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { load } from "./helpers.mjs";
 
-const TS = () => load("./tree-sitter-parse.ts");
+const TS = () => load("./src/tree-sitter-parse.ts");
 
 // ---------------------------------------------------------------------------
 // C++: cursor on an out-of-line definition body (scenario 1).

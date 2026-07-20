@@ -18,7 +18,7 @@ import { load } from "./helpers.mjs";
 // test's root can't satisfy another's lookup via cache.
 let clearCache;
 before(async () => {
-    ({ clearDetectedLanguagesCache: clearCache } = await load("./nav.ts"));
+    ({ clearDetectedLanguagesCache: clearCache } = await load("./src/nav.ts"));
 });
 before(() => clearCache?.());
 
@@ -32,7 +32,7 @@ test("python: detected via pyproject.toml root marker", async () => {
     try {
         await writeFile(join(root, "pyproject.toml"), "[project]\n");
         await writeFile(join(root, "main.py"), "print('hi')\n");
-        const { detectProjectLanguages } = await load("./nav.ts");
+        const { detectProjectLanguages } = await load("./src/nav.ts");
         const langs = await detectProjectLanguages(root);
         assert.ok(langs.includes("python"), `expected python in ${JSON.stringify(langs)}`);
         assert.ok(!langs.includes("typescript"), `did not expect typescript in ${JSON.stringify(langs)}`);
@@ -46,7 +46,7 @@ test("typescript: detected via package.json root marker", async () => {
     try {
         await writeFile(join(root, "package.json"), '{"name":"x"}\n');
         await writeFile(join(root, "index.ts"), "export const x = 1;\n");
-        const { detectProjectLanguages } = await load("./nav.ts");
+        const { detectProjectLanguages } = await load("./src/nav.ts");
         const langs = await detectProjectLanguages(root);
         assert.ok(langs.includes("typescript"), `expected typescript in ${JSON.stringify(langs)}`);
         assert.ok(!langs.includes("python"), `did not expect python in ${JSON.stringify(langs)}`);
@@ -62,7 +62,7 @@ test("mixed: python + typescript detected via both root markers", async () => {
         await writeFile(join(root, "package.json"), '{"name":"x"}\n');
         await writeFile(join(root, "app.py"), "\n");
         await writeFile(join(root, "app.ts"), "\n");
-        const { detectProjectLanguages } = await load("./nav.ts");
+        const { detectProjectLanguages } = await load("./src/nav.ts");
         const langs = await detectProjectLanguages(root);
         assert.ok(langs.includes("python"), `expected python in ${JSON.stringify(langs)}`);
         assert.ok(langs.includes("typescript"), `expected typescript in ${JSON.stringify(langs)}`);
@@ -75,7 +75,7 @@ test("source-only: .cpp file with no build marker is found by the scan", async (
     const root = await mkroot();
     try {
         await writeFile(join(root, "main.cpp"), "int main() {}\n");
-        const { detectProjectLanguages } = await load("./nav.ts");
+        const { detectProjectLanguages } = await load("./src/nav.ts");
         const langs = await detectProjectLanguages(root);
         assert.ok(langs.includes("cpp"), `expected cpp in ${JSON.stringify(langs)}`);
         assert.ok(!langs.includes("python"), `did not expect python in ${JSON.stringify(langs)}`);
@@ -89,7 +89,7 @@ test("source scan is recursive (file in a subdir)", async () => {
     try {
         await mkdir(join(root, "src"));
         await writeFile(join(root, "src", "app.py"), "\n");
-        const { detectProjectLanguages } = await load("./nav.ts");
+        const { detectProjectLanguages } = await load("./src/nav.ts");
         const langs = await detectProjectLanguages(root);
         assert.ok(langs.includes("python"), `expected python in ${JSON.stringify(langs)}`);
     } finally {
@@ -111,7 +111,7 @@ test("scan skips .venv / __pycache__ / node_modules", async () => {
         await writeFile(join(root, ".venv", "junk.py"), "\n");
         await mkdir(join(root, "node_modules"), { recursive: true });
         await writeFile(join(root, "node_modules", "junk.js"), "\n");
-        const { detectProjectLanguages } = await load("./nav.ts");
+        const { detectProjectLanguages } = await load("./src/nav.ts");
         const langs = await detectProjectLanguages(root);
         // No real markers, no real source → falls back to all four so nothing
         // is silently hidden.
@@ -124,7 +124,7 @@ test("scan skips .venv / __pycache__ / node_modules", async () => {
 test("empty dir falls back to all four languages", async () => {
     const root = await mkroot();
     try {
-        const { detectProjectLanguages } = await load("./nav.ts");
+        const { detectProjectLanguages } = await load("./src/nav.ts");
         const langs = await detectProjectLanguages(root);
         assert.deepEqual([...langs].sort(), ["bash", "cpp", "python", "typescript"]);
     } finally {
@@ -136,7 +136,7 @@ test("result is cached: second call returns without re-scanning", async () => {
     const root = await mkroot();
     try {
         await writeFile(join(root, "pyproject.toml"), "[project]\n");
-        const { detectProjectLanguages } = await load("./nav.ts");
+        const { detectProjectLanguages } = await load("./src/nav.ts");
         const first = await detectProjectLanguages(root);
         // Mutate the root AFTER the first call: add a tsconfig.json. If the
         // second call hits the cache, typescript must NOT appear (the cached
@@ -155,7 +155,7 @@ test("cache is keyed by resolved absolute path", async () => {
     const root = await mkroot();
     try {
         await writeFile(join(root, "pyproject.toml"), "[project]\n");
-        const { detectProjectLanguages } = await load("./nav.ts");
+        const { detectProjectLanguages } = await load("./src/nav.ts");
         // Same root via a relative-ish path string with a trailing slash and
         // . segment — resolve() normalizes these, so they share one cache entry.
         const a = await detectProjectLanguages(root);

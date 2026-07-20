@@ -69,7 +69,7 @@ function sym(name, kind, relPath, line, character) {
 }
 
 test("cpp bare 'occlude_list' keeps only the token-exact workspace match (T1 wins, fuzzy + thrust dropped)", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symfilter-cpp-"));
     try {
         // Canned ccls results for query `occlude_list`. cpp `name` is a
@@ -149,7 +149,7 @@ test("cpp bare 'occlude_list' keeps only the token-exact workspace match (T1 win
 });
 
 test("cpp bare query: T1 (workspace exact) wins, fuzzy tail dropped entirely", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symfilter-t1-"));
     try {
         const root = dir;
@@ -177,7 +177,7 @@ test("cpp bare query: T1 (workspace exact) wins, fuzzy tail dropped entirely", a
 });
 
 test("python bare 'load' (no workspace exact) keeps only substring-matching fuzzy rows", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symfilter-py-"));
     try {
         const root = dir;
@@ -225,7 +225,7 @@ test("python bare 'load' (no workspace exact) keeps only substring-matching fuzz
 });
 
 test("python bare 'tempc' with workspace TempC returns ONLY TempC (case-insensitive exact)", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symfilter-case-"));
     try {
         const root = dir;
@@ -296,7 +296,7 @@ function docSymbol(name, kind, selStart, rangeEnd) {
 }
 
 test("cpp qualified 'vector::push_back' exact = token-suffix of qualifier (std::vector and mystd::vector, NOT std::my_vector)", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symqual-"));
     try {
         const root = dir;
@@ -334,7 +334,7 @@ test("cpp qualified 'vector::push_back' exact = token-suffix of qualifier (std::
 });
 
 test("cpp qualified 'vector::push_back' with NO workspace exact returns BOTH third-party token-suffix matches", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symqual2-"));
     try {
         const root = dir;
@@ -367,7 +367,7 @@ test("cpp qualified 'vector::push_back' with NO workspace exact returns BOTH thi
 });
 
 test("cpp bare 'push_back' exact = bare equality (std::vector::push_back yes, push_back_int no)", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symbare-"));
     try {
         const root = dir;
@@ -396,7 +396,7 @@ test("cpp bare 'push_back' exact = bare equality (std::vector::push_back yes, pu
 });
 
 test("filter_by_kind narrows to the requested SymbolKind", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-kindfilter-"));
     try {
         const root = dir;
@@ -422,7 +422,7 @@ test("filter_by_kind narrows to the requested SymbolKind", async () => {
 });
 
 test("filter_by_kind accepts case-insensitive kind names", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-kindci-"));
     try {
         const root = dir;
@@ -444,7 +444,7 @@ test("filter_by_kind accepts case-insensitive kind names", async () => {
 });
 
 test("filter_by_regex (icase) narrows by the rendered name column", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-regexfilter-"));
     try {
         const root = dir;
@@ -489,7 +489,7 @@ test("filter_by_regex (icase) narrows by the rendered name column", async () => 
 });
 
 test("filter_by_regex with an invalid regexp is a hard error (isError)", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-badregex-"));
     try {
         await assert.rejects(
@@ -507,7 +507,7 @@ test("filter_by_regex with an invalid regexp is a hard error (isError)", async (
 });
 
 test("info fan-out: single match with [code, hover] dedups hover (only --- code ---)", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-dedup-"));
     try {
         const root = dir;
@@ -561,7 +561,7 @@ test("info fan-out: single match with [code, hover] dedups hover (only --- code 
 });
 
 test("info fan-out: single match with [hover] only (no code) renders --- hover ---", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-hover-"));
     try {
         const root = dir;
@@ -602,7 +602,7 @@ test("info fan-out: single match with [hover] only (no code) renders --- hover -
 });
 
 test("info fan-out: over-cap (6 matches) returns a row list + narrow note, no fan-out", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-cap-"));
     try {
         const root = dir;
@@ -634,7 +634,7 @@ test("info fan-out: over-cap (6 matches) returns a row list + narrow note, no fa
 });
 
 test("info fan-out: references capped at 25 with a (N of M, use code_references) note", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-refs-"));
     try {
         const root = dir;
@@ -673,7 +673,7 @@ test("info fan-out: references capped at 25 with a (N of M, use code_references)
 });
 
 test("info fan-out: no matches returns the parenthesized note", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-empty-"));
     try {
         const out = await symbol(

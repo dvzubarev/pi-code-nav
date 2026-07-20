@@ -38,12 +38,12 @@ import { Type } from "typebox";
 import { readFile } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { LspClient, resolveConfig, type Lang, type ServerConfig } from "./lsp-client";
-import * as nav from "./nav";
-import { ALL_LANGS } from "./nav";
+import { LspClient, resolveConfig, type Lang, type ServerConfig } from "./src/lsp-client";
+import * as nav from "./src/nav";
+import { ALL_LANGS } from "./src/nav";
 
-/** File extension → language (re-exported from render.ts for status reporting). */
-// EXT_LANG and langForFile now live in render.ts; index.ts imports them.
+/** File extension → language (re-exported from src/render.ts for status reporting). */
+// EXT_LANG and langForFile now live in src/render.ts; index.ts imports them.
 
 /** Load .pi/lsp.json (project) then ~/.pi/lsp.json (global); merge per-lang. */
 async function loadConfig(
@@ -127,13 +127,14 @@ class ServerPool {
 }
 
 // ---------------------------------------------------------------------------
-// Rendering + WorkspaceEdit helpers now live in render.ts (shared with the
-// CLI harness and tests). The tool implementations live in nav.ts; registerTools
+// Rendering + WorkspaceEdit helpers now live in src/render.ts (shared with the
+// CLI harness and tests). The tool implementations live in src/<tool>.ts (one
+// file per tool, re-exported by src/nav.ts); registerTools
 // below is a thin shim that parses params, calls
 // nav.<tool>(params, ctx.cwd, (lang) => state.pool.client(lang)), and wraps the
 // returned string in text_result / err. index.ts no longer holds any rendering
 // logic — the old "keep nav-cli.mjs in sync with index.ts by hand" landmine is
-// gone (both import from render.ts + nav.ts).
+// gone (both import from src/render.ts + src/nav.ts).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

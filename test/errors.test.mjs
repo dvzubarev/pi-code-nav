@@ -33,7 +33,7 @@ const throwingClientOf = async (_lang) => {
 };
 
 test("renderErrorRow format: ERROR token + path:line:col + reason", async () => {
-    const { renderErrorRow } = await load("./render.ts");
+    const { renderErrorRow } = await load("./src/render.ts");
     const row = renderErrorRow("svc.ts", 10, 5, "no definition found");
     // Leading ERROR token (so a consumer splits on \n and checks the first
     // token to distinguish data from error rows).
@@ -45,7 +45,7 @@ test("renderErrorRow format: ERROR token + path:line:col + reason", async () => 
 });
 
 test("renderErrorRow distinguishes from a data row by first token", async () => {
-    const { renderErrorRow } = await load("./render.ts");
+    const { renderErrorRow } = await load("./src/render.ts");
     const errorRow = renderErrorRow("svc.ts", 1, 1, "cannot read");
     // A consumer splits rows on \n and checks: first token === "ERROR" → error.
     const firstToken = errorRow.split(/\s+/)[0];
@@ -53,7 +53,7 @@ test("renderErrorRow distinguishes from a data row by first token", async () => 
 });
 
 test("nav.scan hard failure: Cannot read → throws (isError in index.ts)", async () => {
-    const { scan } = await load("./nav.ts");
+    const { scan } = await load("./src/nav.ts");
     // A path that does not exist. scan must THROW (so index.ts's err() sets
     // isError: true) rather than returning an inline string.
     await assert.rejects(
@@ -63,7 +63,7 @@ test("nav.scan hard failure: Cannot read → throws (isError in index.ts)", asyn
 });
 
 test("nav.scan hard failure: No grammar for unsupported extension → throws", async () => {
-    const { scan } = await load("./nav.ts");
+    const { scan } = await load("./src/nav.ts");
     // .txt has no tree-sitter grammar. tsLangForFile returns null → scan throws
     // UnknownLanguageError. Use a real temp file so we get past readFile.
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
@@ -77,7 +77,7 @@ test("nav.scan hard failure: No grammar for unsupported extension → throws", a
 });
 
 test("nav.scan hard failure: bad startLine → throws", async () => {
-    const { scan } = await load("./nav.ts");
+    const { scan } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "x.ts");
@@ -92,7 +92,7 @@ test("nav.scan hard failure: bad startLine → throws", async () => {
 });
 
 test("nav.scan hard failure: bad endLine < startLine → throws", async () => {
-    const { scan } = await load("./nav.ts");
+    const { scan } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "x.ts");
@@ -107,7 +107,7 @@ test("nav.scan hard failure: bad endLine < startLine → throws", async () => {
 });
 
 test("nav.definition hard failure: unknown language → throws", async () => {
-    const { definition } = await load("./nav.ts");
+    const { definition } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "x.txt");
@@ -122,7 +122,7 @@ test("nav.definition hard failure: unknown language → throws", async () => {
 });
 
 test("nav.definition hard failure: cannot read input file → throws", async () => {
-    const { definition } = await load("./nav.ts");
+    const { definition } = await load("./src/nav.ts");
     await assert.rejects(
         definition({ path: "nope.ts", line: 1, column: 1 }, "/nonexistent-cwd", throwingClientOf),
         /Cannot read/,
@@ -130,7 +130,7 @@ test("nav.definition hard failure: cannot read input file → throws", async () 
 });
 
 test("nav.definition hard failure: server unavailable → throws", async () => {
-    const { definition } = await load("./nav.ts");
+    const { definition } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "svc.ts");
@@ -145,7 +145,7 @@ test("nav.definition hard failure: server unavailable → throws", async () => {
 });
 
 test("nav.references soft failure: server unavailable → ERROR row", async () => {
-    const { references } = await load("./nav.ts");
+    const { references } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "svc.ts");
@@ -162,7 +162,7 @@ test("nav.references soft failure: server unavailable → ERROR row", async () =
 });
 
 test("nav.hover soft failure: server unavailable → ERROR row", async () => {
-    const { hover } = await load("./nav.ts");
+    const { hover } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "svc.ts");
@@ -179,7 +179,7 @@ test("nav.hover soft failure: server unavailable → ERROR row", async () => {
 });
 
 test("nav.outline hard failure: Cannot read → throws", async () => {
-    const { outline } = await load("./nav.ts");
+    const { outline } = await load("./src/nav.ts");
     await assert.rejects(
         outline({ path: "nope.ts" }, "/nonexistent-cwd", throwingClientOf),
         /Cannot read/,
@@ -187,7 +187,7 @@ test("nav.outline hard failure: Cannot read → throws", async () => {
 });
 
 test("nav.outline hard failure: unknown language → throws UnknownLanguageError", async () => {
-    const { outline } = await load("./nav.ts");
+    const { outline } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "x.txt");
@@ -199,7 +199,7 @@ test("nav.outline hard failure: unknown language → throws UnknownLanguageError
 });
 
 test("nav.tree hard failure: Cannot read → throws", async () => {
-    const { tree } = await load("./nav.ts");
+    const { tree } = await load("./src/nav.ts");
     await assert.rejects(
         tree({ path: "nope.ts", pattern: "x" }, "/nonexistent-cwd", throwingClientOf),
         /Cannot read/,
@@ -207,7 +207,7 @@ test("nav.tree hard failure: Cannot read → throws", async () => {
 });
 
 test("nav.symbol hard failure: invalid `language` → throws (not a raw TypeError)", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     // The tool schema (index.ts) constrains `language` to a StringEnum, but
     // nav.ts is also called directly by the CLI harness/tests, which bypass
     // that schema. An invalid value must fail with a clean, agent-readable
@@ -220,7 +220,7 @@ test("nav.symbol hard failure: invalid `language` → throws (not a raw TypeErro
 });
 
 test("nav.symbol accepts a valid `language` without throwing on validation", async () => {
-    const { symbol } = await load("./nav.ts");
+    const { symbol } = await load("./src/nav.ts");
     // "typescript" is a valid Lang (previously omitted from the tool
     // description's allowed-value list). Validation must pass the language
     // check; the request then fails later for an unrelated recoverable
@@ -265,7 +265,7 @@ function emptyResultClientOf() {
 }
 
 test("nav.definition clean empty result: no definition → HARD error (throws)", async () => {
-    const { definition } = await load("./nav.ts");
+    const { definition } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "svc.ts");
@@ -283,7 +283,7 @@ test("nav.definition clean empty result: no definition → HARD error (throws)",
 });
 
 test("nav.definition multiple sites: returns one block per site + trailing count (not an error)", async () => {
-    const { definition } = await load("./nav.ts");
+    const { definition } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-multidef-"));
     try {
         // Two definition source files. Each defines a function `foo` whose
@@ -338,7 +338,7 @@ test("nav.definition multiple sites: returns one block per site + trailing count
 });
 
 test("nav.references clean empty result: no references → parenthesized note, not ERROR", async () => {
-    const { references } = await load("./nav.ts");
+    const { references } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "svc.ts");

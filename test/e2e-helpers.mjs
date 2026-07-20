@@ -1,9 +1,9 @@
 // End-to-end test helpers: spin up real LSP clients and call the nav.* tool
 // implementations through them — the exact code path index.ts uses.
 //
-// Unlike the unit tests (test/helpers.mjs, which load only tree-sitter-parse.ts),
+// Unlike the unit tests (test/helpers.mjs, which load only src/tree-sitter-parse.ts),
 // these tests exercise the FULL pipeline: nav.* → LspClient → real language
-// server → render.ts → rendered text string. A real server must be on PATH
+// server → src/render.ts → rendered text string. A real server must be on PATH
 // (ty/pyright for python, ccls for cpp, typescript-language-server for TS,
 // bash-language-server for bash — provided by the project nix shell).
 //
@@ -23,8 +23,8 @@ export const EXT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const FIXTURES_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures");
 
 const jiti = createJiti(EXT_DIR, { cache: false, interopDefault: true });
-const { LspClient, resolveConfig } = await jiti.import("./lsp-client.ts");
-export const nav = await jiti.import("./nav.ts");
+const { LspClient, resolveConfig } = await jiti.import("./src/lsp-client.ts");
+export const nav = await jiti.import("./src/nav.ts");
 
 export const SHOULD_RUN_E2E = !process.env.CODE_NAV_SKIP_E2E;
 

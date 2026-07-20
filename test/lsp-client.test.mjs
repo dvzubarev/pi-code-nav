@@ -35,7 +35,7 @@ const EXT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = resolve(EXT_DIR, "test/fixtures/fake-lsp-server.mjs");
 
 const jiti = createJiti(EXT_DIR, { cache: false, interopDefault: true });
-const { LspClient } = await jiti.import("./lsp-client.ts");
+const { LspClient } = await jiti.import("./src/lsp-client.ts");
 
 /** A ServerConfig pointing at our fake server in `mode`. */
 function fakeConfig(mode) {

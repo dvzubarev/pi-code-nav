@@ -4,8 +4,8 @@
 // This CLI is a THIN argv-parser around the real tool implementations in
 // nav.ts (which index.ts also uses). It does NOT re-implement any rendering
 // or tool logic — the old "keep this file in sync with index.ts by hand"
-// landmine is gone. Both the extension and this CLI import from render.ts +
-// nav.ts, so they produce byte-identical output by construction.
+// landmine is gone. Both the extension and this CLI import from src/render.ts +
+// src/nav.ts, so they produce byte-identical output by construction.
 //
 // We load the .ts modules through jiti — the same loader pi uses to load
 // extensions — so bare-specifier resolution (web-tree-sitter,
@@ -56,8 +56,8 @@ const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const EXT_DIR = resolve(__dirname, "..");
 
 const jiti = createJiti(EXT_DIR, { cache: false, interopDefault: true });
-const { LspClient, resolveConfig } = await jiti.import("./lsp-client.ts");
-const nav = await jiti.import("./nav.ts");
+const { LspClient, resolveConfig } = await jiti.import("./src/lsp-client.ts");
+const nav = await jiti.import("./src/nav.ts");
 
 const ROOT = process.env.CODE_NAV_ROOT ?? process.cwd();
 const [cmd, ...rest] = process.argv.slice(2);

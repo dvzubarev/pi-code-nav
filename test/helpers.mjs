@@ -10,7 +10,7 @@
 //     under test/.
 //   - index.ts relies on tsconfig `paths` mappings for
 //     @earendil-works/pi-coding-agent and typebox. jiti honors those; native
-//     stripping does not. (tree-sitter-parse.ts itself has no such mappings,
+//     stripping does not. (src/tree-sitter-parse.ts itself has no such mappings,
 //     but using jiti uniformly keeps the harness future-proof for lsp-client
 //     and index.ts tests.)
 //
@@ -32,14 +32,14 @@ const jiti = createJiti(EXT_DIR, {
     interopDefault: true,
 });
 
-/** Load a module from the extension by relative path (e.g. "./tree-sitter-parse.ts"). */
+/** Load a module from the extension by relative path (e.g. "./src/tree-sitter-parse.ts"). */
 export function load(rel) {
     return jiti.import(rel);
 }
 
 /** Convenience: the tree-sitter parse module (the unit-test target). */
 export function loadParse() {
-    return load("./tree-sitter-parse.ts");
+    return load("./src/tree-sitter-parse.ts");
 }
 
 /**

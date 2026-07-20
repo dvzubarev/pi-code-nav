@@ -9,10 +9,10 @@
   ],
   "scripts": {
     "clean": "rm -rf node_modules",
-    "build": "echo 'nothing to build — jiti loads .ts at runtime'",
+    "build": "echo 'nothing to build \u2014 jiti loads .ts at runtime'",
     "check": "tsc -p tsconfig.json --noEmit",
-    "format": "prettier --write \"*.ts\" \"scripts/*.mjs\" \"test/*.mjs\"",
-    "format:check": "prettier --check \"*.ts\" \"scripts/*.mjs\" \"test/*.mjs\"",
+    "format": "prettier --write \"*.ts\" \"src/**/*.ts\" \"scripts/*.mjs\" \"test/*.mjs\"",
+    "format:check": "prettier --check \"*.ts\" \"src/**/*.ts\" \"scripts/*.mjs\" \"test/*.mjs\"",
     "test:unit": "node --test test/*.test.mjs",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "node --test test/*.e2e.mjs"

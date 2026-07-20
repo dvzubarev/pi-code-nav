@@ -1,11 +1,10 @@
 # MAINTAINER NOTES — code-nav
 
-> Read `DESIGN.md` and `lsp.md` before touching `index.ts` or `lsp-client.ts`.
-
+> Read `DESIGN.md` and `lsp.md` before touching `index.ts` or `src/lsp-client.ts`.
 
 ## Quick orientation for the maintainer
 
-- `lsp-client.ts` — `LspClient` class: spawn, initialize handshake, per-method
+- `src/lsp-client.ts` — `LspClient` class: spawn, initialize handshake, per-method
   wrappers, shutdown. Pure transport layer. No pi dependency. Testable in
   isolation with node + the two npm deps. Diagnostics: `supportsPullDiagnostics()`
   (capability introspection only — do not gate on it) and `pullDiagnostics(absPath)`
@@ -24,29 +23,44 @@
   tools. `ServerPool` manages the per-language clients. `CODE_NAV_PROMPT_BLOCK`
   is the grouped tool overview the `before_agent_start` hook appends to the
   system prompt while enabled. `applyWorkspaceEdit` / `applyTextEdits` (in
-  `render.ts`) apply rename results to disk — see `code_rename.md`. Rendering
-  helpers live in `render.ts`. Integration invariants in `IMPL.md`.
-- `render.ts` — pure rendering + small helpers (no pi, no LSP, no fs beyond
+  `src/render.ts`) apply rename results to disk — see `code_rename.md`. Rendering
+  helpers live in `src/render.ts`. Integration invariants in `IMPL.md`.
+- `src/render.ts` — pure rendering + small helpers (no pi, no LSP, no fs beyond
   readFile/writeFile in the WorkspaceEdit applier): `symbolKindName`,
   `renderDocSymbol`, `renderSymbolInfo`, `renderLocation`, `renderDiagnostic`,
   `hoverText`, `hoverSignature`, `resolveDefBodyRange`, `resolveSymbolSelStart`,
   `applyWorkspaceEdit`, `langForFile`, `EXT_LANG`. Shared verbatim by
   `index.ts`, the CLI harness, and the e2e tests — this is what killed the
   old "keep nav-cli.mjs in sync with index.ts by hand" landmine.
-- `nav.ts` — the nine tool implementations (`outline`, `tree`, `definition`,
-  `references`, `symbol`, `rename`, `hover`, `scan`, `diagnostics`) as
-  plain async functions `(params, cwd, clientOf) => text`. No pi dependency;
-  takes a `ClientProvider` (`(lang) => LspClient`) instead of `ServerPool`.
-  `index.ts`'s `registerTools` and `scripts/nav-cli.mjs` both call these, so
-  the CLI and automated tests exercise the EXACT code path the agent uses.
-- `tree-sitter-parse.ts` — `parseSymbols()` parses a line range with WASM
+- `src/nav.ts` — barrel re-exporting the nine tool implementations plus the
+  shared `ClientProvider` / `ALL_LANGS` / `UnknownLanguageError` (from
+  `src/nav-core.ts`) and project-language detection (from `src/detect.ts`).
+  `index.ts` and the tests/CLI import the tools via `./src/nav` so they don't
+  need to know about the per-tool file split.
+- `src/nav-core.ts` — shared core for every tool: `ClientProvider`, `ALL_LANGS`,
+  `UnknownLanguageError`, and `awaitReadyForQuery` (openDocument + ccls
+  indexing wait, deduplicated across tools).
+- `src/detect.ts` — project language detection (`detectProjectLanguages`,
+  memoized per root; `clearDetectedLanguagesCache`) used by `code_search_symbol`
+  so the per-language workspace/symbol loop only spawns servers that can find
+  a project here.
+- `src/<tool>.ts` — one file per tool: `outline.ts`, `tree.ts`,
+  `definition.ts`, `references.ts`, `symbol.ts`, `rename.ts`, `hover.ts`,
+  `scan.ts`, `diagnostics.ts`. Each exports a plain async function
+  `(params, cwd, clientOf) => text` and its `*Params` interface. No pi
+  dependency; takes a `ClientProvider` (`(lang) => LspClient`) instead of
+  `ServerPool`. `index.ts`'s `registerTools` and `scripts/nav-cli.mjs` both
+  call these (via the `src/nav.ts` barrel), so the CLI and automated tests
+  exercise the EXACT code path the agent uses.
+- `src/tree-sitter-parse.ts` — `parseSymbols()` parses a line range with WASM
   tree-sitter, returns a deduplicated symbol table. No pi or LSP dependency.
   See `code_scan.md`.
-- `test/` — unit tests for `tree-sitter-parse.ts` (pure tree-sitter, no
-  servers, `*.test.mjs`) + end-to-end tests for `nav.ts` (real language
+- `test/` — unit tests for `src/tree-sitter-parse.ts` (pure tree-sitter, no
+  servers, `*.test.mjs`) + end-to-end tests for the nav tools (real language
   servers, `*.e2e.mjs`). Run `npm test` (unit) / `npm run test:e2e` (e2e).
 - `scripts/nav-cli.mjs` — CLI harness exercising the tools without pi/LLM.
-  Thin argv-parser around `nav.ts` (no duplicated logic).
+  Thin argv-parser around the nav tools (via `src/nav.ts`, no duplicated
+  logic).
 
 ## Testing
 
@@ -60,17 +74,18 @@
   `index.ts` uses. Skip automatically when a server isn't on PATH (see
   `serverAvailable` in `test/e2e-helpers.mjs`).
 - **Full extension (commands register)**: `printf '{"type":"get_commands"}' |
-  pi --mode rpc --no-session | grep code-nav`. The tools themselves are best
+pi --mode rpc --no-session | grep code-nav`. The tools themselves are best
   exercised by the LLM after `/code-nav`, or by `npm run test:e2e`.
 - `tsc -p tsconfig.json` should always exit 0 before you commit. The
-   tsconfig has `paths` mapping `@earendil-works/pi-coding-agent` and
-   `typebox` to the global pi install — these paths are **machine-specific**
-   (they point under `/home/denin/.npm-local/lib/...`). If you move machines
-   or the pi install moves, fix the `paths` in `tsconfig.json`. The runtime
-   (jiti) resolves these differently so the extension still loads even if
-   tsc can't find types — but keep tsc green.
+  tsconfig has `paths` mapping `@earendil-works/pi-coding-agent` and
+  `typebox` to the global pi install — these paths are **machine-specific**
+  (they point under `/home/denin/.npm-local/lib/...`). If you move machines
+  or the pi install moves, fix the `paths` in `tsconfig.json`. The runtime
+  (jiti) resolves these differently so the extension still loads even if
+  tsc can't find types — but keep tsc green.
 
 ## Documentation strategy
+
 - **`MAINTAINER.md` is the hub** — repository-level material (testing, CLI
   harness, dependencies, file orientation) plus a table pointing to the
   themed docs. Start there.
@@ -80,35 +95,37 @@
   fundamental assumptions.
 - **`lsp.md`** is the LSP layer — transport landmines (RAL, string method
   names), the 1-based↔0-based + SymbolKind coordinate story, server-lifecycle
-  invariants, and per-server notes. Read before touching `lsp-client.ts` or
+  invariants, and per-server notes. Read before touching `src/lsp-client.ts` or
   anything that calls a language server.
 - **`IMPL.md`** is the pi-extension glue — deferred tool registration, the
   `before_agent_start` system-prompt block, `.pi/lsp.json` config merge, and
   the two-tier error-handling contract. Read before touching `index.ts`.
 - **`code_<tool>.md`** files hold per-tool implementation details (role
   taxonomy, node-types tables, dead-end design notes, capability tables).
-  Read the relevant one before touching that tool's body in `nav.ts`.
+  Read the relevant one before touching that tool's body in `src/<tool>.ts`.
 - **`adding-a-language.md`** is a step-by-step checklist that cross-references
   the themed docs at each touch point.
 
 When adding a new tool or a substantial per-tool behavior, create a
 `code_<tool>.md` and add a row to the table in `MAINTAINER.md` plus the
 `docs/` list above. Keep each doc self-contained — cross-reference by file
-+ section heading, don't duplicate prose. Landmines and "do NOT 'fix' this"
-notes are load-bearing; preserve them verbatim when moving text between
-files. Source files cite these docs by path + heading in comments — keep
-those citations accurate when you move or rename a section.
+
+- section heading, don't duplicate prose. Landmines and "do NOT 'fix' this"
+  notes are load-bearing; preserve them verbatim when moving text between
+  files. Source files cite these docs by path + heading in comments — keep
+  those citations accurate when you move or rename a section.
 
 ## The CLI test harness — `scripts/nav-cli.mjs`
 
 A dedicated CLI harness exercises the tool implementations **without pi or an
 LLM**, so you can see exactly what text an agent would receive from each
-`code_*` tool. It is a THIN argv-parser around `nav.ts` (which `index.ts` also
-imports) — it does NOT re-implement any rendering or tool logic. Both the
-extension and the CLI import from `render.ts` + `nav.ts`, so they produce
-byte-identical output by construction. **The old "keep nav-cli.mjs in sync
-with index.ts by hand" landmine is gone** — there is nothing to mirror; if you
-change a render function or a tool body, both consumers see it automatically.
+`code_*` tool. It is a THIN argv-parser around the nav tools (via `src/nav.ts`,
+which `index.ts` also imports) — it does NOT re-implement any rendering or
+tool logic. Both the extension and the CLI import from `src/render.ts` +
+`src/nav.ts`, so they produce byte-identical output by construction. **The old
+"keep nav-cli.mjs in sync with index.ts by hand" landmine is gone** — there is
+nothing to mirror; if you change a render function or a tool body, both
+consumers see it automatically.
 
 The two-tier error-handling contract (HARD throws vs SOFT `ERROR` rows) and
 the per-tool output contracts are documented in `IMPL.md`. CLI subcommands
@@ -136,7 +153,7 @@ the per-tool output contracts are documented in `IMPL.md`. CLI subcommands
   (see `lsp.md`). A 3.19+ release might fix the overloads; even so, string
   calls are fine.
 - `web-tree-sitter@^0.26.10` — the WASM tree-sitter runtime, used by
-  `code_scan` (via `tree-sitter-parse.ts`). Bump deliberately; see
+  `code_scan` (via `src/tree-sitter-parse.ts`). Bump deliberately; see
   `code_scan.md`.
 - `tree-sitter-wasm@^1.1.2` — prebuilt grammar WASMs
   (`out/{python,cpp,bash,typescript,tsx}/`). Must stay ABI-compatible with
@@ -147,4 +164,3 @@ the per-tool output contracts are documented in `IMPL.md`. CLI subcommands
   doesn't type-check).
 - `typescript@^5.9.3` (devDep) — added so `npm run check` (which runs
   `tsc -p tsconfig.json --noEmit`) works. Not needed at runtime.
-
