@@ -983,42 +983,82 @@ export class LspClient {
      * cpp branch invokes this).
      */
     async waitForIndexingComplete(noBeginMs = 3000, endMs = 60000): Promise<void> {
+        // Env-var overrides for test environments where ccls indexes tiny
+        // fixtures instantly. Follows CODE_NAV_REQUEST_TIMEOUT_MS pattern.
+        const resolvedNoBegin = process.env.CODE_NAV_INDEX_WAIT_MS
+            ? parseInt(process.env.CODE_NAV_INDEX_WAIT_MS, 10)
+            : noBeginMs;
+        const resolvedEndMs = process.env.CODE_NAV_INDEX_END_TIMEOUT_MS
+            ? parseInt(process.env.CODE_NAV_INDEX_END_TIMEOUT_MS, 10)
+            : endMs;
         if (this.indexState === "ended") return;
         if (this.indexState === "in_progress") {
-            await this.awaitIndexEnd(endMs);
+            await this.awaitIndexEnd(resolvedEndMs);
             return;
         }
         // idle — no "begin" seen yet. Wait briefly for one; a cold "begin"
         // arrives ~1.4s after initialize, so noBeginMs=3s catches it.
         let began = false;
-        await Promise.race([
-            new Promise<void>((r) => {
+        await this.raceWithCleanup(
+            (resolve) => {
                 this.indexBeginResolvers.push(() => {
                     began = true;
-                    r();
+                    resolve();
                 });
-            }),
-            new Promise<void>((r) => setTimeout(r, noBeginMs)),
-        ]);
+            },
+            resolvedNoBegin,
+        );
         // begin+end may have both landed during the wait. Cast to the union so
         // TS doesn't narrow this.indexState to "idle" (it can't see the
         // $/progress handler mutating it across the await).
         const state = this.indexState as "idle" | "in_progress" | "ended";
         if (state === "ended") return;
         if (began || state === "in_progress") {
-            await this.awaitIndexEnd(endMs);
+            await this.awaitIndexEnd(resolvedEndMs);
         }
         // else: still idle — no "begin" came within noBeginMs (warm cache or
         // tiny project). Proceed without waiting.
     }
 
-    /** Resolve when the "end" notification lands, or after `endMs`. */
+    /**
+     * Resolve when the "end" notification lands, or after `endMs`.
+     * Uses raceWithCleanup so the timer is cancelled on early resolution;
+     * otherwise the 60s endMs timer keeps the event loop alive.
+     */
     private awaitIndexEnd(endMs: number): Promise<void> {
         if (this.indexState === "ended") return Promise.resolve();
-        return Promise.race([
-            new Promise<void>((r) => this.indexEndResolvers.push(r)),
-            new Promise<void>((r) => setTimeout(r, endMs)),
-        ]);
+        return this.raceWithCleanup(
+            (resolve) => this.indexEndResolvers.push(resolve),
+            endMs,
+        );
+    }
+
+    /**
+     * Race signal registrations against a timeout. Each signal registration
+     * is a `(resolve: () => void) => void` that registers a callback with
+     * some external event source. The last argument is the timeout in ms.
+     * When any signal fires, the timer is cancelled so the event loop
+     * doesn't stay alive for the full timeout.
+     */
+    private raceWithCleanup(
+        ...entries: Array<((resolve: () => void) => void) | number>
+    ): Promise<void> {
+        const timeoutMs = entries.pop() as number;
+        return new Promise<void>((finalResolve) => {
+            let settled = false;
+            const timer = setTimeout(() => {
+                settled = true;
+                finalResolve();
+            }, timeoutMs);
+            for (const reg of entries as Array<(resolve: () => void) => void>) {
+                reg(() => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timer);
+                    finalResolve();
+                });
+            }
+        });
     }
 
     /** Drop any progress-tracking state (used on shutdown/exit/spawn-fail). */

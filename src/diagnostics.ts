@@ -93,7 +93,7 @@ export async function diagnostics(
         // cpp indexing was already waited for above (awaitReadyForQuery), so
         // ccls's publishDiagnostics (which fires only after the TU compiles)
         // is now ready to arrive. We just wait for the push.
-        const pushed = await client.waitForPushedDiagnostics(abs, lang === "cpp" ? 30000 : 5000);
+        const pushed = await client.waitForPushedDiagnostics(abs);
         if (pushed !== undefined) {
             // Push succeeded. If the push cache is ALSO empty but pull rejected,
             // mention the pull failure so the user can tell a clean file from a

@@ -15,7 +15,7 @@
     "format:check": "prettier --check \"*.ts\" \"src/**/*.ts\" \"scripts/*.mjs\" \"test/*.mjs\"",
     "test:unit": "node --test test/*.test.mjs",
     "test": "node --test test/*.test.mjs",
-    "test:e2e": "node --test test/*.e2e.mjs"
+    "test:e2e": "CODE_NAV_INDEX_WAIT_MS=300 CODE_NAV_INDEX_END_TIMEOUT_MS=5000 node --test test/*.e2e.mjs"
   },
   "pi": {
     "extensions": [
