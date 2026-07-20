@@ -70,7 +70,7 @@ instead of having to regex-sniff inline prose. This contract is implemented
 in `index.ts`'s `err()` (which catches hard throws and sets `isError: true`)
 and in the tool bodies in `nav.ts`:
 
-  - **HARD failures** (top-level, single-file tools: outline/tree/definition/
+  - **HARD failures** (top-level, single-file tools: outline/definition/
     rename/scan/diagnostics) THROW. `index.ts`'s `err()` catches and sets
     `isError: true`. Covers: `Cannot read …`, `Unknown language for file: …`,
     `Invalid regexp`, `No grammar for …`, `parse failed: …`, bad params,

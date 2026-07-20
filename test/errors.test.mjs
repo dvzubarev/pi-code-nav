@@ -198,14 +198,6 @@ test("nav.outline hard failure: unknown language → throws UnknownLanguageError
     }
 });
 
-test("nav.tree hard failure: Cannot read → throws", async () => {
-    const { tree } = await load("./src/nav.ts");
-    await assert.rejects(
-        tree({ path: "nope.ts", pattern: "x" }, "/nonexistent-cwd", throwingClientOf),
-        /Cannot read/,
-    );
-});
-
 test("nav.symbol hard failure: invalid `language` → throws (not a raw TypeError)", async () => {
     const { symbol } = await load("./src/nav.ts");
     // The tool schema (index.ts) constrains `language` to a StringEnum, but

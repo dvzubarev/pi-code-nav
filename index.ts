@@ -7,8 +7,8 @@
  * third-party symbol discovery. They split into two groups:
  *
  *   ENTRY POINTS (produce a position):
- *   code_outline        — file structure (functions, classes, methods, signatures)
- *   code_tree           — pattern-driven pruned DocumentSymbol tree with signatures (parallel hover)
+ *   code_outline        — paginated file structure (functions, classes, methods)
+ *                         with signatures, body line ranges, and doc snippets
  *   code_search_symbol  — ranked workspace-wide symbol lookup by name
  *   code_scan           — identifier scan of a file or line range (positions + roles)
  *                         (the third-party entry point; see docs/code_scan.md)
@@ -151,45 +151,28 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_outline",
         label: "Code Outline",
         description:
-            "Retrieve the structure of a source file: functions, classes, methods, with positions. Only structural kinds are kept (class, method, function, constructor, interface, struct) — constants, variables, and other leaf bindings are dropped. For signature-enriched, pattern-scoped results use code_tree. Example output:\n  Class Foo  :12:1\n    Method bar  [void bar(int x)]  :15:3",
-        promptSnippet: "List functions/classes/methods in a file via LSP",
+            "Retrieve the structure of a source file: functions, classes, methods, with signatures, body line ranges, and a one-line doc snippet per entry. Only structural kinds are kept (class, method, function, constructor, interface, struct) — constants, variables, and other leaf bindings are dropped. Each row is grep-style `:line:col` (the identifier position) plus a body range `:sl-el` so it is directly reusable as input to code_hover/code_definition/code_references. Output is paginated (default 20 entries per page) to bound the per-row hover cost; use offset/limit to page further. Example output:\n  Class Foo  class Foo  :12-45:1  docs: A widget.\n    Method bar  def bar(self, x: int) -> None  :15-42:3  docs: Do the thing.\n  [3 more entries in foo.py. Use offset=3 to continue.]",
+        promptSnippet: "List functions/classes/methods in a file with signatures + docs",
         promptGuidelines: [
-            "Prefer code_outline for a quick structural overview; use code_tree for signatures filtered by name pattern, or code_scan for every identifier (calls/imports/members).",
+            "Prefer code_outline for a structural overview of a file — it returns signatures, body line ranges, and a one-line doc snippet per entry, paginated. Use code_scan for every identifier (calls/imports/members), or code_search_symbol to find a symbol by name across the workspace.",
         ],
         parameters: Type.Object({
             path: Type.String({ description: "File path (absolute or relative to cwd)" }),
+            offset: Type.Optional(
+                Type.Number({
+                    description: "1-based start entry for pagination (mirrors the read tool). Default 1.",
+                }),
+            ),
+            limit: Type.Optional(
+                Type.Number({
+                    description: "Max entries per page (default 20, hard cap 200). Bounds the per-row hover cost.",
+                }),
+            ),
         }),
         async execute(_id, params, _signal, _onUpdate, ctx) {
             try {
                 return text_result(
                     await nav.outline(params, ctx.cwd, (lang) => state.pool.client(lang)),
-                );
-            } catch (e) {
-                return err(e instanceof Error ? e.message : String(e));
-            }
-        },
-    });
-
-    // 1b. code_tree (LSP documentSymbol tree, pattern-driven)
-    pi.registerTool({
-        name: "code_tree",
-        label: "Code Tree",
-        description:
-            "Return a pruned view of a source file's DocumentSymbol tree, filtered to symbols whose name matches a regexp. Each row carries its kind, position, and signature. Unlike code_outline (a bloat-free structural overview of the whole file), code_tree is pattern-driven: pass a regexp matched against symbol names. DWYM: if the match is a class/interface/struct, it prints its direct children (methods/properties/fields) with a signature; if the match is anything else, it prints its ancestors for context. Example output for pattern `^Foo$`:\n  Class Foo  :12:1\n    Method bar  [void bar(int x)]  :15:3\n    Method baz  [int baz()]  :18:3",
-        promptSnippet: "Prints source file as tree-like structure.",
-        promptGuidelines: [
-            "Use code_tree for a name-pattern-driven symbol tree with signatures (e.g. scan a class to see its methods with signatures, or `^get_|^set_` for getters/setters). Prefer code_outline for a full-file overview, code_scan for every identifier.",
-        ],
-        parameters: Type.Object({
-            path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-            pattern: Type.String({
-                description: "A JavaScript case-sensitive regexp.",
-            }),
-        }),
-        async execute(_id, params, _signal, _onUpdate, ctx) {
-            try {
-                return text_result(
-                    await nav.tree(params, ctx.cwd, (lang) => state.pool.client(lang)),
                 );
             } catch (e) {
                 return err(e instanceof Error ? e.message : String(e));
@@ -205,7 +188,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             'Retrieve the source code of a function/class/method definition. Given a symbol position (path, line, column), resolves the definition and returns the full body — the complete function/class/method source, ready to copy into an edit. Output format: a header line `<defPath>:<sl>-<el>` (1-based inclusive line range) followed by the raw source lines (no code fence). The definition may live in a different file than the input position (including third-party trees). A position may resolve to several definition sites (overloads, header-vs-source in C++, re-exports): one block per site, separated by a blank line, with a trailing `# N definitions` count. Set list_symbols=true to also append a symbol table of the identifiers used inside the body.',
         promptSnippet: "Retrieve verbatim source code of a function/class/method.",
         promptGuidelines: [
-            "Use code_definition to retrieve the FULL source body of a function/class/method — verbatim text ready to copy into an edit. You need a position first (from code_outline/code_tree/code_scan/code_search_symbol).",
+            "Use code_definition to retrieve the FULL source body of a function/class/method — verbatim text ready to copy into an edit. You need a position first (from code_outline/code_scan/code_search_symbol).",
             "Set list_symbols=true to also get a symbol table of identifiers used inside the body; each row is itself a position you can feed back into code_definition/code_hover/code_references (combine the header's defPath with the row's :line:col).",
         ],
         parameters: Type.Object({
@@ -543,7 +526,7 @@ export default function codeNavExtension(pi: ExtensionAPI) {
         registerTools(pi, s);
         s.pool.setEnabled(true);
         ctx.ui.notify(
-            "code-nav enabled — tools: code_outline, code_tree, code_definition, code_references, code_search_symbol, code_rename, code_hover, code_scan, code_diagnostics",
+            "code-nav enabled — tools: code_outline, code_definition, code_references, code_search_symbol, code_rename, code_hover, code_scan, code_diagnostics",
             "info",
         );
     }
@@ -562,7 +545,7 @@ export default function codeNavExtension(pi: ExtensionAPI) {
 
     pi.registerCommand("code-nav", {
         description:
-            "Enable LSP-backed code navigation tools (code_outline, code_tree, code_definition, code_references, code_search_symbol, code_rename, code_hover, code_scan, code_diagnostics)",
+            "Enable LSP-backed code navigation tools (code_outline, code_definition, code_references, code_search_symbol, code_rename, code_hover, code_scan, code_diagnostics)",
         handler: async (_args, ctx) => {
             await enable(ctx);
         },
@@ -627,7 +610,7 @@ export default function codeNavExtension(pi: ExtensionAPI) {
 /**
  * The grouped tool overview injected into the system prompt while code-nav is
  * active. Two purposes the flat per-tool promptGuidelines cannot serve:
- *   1. Group the nine tools into ENTRY POINTS (produce positions) vs DETAIL
+ *   1. Group the eight tools into ENTRY POINTS (produce positions) vs DETAIL
  *      TOOLS (consume positions), making the round-trip obvious.
  *   2. Reframe common grep/read/sed reflexes as code_* calls.
  *   3. Show concrete code_search_symbol filtering examples (narrowing bare
@@ -649,8 +632,7 @@ ENTRY POINTS (no precise position yet):
   fetch per-match detail in the SAME call: \`["code"]\` = source body,
   \`["hover"]\` = signature+docstring, \`["references"]\` = up to 25 call sites.
   Pass \`filter_by_kind\` / \`filter_by_regex\` to narrow to one match.
-- code_outline  — list functions/classes/methods in a file
-- code_tree     — pattern-driven pruned symbol tree with signatures
+- code_outline  — list functions/classes/methods in a file (with signatures + doc snippets)
 - code_scan     — list every identifier (type/call/member/import) in a file or range
 
 DETAIL TOOLS (take a position from an entry point):

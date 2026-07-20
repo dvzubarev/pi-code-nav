@@ -17,8 +17,7 @@
 // compile_commands.json under <root>/build/) and for pyright project detection.
 //
 // Usage:
-//   node nav-cli.mjs outline <file>
-//   node nav-cli.mjs tree <file> <pattern>
+//   node nav-cli.mjs outline <file> [offset:1-based] [limit]
 //   node nav-cli.mjs hover <file> <line:1-based> <col:1-based>
 //   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [--list-symbols]
 //   node nav-cli.mjs references <file> <line:1-based> <col:1-based>
@@ -33,7 +32,7 @@
 //
 // Examples:
 //   node nav-cli.mjs outline temp.py
-//   node nav-cli.mjs tree temp.py "TempC"
+//   node nav-cli.mjs outline temp.py 1 50
 //   node nav-cli.mjs scan temp.py                  # whole file
 //   node nav-cli.mjs scan temp.py --pattern load   # filter by name
 //   node nav-cli.mjs hover temp.py 5 5
@@ -64,8 +63,7 @@ const [cmd, ...rest] = process.argv.slice(2);
 
 function usage() {
     console.error(`usage (root: ${ROOT}):
-  node nav-cli.mjs outline <file>
-  node nav-cli.mjs tree <file> <pattern>
+  node nav-cli.mjs outline <file> [offset:1-based] [limit]
   node nav-cli.mjs hover <file> <line:1-based> <col:1-based>
   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [--list-symbols]
   node nav-cli.mjs references <file> <line:1-based> <col:1-based>
@@ -75,14 +73,10 @@ function usage() {
   node nav-cli.mjs diagnostics <file>
 
 hover/definition/references each take a SINGLE (file line col) triple — one
-  symbol per call. outline prints a bloat-free structural overview (classes,
-  methods, functions, properties/fields) — constants/variables are dropped, no
-  arguments.
-tree takes a regexp matched against symbol names. DWYM: a class/interface/struct
-  match prints ONLY its direct children (methods/properties/fields), each
-  enriched with a hover signature when the server detail is empty (tsserver/ty);
-  any other match prints NO subtree (just the node + ancestors for context).
-  No constant/variable filtering — the pattern scopes the candidate set.
+  symbol per call. outline prints a structural overview (classes, methods,
+  functions, constructors, interfaces, structs) with signatures, body line
+  ranges, and a one-line doc snippet per entry — constants/variables/properties
+  are dropped. Paginated: optional offset (1-based) and limit (default 20).
 definition accepts a SINGLE (file line col) triple and returns the verbatim
   source body of the symbol at that position (header \`<defPath>:<sl>-<el>\` +
   raw source, no fence). Throws a hard error if it cannot return source code
@@ -125,14 +119,12 @@ async function shutdownAll() {
 async function main() {
     if (!cmd) usage();
     if (cmd === "outline") {
-        const [path] = rest;
+        const [path, off, lim] = rest;
         if (!path) usage();
-        console.log(await nav.outline({ path }, ROOT, clientOf));
-    } else if (cmd === "tree") {
-        // tree <file> <pattern> — pattern is a regexp tested against symbol names.
-        const [path, pattern] = rest;
-        if (!path || !pattern) usage();
-        console.log(await nav.tree({ path, pattern }, ROOT, clientOf));
+        const params = { path };
+        if (off) params.offset = parseInt(off, 10);
+        if (lim) params.limit = parseInt(lim, 10);
+        console.log(await nav.outline(params, ROOT, clientOf));
     } else if (cmd === "hover" || cmd === "references") {
         // Both take a SINGLE (file line col) triple — one symbol per call.
         if (rest.length !== 3) usage();

@@ -66,8 +66,8 @@ entry point prints 1-based `line:col` that feeds straight into a detail tool's
 | Tool | Use when |
 |------|----------|
 | `code_search_symbol` | you know a symbol **name** and want to find it across the workspace |
-| `code_outline` | you have a **file** and want its structure (functions/classes/methods + signatures) |
-| `code_tree` | you have a file and want symbols **matching a name pattern** (e.g. a class's members) |
+| `code_outline` | you have a **file** and want its structure (functions/classes/methods with signatures, body ranges, and doc snippets) |
+| `code_scan` | you have a file/range and want **every identifier** with its role (calls, imports, members) |
 | `code_scan` | you have a file/range and want **every identifier** with its role (calls, imports, members) |
 
 **Detail tools** (take `path` + 1-based `line` + `column`):

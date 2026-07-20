@@ -118,6 +118,66 @@ export function hoverSignature(hoverText: string): string {
     return trunc(buf.join(" ").replace(/\s+/g, " ").trim(), 140);
 }
 
+/**
+ * Extract a one-line doc snippet from a hover body — the first sentence of
+ * the prose that FOLLOWS the signature fence. Mirrors the Emacs / PEP 257 /
+ * Javadoc convention: the first line/sentence of a docstring is a short
+ * summary. `hoverSignature` consumes the fenced signature block; this helper
+ * takes the first non-blank prose line after that fence closes, cut at the
+ * first sentence boundary (`. ` / `! ` / `? `) and length-capped.
+ *
+ * For a hover with NO fence (rare — all of ccls/ty/tsserver emit a fenced
+ * signature), `hoverSignature` treats the first non-blank line as the
+ * signature; this helper then skips that line and returns the next one. If
+ * there's no prose after the signature, returns "" so the caller omits the
+ * docs column. Distinct from `hoverFirstLine` (in tree-sitter-parse.ts),
+ * which returns the first line INSIDE the fence (i.e. the signature itself)
+ * — wrong for a docs column.
+ */
+export function hoverDocSnippet(hoverText: string, maxLen = 100): string {
+    const lines = hoverText.split(/\r?\n/);
+    let inFence = false;
+    let fenceSeen = false;
+    let firstLineSkipped = false; // no-fence case: skip the signature line
+    for (const raw of lines) {
+        const line = raw.trim();
+        if (/^```/.test(line)) {
+            if (inFence) {
+                inFence = false;
+                fenceSeen = true;
+                continue;
+            }
+            inFence = true;
+            fenceSeen = true;
+            continue;
+        }
+        if (inFence) continue; // inside the signature fence
+        if (!line) continue;
+        // Skip markdown horizontal rules (--- / *** / ___) — ty separates the
+        // signature fence from the docstring prose with a `---` HR. Without
+        // this guard the snippet would be `---` instead of the docstring.
+        if (/^([-*_])\1{2,}$/.test(line)) continue;
+        if (fenceSeen) {
+            // First prose line after the signature fence → the summary.
+            return trunc(firstSentence(line), maxLen);
+        }
+        // No-fence case: the first non-blank line was the signature (per
+        // hoverSignature); the NEXT non-blank line is the docs.
+        if (!firstLineSkipped) {
+            firstLineSkipped = true;
+            continue;
+        }
+        return trunc(firstSentence(line), maxLen);
+    }
+    return "";
+}
+
+/** Cut `line` at the first sentence boundary (`. ` / `! ` / `? ` or end). */
+function firstSentence(line: string): string {
+    const m = line.match(/^(.+?[.!?])(?:\s|$)/);
+    return m ? m[1] : line;
+}
+
 // ---------------------------------------------------------------------------
 // Symbol kind naming + DocumentSymbol / SymbolInformation rendering
 // ---------------------------------------------------------------------------

@@ -72,25 +72,40 @@ const runOrSkip = (name, fn) => (skip || !tyOk ? test.skip(name, fn) : test(name
 const runOrSkipThirdParty = (name, fn) =>
     (skip || !tyOk || !thirdPartyOk ? test.skip(name, fn) : test(name, fn));
 
-runOrSkip("code_outline on second.py shows Point and TempC classes", async () => {
+runOrSkip("code_outline on second.py shows classes/methods with signatures, ranges, docs", async () => {
     const ws = await withWorkspace(["second.py"]);
     try {
         const out = await nav.outline({ path: "second.py" }, ws.root, ws.clientOf);
         const lines = out.split("\n");
-        // Hierarchical DocumentSymbol[] → indented outline. Verify the two
-        // top-level classes appear with their kind and 1-based selectionRange pos.
+        // Hierarchical DocumentSymbol[] → indented outline. Each row now carries
+        // a hover signature, a body line range `:sl-el:col`, and (when present)
+        // a one-line doc snippet. Verify the two top-level classes appear with
+        // their kind and the new range column (body range, not just sel pos).
         assert.ok(
-            lines.some((l) => /^Class Point  :\d+:\d+$/.test(l)),
-            `Point missing:\n${out}`,
+            lines.some((l) => /^Class Point  .+  :\d+-\d+:\d+/.test(l)),
+            `Point row missing:\n${out}`,
         );
         assert.ok(
-            lines.some((l) => /^Class TempC  :\d+:\d+$/.test(l)),
-            `TempC missing:\n${out}`,
+            lines.some((l) => /^Class TempC  .+  :\d+-\d+:\d+/.test(l)),
+            `TempC row missing:\n${out}`,
         );
-        // TempC's children (__init__, punintend) are indented two spaces.
+        // TempC's children (__init__, punintend) are indented two spaces and
+        // carry hover-derived signatures (ty leaves detail empty).
         assert.ok(
-            lines.some((l) => /^  Method punintend  :\d+:\d+$/.test(l)),
-            `punintend missing:\n${out}`,
+            lines.some((l) => /^  Method punintend  .+  :\d+-\d+:\d+/.test(l)),
+            `punintend row missing:\n${out}`,
+        );
+        // Doc snippets: TempC has `"""documentation of tempC"""` and punintend
+        // has `"""Documentation of punintend """`. The `docs:` column is the
+        // first sentence of the docstring prose after the signature fence
+        // (ty separates them with a `---` markdown HR, which must be skipped).
+        assert.ok(
+            lines.some((l) => /docs: documentation of tempC/.test(l)),
+            `TempC doc snippet missing:\n${out}`,
+        );
+        assert.ok(
+            lines.some((l) => /docs: Documentation of punintend/.test(l)),
+            `punintend doc snippet missing:\n${out}`,
         );
         // code_outline keeps only structural kinds (class/method/function/...).
         // The module-level Constant GLOB (second.py:8) is dropped — no opt-out.
@@ -99,50 +114,91 @@ runOrSkip("code_outline on second.py shows Point and TempC classes", async () =>
             !lines.some((l) => /Constant GLOB/.test(l)),
             `GLOB should be hidden (not a structural kind):\n${out}`,
         );
+        // second.py has only 5 entries (< default limit 20) → no pagination
+        // trailing message.
+        assert.ok(
+            !/more entries/.test(out),
+            `small file should not paginate:\n${out}`,
+        );
     } finally {
         await ws.cleanup();
     }
 });
 
-runOrSkip("code_tree on second.py matches TempC and its members", async () => {
+runOrSkip("code_outline paginates: limit bounds rows and emits a trailing continue message", async () => {
     const ws = await withWorkspace(["second.py"]);
     try {
-        // Pattern-driven tree: TempC matches → the class row (with a hover
-        // signature, since ty leaves detail empty) PLUS its DIRECT children as
-        // context — and because TempC is a class match, those direct children
-        // are also hovered for signatures (DWYM). Deep locals are NOT dumped.
-        // Point (no match, no matching descendant) is pruned.
-        const out = await nav.tree({ path: "second.py", pattern: "TempC" }, ws.root, ws.clientOf);
+        // second.py has 5 kept entries (Point, __init__, TempC, __init__,
+        // punintend). With limit=2, page 1 shows 2 rows + a trailing
+        // `[N more entries in <path>. Use offset=<next> to continue.]` message
+        // mirroring pi's `read` tool idiom.
+        const out = await nav.outline(
+            { path: "second.py", offset: 1, limit: 2 },
+            ws.root,
+            ws.clientOf,
+        );
         const lines = out.split("\n");
-        // TempC itself is matched.
-        assert.ok(
-            lines.some((l) => /^Class TempC  .+:\d+:\d+$/.test(l)),
-            `TempC match row with signature missing:\n${out}`,
-        );
-        // Its direct members are kept (indented) and carry hover-derived
-        // signatures — they are NOT bare context rows anymore.
-        assert.ok(
-            lines.some((l) => /^  Method punintend  .+:\d+:\d+$/.test(l)),
-            `punintend (direct member with signature) missing:\n${out}`,
-        );
-        // Point is pruned (no match in its subtree).
-        assert.ok(
-            !lines.some((l) => /Class Point/.test(l)),
-            `Point should be pruned (no match):\n${out}`,
+        // Exactly 2 content rows + 1 trailing message.
+        const contentRows = lines.filter((l) => l && !l.startsWith("["));
+        assert.equal(contentRows.length, 2, `expected 2 content rows, got:\n${out}`);
+        // Trailing message names the remaining count and the next offset.
+        assert.match(
+            out,
+            /^\[3 more entries in second\.py\. Use offset=3 to continue\.\]$/m,
+            `trailing continue message missing:\n${out}`,
         );
     } finally {
         await ws.cleanup();
     }
 });
 
-runOrSkip("code_tree with a bad regexp reports an error", async () => {
+runOrSkip("code_outline pagination continues at offset, re-emitting ancestor (cont.) mid-class", async () => {
     const ws = await withWorkspace(["second.py"]);
     try {
-        // An invalid regexp is a hard error (isError) — the agent learns the
-        // syntax contract fast, no silent substring fallback.
-        await assert.rejects(
-            nav.tree({ path: "second.py", pattern: "(" }, ws.root, ws.clientOf),
-            /Invalid regexp/,
+        // offset=4 lands on TempC's __init__ (entry 4 of 5), which is INSIDE
+        // TempC (entry 3, on the previous page). The page must re-emit TempC
+        // as a `(cont.)` context row at depth 0 so the indented __init__ /
+        // punintend rows aren't orphaned. The context row carries the body
+        // range but NO signature/docs (it was shown in full on page 1).
+        const out = await nav.outline(
+            { path: "second.py", offset: 4, limit: 2 },
+            ws.root,
+            ws.clientOf,
+        );
+        const lines = out.split("\n").filter((l) => l);
+        // First line is the re-emitted ancestor context row.
+        assert.match(
+            lines[0],
+            /^Class TempC  \(cont\.\)  :\d+-\d+:\d+$/,
+            `expected TempC (cont.) context row first, got:\n${out}`,
+        );
+        // The context row must NOT carry a signature or docs column.
+        assert.ok(!/docs:/.test(lines[0]), `context row should have no docs:\n${out}`);
+        // Followed by the two content rows at depth 1 (indented).
+        assert.match(lines[1], /^  Constructor __init__ /, `__init__ missing:\n${out}`);
+        assert.match(lines[2], /^  Method punintend /, `punintend missing:\n${out}`);
+        // Last page (entry 5 is the final one) → no trailing message.
+        assert.ok(!/more entries/.test(out), `last page should not paginate:\n${out}`);
+    } finally {
+        await ws.cleanup();
+    }
+});
+
+runOrSkip("code_outline offset past end returns a note (not a throw)", async () => {
+    const ws = await withWorkspace(["second.py"]);
+    try {
+        // offset beyond the entry count is a soft empty-page result, not a
+        // hard error — the file is readable, the language is known, so this
+        // is NOT an isError path. The agent gets a note it can act on.
+        const out = await nav.outline(
+            { path: "second.py", offset: 999, limit: 10 },
+            ws.root,
+            ws.clientOf,
+        );
+        assert.match(
+            out,
+            /^\(offset 999 is past the end; 5 entries in second\.py\)$/,
+            `past-end note missing:\n${out}`,
         );
     } finally {
         await ws.cleanup();

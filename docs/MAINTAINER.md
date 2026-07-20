@@ -44,7 +44,7 @@
   memoized per root; `clearDetectedLanguagesCache`) used by `code_search_symbol`
   so the per-language workspace/symbol loop only spawns servers that can find
   a project here.
-- `src/<tool>.ts` — one file per tool: `outline.ts`, `tree.ts`,
+- `src/<tool>.ts` — one file per tool: `outline.ts`,
   `definition.ts`, `references.ts`, `symbol.ts`, `rename.ts`, `hover.ts`,
   `scan.ts`, `diagnostics.ts`. Each exports a plain async function
   `(params, cwd, clientOf) => text` and its `*Params` interface. No pi
@@ -132,8 +132,7 @@ the per-tool output contracts are documented in `IMPL.md`. CLI subcommands
 (root = cwd or `CODE_NAV_ROOT`):
 
 ```
-  outline <file>
-  tree <file> <pattern>
+  outline <file> [offset:1-based] [limit]
   hover <file> <line:1> <col:1>
   definition <file> <line:1> <col:1> [--list-symbols]
   references <file> <line:1> <col:1>

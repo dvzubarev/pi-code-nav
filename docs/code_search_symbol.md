@@ -238,7 +238,7 @@ fuzzy hits the tier dropped) and BEFORE dedupe + the fan-out/cap branch.
   (`void std::vector::push_back(int)`), so it can distinguish overloads; for
   py/ts it's the bare identifier, so it cannot (see the overloads note
   above). An invalid regexp is a hard error (`isError: true`), matching
-  `code_tree` / `code_scan`'s pattern contract.
+  `code_scan`'s pattern contract.
 
 The intended workflow is: first call without `info` (or with `info` but over
 the cap) → see the row list → add `filter_by_kind` / `filter_by_regex` to

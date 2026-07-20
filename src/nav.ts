@@ -9,7 +9,7 @@
  * The nine tools live in their own files (one per tool), sharing
  * `nav-core.ts` (ClientProvider, ALL_LANGS, UnknownLanguageError,
  * awaitReadyForQuery) and `detect.ts` (project language detection):
- *   outline.ts   tree.ts   definition.ts   references.ts   symbol.ts
+ *   outline.ts   definition.ts   references.ts   symbol.ts
  *   rename.ts    hover.ts  scan.ts         diagnostics.ts
  */
 
@@ -19,9 +19,6 @@ export { clearDetectedLanguagesCache, detectProjectLanguages } from "./detect";
 
 export { outline } from "./outline";
 export type { OutlineParams } from "./outline";
-
-export { tree } from "./tree";
-export type { TreeParams } from "./tree";
 
 export { definition } from "./definition";
 export type { DefinitionParams } from "./definition";

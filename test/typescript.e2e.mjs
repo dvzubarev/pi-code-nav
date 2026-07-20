@@ -94,15 +94,13 @@ runOrSkip(
 );
 
 runOrSkip(
-    "code_tree on a .ts file fetches signatures via parallel hover (detail empty)",
+    "code_outline on a .ts file fetches signatures via parallel hover (detail empty)",
     async () => {
-        // tsserver leaves DocumentSymbol.detail empty, so code_tree falls back to
-        // one LSP hover per matched row AND per direct child of a class match
-        // (fired in parallel via Promise.all — JSON-RPC over stdio supports
-        // concurrent in-flight requests). The hover signature is appended as a
-        // label. This is the path code_outline does NOT take (it stays a single
-        // documentSymbol call); code_tree is where the hover cost lives, scoped
-        // by the pattern.
+        // tsserver leaves DocumentSymbol.detail empty, so code_outline falls
+        // back to one LSP hover per row (fired in parallel via Promise.all —
+        // JSON-RPC over stdio supports concurrent in-flight requests). The
+        // hover signature becomes the signature column. This is the path where
+        // the per-row hover cost lives; the default limit (20) bounds it.
         const ws = await withWorkspace([]);
         try {
             const file = resolve(ws.root, "svc.ts");
@@ -119,43 +117,28 @@ runOrSkip(
                 ].join("\n"),
                 "utf8",
             );
-            // Match Service → class row (hovered, since detail is empty) + its
-            // DIRECT children as context. DWYM: because Service is a class match,
-            // each direct child is also hovered for a signature (tsserver leaves
-            // detail empty, so the hover is what enriches them) — this is the
-            // signature-enriched promise of code_scan. Deep locals (none here,
-            // but in real files: constants inside methods) are NOT dumped.
-            const out = await nav.tree(
-                { path: "svc.ts", pattern: "Service" },
-                ws.root,
-                ws.clientOf,
-            );
-            // The matched class row carries a hover-derived signature.
+            const out = await nav.outline({ path: "svc.ts" }, ws.root, ws.clientOf);
+            // The matched class row carries a hover-derived signature + body range.
             assert.match(
                 out,
-                /^Class Service  .+:\d+:\d+$/m,
-                `Service match row with signature missing:\n${out}`,
+                /^Class Service  .+  :\d+-\d+:\d+/m,
+                `Service row with signature missing:\n${out}`,
             );
             // Its direct members are kept (indented) and carry hover-derived
-            // signatures — they are NOT bare context rows anymore.
+            // signatures.
             assert.match(
                 out,
-                /^  Method getId  .+:\d+:\d+$/m,
+                /^  Method getId  .+  :\d+-\d+:\d+/m,
                 `getId (direct member with signature) missing:\n${out}`,
             );
-            // The constructor parameter property `id` is also a direct child and
-            // gets a signature — confirming all direct children are hovered, not
-            // just methods.
-            assert.match(
-                out,
-                /^  Property id  .+:\d+:\d+$/m,
-                `id (direct property with signature) missing:\n${out}`,
-            );
-            // NOISE (Constant, no match, not under a match) is pruned — and even
-            // if it had matched, code_tree does NOT apply the outline allowlist.
-            assert.ok(!/NOISE/.test(out), `NOISE should be pruned:\n${out}`);
-            // greet (Function, no match, not under a match) is pruned too.
-            assert.ok(!/greet/.test(out), `greet should be pruned:\n${out}`);
+            // NOISE (Constant, kind 14) is dropped by the outline allowlist.
+            assert.ok(!/NOISE/.test(out), `NOISE should be dropped (not a structural kind):\n${out}`);
+            // The parameter property `id` is a Property (kind 7), also dropped
+            // by the allowlist (see OUTLINE_KEEP_KINDS — Property/Field are
+            // dropped because tsserver emits them for object-literal keys too).
+            assert.ok(!/Property id/.test(out), `id should be dropped (Property not kept):\n${out}`);
+            // greet (Function) IS kept (it's a structural kind).
+            assert.match(out, /^Function greet  .+  :\d+-\d+:\d+/m, `greet row missing:\n${out}`);
         } finally {
             await ws.cleanup();
         }
