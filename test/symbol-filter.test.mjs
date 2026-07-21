@@ -672,6 +672,99 @@ test("info fan-out: references capped at 25 with a (N of M, use code_references)
     }
 });
 
+test("cpp fan-out: constructor declarations inside a struct render each constructor declaration, not the enclosing struct body (enclosing-parent scope guard)", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-enclosing-"));
+    try {
+        const root = dir;
+        const cppFile = resolve(root, "test.cpp");
+        const code = [
+            `struct extra_opts_t{`,
+            `    extra_opts_t(int a);`,
+            `    extra_opts_t(float a);`,
+            `    extra_opts_t(double a);`,
+            ``,
+            `    int a;`,
+            `    float b;`,
+            `    double d;`,
+            `};`,
+            ``,
+            `int main(){`,
+            `extra_opts_t opts;`,
+            `}`,
+            ``,
+        ].join("\n");
+        await import("node:fs/promises").then((fs) =>
+            fs.writeFile(cppFile, code, "utf8"),
+        );
+
+        // workspace/symbol returns three constructor matches (lines 2-4,
+        // 1-based). Each is a declaration (no body) inside a struct.
+        const canned = [
+            sym("extra_opts_t::extra_opts_t(int a)", 9, cppFile, 1, 4),
+            sym("extra_opts_t::extra_opts_t(float a)", 9, cppFile, 2, 4),
+            sym("extra_opts_t::extra_opts_t(double a)", 9, cppFile, 3, 4),
+        ];
+
+        // DocumentSymbol tree: the struct with constructor children.
+        const ctor1 = docSymbol("extra_opts_t", 9, { line: 1, character: 4 }, { line: 1, character: 23 });
+        const ctor2 = docSymbol("extra_opts_t", 9, { line: 2, character: 4 }, { line: 2, character: 25 });
+        const ctor3 = docSymbol("extra_opts_t", 9, { line: 3, character: 4 }, { line: 3, character: 26 });
+        const structSym = {
+            name: "extra_opts_t",
+            kind: 23,
+            range: { start: { line: 0, character: 0 }, end: { line: 8, character: 1 } },
+            selectionRange: { start: { line: 0, character: 7 }, end: { line: 0, character: 19 } },
+            children: [ctor1, ctor2, ctor3],
+        };
+        const docSymsByPath = new Map([[cppFile, [structSym]]]);
+
+        // textDocument/definition returns the STRUCT identifier position
+        // (line 0 char 7) — ccls returns the enclosing parent scope for
+        // a member declaration with no out-of-line definition.
+        const defLoc = {
+            uri: `file://${cppFile}`,
+            range: { start: { line: 0, character: 7 }, end: { line: 0, character: 19 } },
+        };
+        const defLocsByPath = new Map([[cppFile, defLoc]]);
+
+        const out = await symbol(
+            { query: "extra_opts_t", language: "cpp", info: ["code"] },
+            dir,
+            mockClientOfRich(dir, {
+                cannedSyms: canned,
+                docSymsByPath,
+                defLocsByPath,
+                hoverTextByPath: new Map(),
+            }),
+        );
+
+        // Header
+        assert.match(out, /^# 3 matches for "extra_opts_t" — info: code\b/m);
+
+        // Each constructor renders its OWN declaration line, not the
+        // enclosing struct body (lines 1-9).
+        assert.match(out, /extra_opts_t\(int a\);/);
+        assert.match(out, /extra_opts_t\(float a\);/);
+        assert.match(out, /extra_opts_t\(double a\);/);
+
+        // Each code section header shows the correct single-line range
+        // (2:2, 3:3, 4:4 in 1-based output = the declaration line).
+        assert.match(out, /test\.cpp:2-2/);
+        assert.match(out, /test\.cpp:3-3/);
+        assert.match(out, /test\.cpp:4-4/);
+
+        // The struct body must NOT appear — every match renders its own
+        // declaration, not the enclosing scope.
+        assert.ok(
+            !out.includes("struct extra_opts_t{"),
+            `struct body should NOT appear (each declaration renders individually), got:\n${out}`,
+        );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
 test("info fan-out: no matches returns the parenthesized note", async () => {
     const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-empty-"));

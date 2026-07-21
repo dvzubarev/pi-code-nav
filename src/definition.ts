@@ -157,6 +157,38 @@ export async function definition(
         // code_search_symbol, etc.).
         throw new Error(`No definition found for ${params.path}:${params.line}:${params.column}`);
     }
+    // ccls enclosing-parent scope guard: when the cursor is on a C++
+    // declaration that has no out-of-line definition (e.g. a constructor
+    // declaration inside a struct, with no {}-body), textDocument/definition
+    // returns the enclosing struct/class identifier position (the nearest
+    // "definition" ancestor) instead of the declaration itself. The locs are
+    // non-empty but point to the parent scope in the same file — returning
+    // the parent body (the whole struct) for a member declaration is wrong.
+    //
+    // Detection: if step 0 found a declInInput (declaration at cursor, no
+    // body) AND every loc is in the same file AND its start line is strictly
+    // BEFORE declInInput.sl, the locs point to an enclosing parent scope.
+    // Fall back to rendering the declaration itself (declInInput). A loc at
+    // or after declInInput.sl is a genuine cross-declaration jump (e.g.
+    // forward declaration → out-of-line definition later in the same file)
+    // and is kept as-is.
+    if (declInInput && locs.length > 0) {
+        const allEnclosingParent = locs.every((loc) => {
+            const p = uriToPath(loc.uri);
+            return p === abs && loc.range?.start?.line != null && loc.range.start.line < declInInput!.sl;
+        });
+        if (allEnclosingParent) {
+            return renderSnippetBlock(
+                client,
+                abs,
+                declInInput.sl,
+                declInInput.el,
+                text,
+                params.list_symbols ?? false,
+                { line: params.line, column: params.column },
+            );
+        }
+    }
     // A position may resolve to multiple definition sites (overloads,
     // multi-definition symbols, header-vs-source in C++, re-exports). This is
     // a legitimate, common LSP outcome — `textDocument/definition` returns a
