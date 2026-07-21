@@ -874,19 +874,72 @@ test("info fan-out: `using`-alias (kind 252) shows declaration-only note, not ER
         );
         // Header indicates the match was found.
         assert.match(out, /^# 1 match for "my_type_t" — info: code\b/m);
-        // Code section present with declaration-only note, NOT an ERROR.
+        // Code section present with the ccls name inline, NOT an ERROR.
         assert.match(out, /--- code ---/);
-        assert.match(out, /declaration-only symbol/, `expected declaration-only note, got:\n${out}`);
+        assert.match(out, /using my_type_t = int/, `expected ccls name in code section, got:\n${out}`);
         assert.ok(
             !/ERROR/.test(out),
             `no ERROR should appear for kind 252 using-alias:\n${out}`,
+        );
+        assert.ok(
+            !/declaration-only/.test(out),
+            `should NOT say declaration-only (now shows name inline):\n${out}`,
         );
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }
 });
 
-test("info fan-out: typedef (kind 252) shows declaration-only note, not ERROR", async () => {
+test("info fan-out: using-alias (kind 252) with references works and shows declaration site", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-usingrefs-"));
+    try {
+        const root = dir;
+        const cppFile = resolve(root, "test.cpp");
+        await import("node:fs/promises").then((fs) =>
+            fs.writeFile(cppFile, [
+                "using my_type_t = int;",
+                "int x = my_type_t(42);",
+            ].join("\n"), "utf8"),
+        );
+        const canned = [sym("using my_type_t = int", 252, cppFile, 0, 6)];
+        // Provide a references result — the using-alias is referenced on line 2.
+        const refsByPath = new Map([
+            [
+                cppFile,
+                [
+                    {
+                        uri: `file://${cppFile}`,
+                        range: { start: { line: 1, character: 8 }, end: { line: 1, character: 18 } },
+                    },
+                ],
+            ],
+        ]);
+        const out = await symbol(
+            { query: "my_type_t", language: "cpp", info: ["references"] },
+            dir,
+            mockClientOfRich(dir, {
+                cannedSyms: canned,
+                docSymsByPath: new Map(),
+                defLocsByPath: new Map(),
+                hoverTextByPath: new Map(),
+                refsByPath,
+            }),
+        );
+        // Header indicates the match was found.
+        assert.match(out, /^# 1 match for "my_type_t" — info: references\b/m);
+        // References section present.
+        assert.match(out, /--- references ---/);
+        // The reference site appears.
+        assert.match(out, /test\.cpp:2:9/, `reference site should show line 2:\n${out}`);
+        // No ERROR.
+        assert.ok(!/ERROR/.test(out), `no ERROR should appear:\n${out}`);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("info fan-out: typedef (kind 252) shows ccls name inline, not ERROR", async () => {
     const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-typedef-"));
     try {
@@ -909,10 +962,14 @@ test("info fan-out: typedef (kind 252) shows declaration-only note, not ERROR", 
         );
         assert.match(out, /^# 1 match for "my_typedef_t" — info: code\b/m);
         assert.match(out, /--- code ---/);
-        assert.match(out, /declaration-only symbol/);
+        assert.match(out, /typedef int my_typedef_t/, `expected ccls name in code section, got:\n${out}`);
         assert.ok(
             !/ERROR/.test(out),
             `no ERROR should appear for kind 252 typedef:\n${out}`,
+        );
+        assert.ok(
+            !/declaration-only/.test(out),
+            `should NOT say declaration-only (now shows name inline):\n${out}`,
         );
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
@@ -1050,6 +1107,116 @@ test("info fan-out: regular Function (kind 12) still gets code body (not skipped
             !/declaration-only/.test(out),
             `function should not be skipped as declaration-only:\n${out}`,
         );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("parseCppSymbolName: ccls struct `NAME {}` strips trailing ` {}` and extracts NAME as bare", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-structbraces-"));
+    try {
+        const root = dir;
+        const canned = [
+            // ccls returns structs/classes with trailing ` {}`: "struct temp::detail::int_helper {}".
+            sym("struct temp::detail::int_helper {}", 23, `${root}/test.cpp`, 4, 11),
+            sym('template<> struct temp::detail::int_helper<int> {}', 23, `${root}/test.cpp`, 9, 11),
+            // Regular function — still works.
+            sym("void my_func()", 12, `${root}/test.cpp`, 13, 14),
+        ];
+        // Bare query — parseCppSymbolName must extract "int_helper", not "{}".
+        const out = await symbol(
+            { query: "int_helper", language: "cpp" },
+            dir,
+            mockClientOf(dir, canned),
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[cpp]"));
+        assert.ok(rows.length >= 2, `expected int_helper hits, got:\n${out}`);
+        assert.match(out, /temp::detail::int_helper/);
+        // The display row still shows `{}` (the original ccls name is rendered),
+        // but the matching works (both structs are found). Verify the count.
+        assert.ok(rows.length >= 2, `expected at least 2 rows for int_helper:\n${out}`);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("info fan-out: struct with trailing ` {}` (kind 23) is found and gets code body", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-structbraces-"));
+    try {
+        const root = dir;
+        const cppFile = resolve(root, "test.cpp");
+        await import("node:fs/promises").then((fs) =>
+            fs.writeFile(cppFile, [
+                "namespace temp {",
+                "namespace detail {",
+                "    struct int_helper {",
+                "        using type = T;",
+                "    };",
+                "}",
+                "}",
+                "",
+            ].join("\n"), "utf8"),
+        );
+        const canned = [sym("struct temp::detail::int_helper {}", 23, cppFile, 2, 11)];
+        // Provide documentSymbols so resolveSymbolSelStart works.
+        const selStart = { line: 2, character: 11 };
+        const docSymsByPath = new Map([
+            [
+                cppFile,
+                [
+                    {
+                        name: "temp",
+                        kind: 3, // Namespace
+                        range: { start: { line: 0, character: 0 }, end: { line: 6, character: 1 } },
+                        selectionRange: { start: { line: 0, character: 10 }, end: { line: 0, character: 14 } },
+                        children: [
+                            {
+                                name: "detail",
+                                kind: 3,
+                                range: { start: { line: 1, character: 0 }, end: { line: 5, character: 1 } },
+                                selectionRange: { start: { line: 1, character: 11 }, end: { line: 1, character: 17 } },
+                                children: [
+                                    {
+                                        name: "int_helper",
+                                        kind: 23, // Struct
+                                        range: { start: selStart, end: { line: 4, character: 5 } },
+                                        selectionRange: {
+                                            start: selStart,
+                                            end: { line: 2, character: selStart.character + "int_helper".length },
+                                        },
+                                        children: [],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            ],
+        ]);
+        const defLocsByPath = new Map([
+            [cppFile, { uri: `file://${cppFile}`, range: { start: selStart, end: { line: 4, character: 5 } } }],
+        ]);
+        const out = await symbol(
+            { query: "int_helper", language: "cpp", info: ["code"] },
+            dir,
+            mockClientOfRich(dir, {
+                cannedSyms: canned,
+                docSymsByPath,
+                defLocsByPath,
+                hoverTextByPath: new Map(),
+            }),
+        );
+        // Header indicates the match was found.
+        assert.match(out, /^# 1 match for "int_helper" — info: code\b/m);
+        // Code section present (structs are NOT declaration-only).
+        assert.match(out, /--- code ---/);
+        // The struct body appears in the code section.
+        assert.match(out, /struct int_helper/);
+        assert.match(out, /using type = T/);
+        // No ERROR.
+        assert.ok(!/ERROR/.test(out), `no ERROR should appear:\n${out}`);
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }

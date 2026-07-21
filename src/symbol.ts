@@ -280,7 +280,11 @@ const clientsWithRoots = new WeakSet<LspClient>();
  *   `using _Base::_M_allocate`
  *     → qual=["_Base"], bare="_M_allocate"
  *   `TM_TRAIN_CODEC = 1` (ccls enum member)
- *     → qual=[], bare="TM_TRAIN_CODEC" */
+ *     → qual=[], bare="TM_TRAIN_CODEC"
+ *   `struct temp::detail::int_helper {}` (ccls struct with trailing ` {}`)
+ *     → qual=["temp","detail"], bare="int_helper"
+ *   `template<> struct temp::detail::int_helper<int> {}`
+ *     → qual=["temp","detail"], bare="int_helper" (after dropping `<int>` template args) */
 function parseCppSymbolName(name: string): {
     qualifierTokens: string[];
     bare: string;
@@ -339,6 +343,16 @@ function parseCppSymbolName(name: string): {
         }
         if (topLevelEq >= 0) {
             s = s.slice(0, topLevelEq).trim();
+        }
+    }
+
+    // Strip trailing ` {}` — ccls appends ` {}` (empty braces) to the end of
+    // struct/class/interface definitions (e.g. `struct Foo {}`). The braces
+    // are always empty; ccls never includes the body in the name.
+    if (s.endsWith("}")) {
+        const braceIdx = s.lastIndexOf("{");
+        if (braceIdx >= 0 && s.slice(braceIdx + 1).trim() === "}") {
+            s = s.slice(0, braceIdx).trim();
         }
     }
 
@@ -870,7 +884,11 @@ async function renderSymbolFanOut(
             // LSP kinds whose body adds nothing (Enum, TypeParameter, etc.).
             // The agent can still call code_definition directly.
             if (isDeclarationOnlyKind(sym.kind ?? 0)) {
-                matchBlocks.push(`--- code ---\n(declaration-only symbol — the definition is the line shown above)`);
+                // For declaration-only kinds, the ccls `name` *is* the
+                // definition — e.g. "using my_alias = int" or
+                // "typedef int my_typedef". Show it inline instead of
+                // running code_definition (which would return the same line).
+                matchBlocks.push(`--- code ---\n${sym.name}`);
             } else {
                 const section = start
                     ? await renderFanOutCodeSection(path, line1, col1, codeBudget, cwd, clientOf)
