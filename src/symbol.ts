@@ -248,12 +248,19 @@ const clientsWithRoots = new WeakSet<LspClient>();
  * `std::my_vector::push_back` as an exact match for `vector::push_back` — the
  * `_` token boundary wasn't honored.
  *
- * The ccls `name` is a declarator + return type + parameter list. We strip the
- * parameter list (everything from the first `(`), take the last
- * whitespace-separated token (the qualified declarator, after stripping
- * leading `&`/`*` ref/pointer qualifiers), drop one `<...>` template-arg
- * group, then split on `::`. The last `::`-separated component is the bare
- * identifier; the rest is the qualifier chain.
+ * The ccls `name` is a declarator + return type + parameter list — except for
+ * `using`-alias and `typedef` declarations, where ccls formats the name as
+ * `using <qual>::<name> = <type>` or `typedef <type> <qual>::<name>`. We detect
+ * these by the first token: `using`-alias (name starts with "using" and
+ * contains "=") extracts the name from between "using " and "=";
+ * `using`-declarations ("using <qual>::<member>", no "=") and `typedef` both
+ * parse via the general last-token rule (correct because the defined name is
+ * the last qualified identifier). For all other forms we strip the parameter
+ * list (everything from the first `(`), take the last whitespace-separated
+ * token (the qualified declarator, after stripping leading `&`/`*` ref/pointer
+ * qualifiers), drop one `<...>` template-arg group, then split on `::`. The
+ * last `::`-separated component is the bare identifier; the rest is the
+ * qualifier chain.
  *
  * Examples:
  *   `void diskann::Index::occlude_list(...)`
@@ -262,13 +269,16 @@ const clientsWithRoots = new WeakSet<LspClient>();
  *     → qual=["diskann","InMemQueryScratch"], bare="_occlude_list_output"
  *   `struct AlphaGadget` → qual=[], bare="AlphaGadget"
  *   `push_back`           → qual=[], bare="push_back"
- *
- * Edge cases (using-decls like
- * `using thrust::iterator_traversal<...> = random_access_traversal_tag`) may
- * parse to a "wrong" bare, but the result is still correct for exact-match
- * purposes: such a decl's parsed bare won't equal a real symbol query, so it's
- * never an exact match — which is the right outcome (a `using` alias is not
- * the symbol the agent named). */
+ *   `using my_type_t = int`
+ *     → qual=[], bare="my_type_t"
+ *   `using MyGadget::inner_type = int`
+ *     → qual=["MyGadget"], bare="inner_type"
+ *   `using std::pmr::vector = std::vector<_Tp, polymorphic_allocator<_Tp>>`
+ *     → qual=["std","pmr"], bare="vector"
+ *   `typedef _Vector_base<_Tp, _Alloc> std::vector::_Base`
+ *     → qual=["std","vector"], bare="_Base"
+ *   `using _Base::_M_allocate`
+ *     → qual=["_Base"], bare="_M_allocate" */
 function parseCppSymbolName(name: string): {
     qualifierTokens: string[];
     bare: string;
@@ -280,8 +290,29 @@ function parseCppSymbolName(name: string): {
     const parenIdx = s.indexOf("(");
     if (parenIdx >= 0) s = s.slice(0, parenIdx);
     s = s.trim();
-    // The last whitespace-separated token is the qualified declarator (after
-    // return type). Strip leading `&`/`*` (ref/pointer qualifiers on the decl).
+
+    // Handle `using NAME = TYPE` (ccls name: `using <qual>::<name> = <type>`).
+    // We detect this by the first token being "using" AND the name containing
+    // "=". `using`-declarations ("using _Base::_M_allocate", no "=") fall
+    // through to the general last-token rule, which correctly picks up the
+    // member name. `typedef <type> <qual>::<name>` also falls through — the
+    // last qualified identifier IS the defined name.
+    if (s.startsWith("using ") && s.includes("=")) {
+        // Extract the substring between "using " and " =" (or "=").
+        // The equal sign is always on the top level (not inside <> template
+        // args) because ccls formats these names with a top-level " = ".
+        const eqIdx = s.indexOf("=");
+        const between = s.slice(6, eqIdx).trim(); // 6 = "using ".length
+        // `between` is a (possibly qualified) name like `my_type_t` or
+        // `MyGadget::inner_type` or `std::pmr::vector`. Split on `::`.
+        const parts = between.split("::").filter((p) => p.length > 0);
+        if (parts.length === 0) return { qualifierTokens: [], bare: "" };
+        return { qualifierTokens: parts.slice(0, -1), bare: parts[parts.length - 1] };
+    }
+
+    // General case: the last whitespace-separated token is the qualified
+    // declarator (after return type). Strip leading `&`/`*` (ref/pointer
+    // qualifiers on the decl).
     const tokens = s.split(/\s+/).filter(Boolean);
     let last = tokens.length > 0 ? tokens[tokens.length - 1] : "";
     last = last.replace(/^[&*]+\s*/, "");
@@ -767,7 +798,15 @@ interface FanOutMatch {
 /** Render the full fan-out: a `# N match(es) for ...` header, then one
  * `== [i] [lang] <row> ==` block per match, each containing the requested
  * `--- section ---` blocks in order: code, then hover (if not deduped), then
- * references. Blocks are blank-line-separated. */
+ * references. Blocks are blank-line-separated.
+ *
+ * The `code` section is SKIPPED for symbol kinds whose definition IS the
+ * declaration — there is no multi-line body to show, and `code_definition`
+ * just echoes the line already in the row. This includes ccls extended kind
+ * 252 (using-aliases, typedefs) and any standard LSP kind where the body
+ * would be the declaration line itself (Enum 10, TypeParameter 26, etc. —
+ * singletons, not methods/functions/classes). The agent can always call
+ * `code_definition` directly if it needs the raw line. */
 async function renderSymbolFanOut(
     matches: FanOutMatch[],
     info: ("code" | "hover" | "references")[],
@@ -792,10 +831,19 @@ async function renderSymbolFanOut(
         const line1 = start ? start.line + 1 : 1;
         const col1 = start ? start.character + 1 : 1;
         if (wantCode) {
-            const section = start
-                ? await renderFanOutCodeSection(path, line1, col1, codeBudget, cwd, clientOf)
-                : `(no position to resolve definition)`;
-            matchBlocks.push(`--- code ---\n${section}`);
+            // Skip `code` for declaration-only symbol kinds where the
+            // definition IS the declaration line (already shown in the row):
+            // ccls extended kind 252 (using-aliases, typedefs) and standard
+            // LSP kinds whose body adds nothing (Enum, TypeParameter, etc.).
+            // The agent can still call code_definition directly.
+            if (isDeclarationOnlyKind(sym.kind ?? 0)) {
+                matchBlocks.push(`--- code ---\n(declaration-only symbol — the definition is the line shown above)`);
+            } else {
+                const section = start
+                    ? await renderFanOutCodeSection(path, line1, col1, codeBudget, cwd, clientOf)
+                    : `(no position to resolve definition)`;
+                matchBlocks.push(`--- code ---\n${section}`);
+            }
         }
         if (wantHover) {
             const section = start
@@ -812,6 +860,25 @@ async function renderSymbolFanOut(
         blocks.push(matchBlocks.join("\n"));
     }
     return blocks.join("\n\n");
+}
+
+/** True when a symbol kind is declaration-only (no multi-line body to
+ * surface via `code_definition`). For these kinds the `code` section is
+ * skipped in the fan-out — the declaration line is already in the row.
+ * Covers ccls extended kind 252 (using-aliases, typedefs) and standard LSP
+ * SymbolKinds where the symbol IS the declaration (Enum, TypeParameter,
+ * etc. — anything that is not a function/method/class/struct with a
+ * multi-line body). */
+function isDeclarationOnlyKind(kind: number): boolean {
+    // ccls extended kind: 252 = using-alias / typedef.
+    if (kind === 252) return true;
+    // Standard LSP SymbolKinds that are declaration-only.
+    return kind === 10  // Enum
+        || kind === 26  // TypeParameter
+        || kind === 2   // Module
+        || kind === 3   // Namespace
+        || kind === 4   // Package
+        || kind === 1;  // File
 }
 
 /** `--- code ---` section: the verbatim source body from `nav.definition`,

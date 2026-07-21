@@ -331,12 +331,21 @@ export async function resolveSymbolSelStart(
         // Fall through to source-line scan.
     }
     // Fallback: scan the source line for the symbol name.
-    try {
-        const text = await readFile(path, "utf8");
-        const lineText = text.split(/\r?\n/)[rangeStart.line] ?? "";
-        const idx = lineText.indexOf(sym.name);
-        if (idx >= 0) return { line: rangeStart.line, character: idx };
-    } catch {}
+    // Only use the fallback when `rangeStart.character` is 0 — servers like
+    // `ty` (python/typescript) return line-start ranges for workspace/symbol
+    // results, so the fallback scanning finds the actual identifier position.
+    // When `rangeStart.character > 0` (ccls provides per-identifier positions
+    // already), trust the server — the fallback scan of `sym.name` for cpp
+    // (where the name is a full signature like `"using my_type_t = int"`) can
+    // match at column 0 and return a WORSE position than `rangeStart`.
+    if (rangeStart.character === 0) {
+        try {
+            const text = await readFile(path, "utf8");
+            const lineText = text.split(/\r?\n/)[rangeStart.line] ?? "";
+            const idx = lineText.indexOf(sym.name);
+            if (idx >= 0) return { line: rangeStart.line, character: idx };
+        } catch {}
+    }
     return undefined;
 }
 

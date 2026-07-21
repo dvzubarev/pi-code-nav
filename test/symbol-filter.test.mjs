@@ -779,3 +779,177 @@ test("info fan-out: no matches returns the parenthesized note", async () => {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }
 });
+
+// ---------------------------------------------------------------------------
+// parseCppSymbolName — cpp `using`-alias / typedef bare-name extraction
+// ---------------------------------------------------------------------------
+
+test("parseCppSymbolName: `using NAME = TYPE` extracts NAME as bare", async () => {
+    const { load } = await import("./helpers.mjs");
+    // Load the module so we can test the function directly.
+    const mod = await load("./src/symbol.ts");
+    // Access via any export; the function is module-scoped (not exported), so
+    // we test through the public API. The mock client will trigger the exact
+    // code path through isCppExactMatch.
+    const { symbol } = mod;
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-usingalias-"));
+    try {
+        const root = dir;
+        // Canned workspace/symbol results — using-alias with kind 252.
+        const canned = [
+            sym("using my_type_t = int", 252, `${root}/test.cpp`, 0, 6),
+            sym("using MyGadget::inner_type = int", 252, `${root}/test.cpp`, 3, 28),
+            sym("using std::pmr::vector = std::vector<_Tp, polymorphic_allocator<_Tp>>", 252, `/nix/store/vector`, 96, 12),
+            sym("typedef int my_typedef_t", 252, `${root}/test.cpp`, 1, 12),
+            // Regular function — should still work.
+            sym("void my_func()", 12, `${root}/test.cpp`, 5, 6),
+        ];
+        // Bare query `my_type_t` — parseCppSymbolName must extract `my_type_t`
+        // as the bare name, not `int`.
+        const out = await symbol(
+            { query: "my_type_t", language: "cpp" },
+            dir,
+            mockClientOf(dir, canned),
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[cpp]"));
+        assert.ok(
+            rows.length >= 1,
+            `expected my_type_t hit, got:\n${out}`,
+        );
+        assert.match(out, /using my_type_t/, `my_type_t should be found:\n${out}`);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("parseCppSymbolName: `using MyGadget::inner_type` extracts qualifier and bare correctly", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-usingqual-"));
+    try {
+        const root = dir;
+        const canned = [
+            sym("using MyGadget::inner_type = int", 252, `${root}/gadget.cpp`, 3, 28),
+        ];
+        // Qualified query — the query qualifier `MyGadget` is passed through
+        // for cpp (ccls handles native qualified queries). parseCppSymbolName
+        // extracts qualifierTokens=["MyGadget"], bare="inner_type".
+        // isCppExactMatch checks `["MyGadget"]` is a suffix of candidate's
+        // `["MyGadget"]` qualifier+chain → exact match.
+        const out = await symbol(
+            { query: "MyGadget::inner_type", language: "cpp" },
+            dir,
+            mockClientOf(dir, canned),
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[cpp]"));
+        assert.equal(rows.length, 1, `expected exactly one row, got:\n${out}`);
+        assert.match(out, /MyGadget::inner_type/);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("info fan-out: `using`-alias (kind 252) shows declaration-only note, not ERROR", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-using-"));
+    try {
+        const root = dir;
+        // We need a real file on disk so that the fan-out path's
+        // resolveSymbolSelStart has something to scan. Its contents don't
+        // matter for the assertion — the code section is skipped for kind 252.
+        const cppFile = resolve(root, "test.cpp");
+        await import("node:fs/promises").then((fs) =>
+            fs.writeFile(cppFile, "using my_type_t = int;\n", "utf8"),
+        );
+        const canned = [sym("using my_type_t = int", 252, cppFile, 0, 6)];
+        const docSymsByPath = new Map();
+        const out = await symbol(
+            { query: "my_type_t", language: "cpp", info: ["code"] },
+            dir,
+            mockClientOfRich(dir, {
+                cannedSyms: canned,
+                docSymsByPath,
+                defLocsByPath: new Map(),
+                hoverTextByPath: new Map(),
+            }),
+        );
+        // Header indicates the match was found.
+        assert.match(out, /^# 1 match for "my_type_t" — info: code\b/m);
+        // Code section present with declaration-only note, NOT an ERROR.
+        assert.match(out, /--- code ---/);
+        assert.match(out, /declaration-only symbol/, `expected declaration-only note, got:\n${out}`);
+        assert.ok(
+            !/ERROR/.test(out),
+            `no ERROR should appear for kind 252 using-alias:\n${out}`,
+        );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("info fan-out: typedef (kind 252) shows declaration-only note, not ERROR", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-typedef-"));
+    try {
+        const root = dir;
+        const cppFile = resolve(root, "test.cpp");
+        await import("node:fs/promises").then((fs) =>
+            fs.writeFile(cppFile, "typedef int my_typedef_t;\n", "utf8"),
+        );
+        const canned = [sym("typedef int my_typedef_t", 252, cppFile, 0, 12)];
+        const docSymsByPath = new Map();
+        const out = await symbol(
+            { query: "my_typedef_t", language: "cpp", info: ["code"] },
+            dir,
+            mockClientOfRich(dir, {
+                cannedSyms: canned,
+                docSymsByPath,
+                defLocsByPath: new Map(),
+                hoverTextByPath: new Map(),
+            }),
+        );
+        assert.match(out, /^# 1 match for "my_typedef_t" — info: code\b/m);
+        assert.match(out, /--- code ---/);
+        assert.match(out, /declaration-only symbol/);
+        assert.ok(
+            !/ERROR/.test(out),
+            `no ERROR should appear for kind 252 typedef:\n${out}`,
+        );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("info fan-out: regular Function (kind 12) still gets code body (not skipped)", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-func-"));
+    try {
+        const root = dir;
+        const cppFile = resolve(root, "test.cpp");
+        await import("node:fs/promises").then((fs) =>
+            fs.writeFile(cppFile, "void my_func() { }\n", "utf8"),
+        );
+        const canned = [sym("void my_func()", 12, cppFile, 0, 5)];
+        const docSymsByPath = new Map();
+        const out = await symbol(
+            { query: "my_func", language: "cpp", info: ["code"] },
+            dir,
+            mockClientOfRich(dir, {
+                cannedSyms: canned,
+                docSymsByPath,
+                defLocsByPath: new Map(),
+                hoverTextByPath: new Map(),
+            }),
+        );
+        // Function kind 12 is NOT declaration-only, so the code section
+        // should try to render (either the body or an ERROR).
+        assert.match(out, /^# 1 match for "my_func" — info: code\b/m);
+        assert.match(out, /--- code ---/);
+        // It should NOT say "declaration-only" since functions have bodies.
+        assert.ok(
+            !/declaration-only/.test(out),
+            `function should not be skipped as declaration-only:\n${out}`,
+        );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
