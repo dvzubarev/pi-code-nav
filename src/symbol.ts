@@ -278,7 +278,9 @@ const clientsWithRoots = new WeakSet<LspClient>();
  *   `typedef _Vector_base<_Tp, _Alloc> std::vector::_Base`
  *     → qual=["std","vector"], bare="_Base"
  *   `using _Base::_M_allocate`
- *     → qual=["_Base"], bare="_M_allocate" */
+ *     → qual=["_Base"], bare="_M_allocate"
+ *   `TM_TRAIN_CODEC = 1` (ccls enum member)
+ *     → qual=[], bare="TM_TRAIN_CODEC" */
 function parseCppSymbolName(name: string): {
     qualifierTokens: string[];
     bare: string;
@@ -310,6 +312,36 @@ function parseCppSymbolName(name: string): {
         return { qualifierTokens: parts.slice(0, -1), bare: parts[parts.length - 1] };
     }
 
+    // Strip ` = VALUE` suffix (ccls appends e.g. ` = 1` for enum members).
+    // This handles all non-`using` forms where ccls appends " = <value>".
+    // Look for a top-level ` = ` (not inside `<>`) — the `=` is always at the
+    // top level in ccls's name formatting for enum members.
+    const eqIdx = s.indexOf(" = ");
+    if (eqIdx >= 0 && !s.includes("<") && !s.includes(">")) {
+        // No angle brackets — safe to strip from " = " onward.
+        s = s.slice(0, eqIdx);
+    } else if (eqIdx >= 0) {
+        // Angle brackets present — verify the `=` is at the top level by
+        // counting angle-bracket depth up to eqIdx.
+        let depth = 0;
+        let topLevelEq = -1;
+        for (let i = 0; i < s.length; i++) {
+            const ch = s[i];
+            if (ch === "<") depth++;
+            else if (ch === ">") depth--;
+            else if (ch === "=" && depth === 0) {
+                // Found a top-level `=`. Check it starts with " = ".
+                if (i > 0 && s[i - 1] === " " && i + 1 < s.length && s[i + 1] === " ") {
+                    topLevelEq = i;
+                    break;
+                }
+            }
+        }
+        if (topLevelEq >= 0) {
+            s = s.slice(0, topLevelEq).trim();
+        }
+    }
+
     // General case: the last whitespace-separated token is the qualified
     // declarator (after return type). Strip leading `&`/`*` (ref/pointer
     // qualifiers on the decl).
@@ -339,6 +371,7 @@ function parseCppSymbolName(name: string): {
  * Replaces the old substring check, which ranked
  * `std::my_vector::push_back` as exact for `vector::push_back`. See
  * docs/code_search_symbol.md. */
+
 function isCppExactMatch(
     queryQualifierTokens: string[],
     queryBare: string,

@@ -919,6 +919,107 @@ test("info fan-out: typedef (kind 252) shows declaration-only note, not ERROR", 
     }
 });
 
+test("parseCppSymbolName: ccls enum member `NAME = VALUE` extracts NAME as bare", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-enumbare-"));
+    try {
+        const root = dir;
+        const canned = [
+            // ccls returns enum members as "TM_TRAIN_CODEC = 1" (with " = <value>" suffix).
+            sym("TM_TRAIN_CODEC = 1", 13, `${root}/test.cpp`, 3, 22),
+            sym("TM_NONE = 0", 13, `${root}/test.cpp`, 2, 4),
+            // Regular function — still works.
+            sym("void my_func()", 12, `${root}/test.cpp`, 5, 6),
+        ];
+        // Bare query — parseCppSymbolName must extract "TM_TRAIN_CODEC", not "1".
+        const out = await symbol(
+            { query: "TM_TRAIN_CODEC", language: "cpp" },
+            dir,
+            mockClientOf(dir, canned),
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[cpp]"));
+        assert.ok(rows.length >= 1, `expected TM_TRAIN_CODEC hit, got:\n${out}`);
+        assert.match(out, /TM_TRAIN_CODEC/, `TM_TRAIN_CODEC should be found:\n${out}`);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("info fan-out: enum member (kind 13) `NAME = VALUE` gets code body, not dropped", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-enum-"));
+    try {
+        const root = dir;
+        const cppFile = resolve(root, "test.cpp");
+        await import("node:fs/promises").then((fs) =>
+            fs.writeFile(cppFile, "    TM_TRAIN_CODEC = 1, //train codec\n", "utf8"),
+        );
+        const canned = [sym("TM_TRAIN_CODEC = 1", 13, cppFile, 0, 22)];
+        // Provide documentSymbols so resolveSymbolSelStart finds the enum
+        // member and sets a precise selection range.
+        const selStart = { line: 0, character: 4 }; // start of TM_TRAIN_CODEC
+        const docSymsByPath = new Map([
+            [
+                cppFile,
+                [
+                    {
+                        name: "TempEnum",
+                        kind: 10, // Enum
+                        range: { start: { line: 0, character: 0 }, end: { line: 1, character: 0 } },
+                        selectionRange: { start: { line: 0, character: 5 }, end: { line: 0, character: 13 } },
+                        children: [
+                            {
+                                name: "TM_TRAIN_CODEC",
+                                kind: 13,
+                                range: { start: selStart, end: { line: 0, character: 27 } },
+                                selectionRange: {
+                                    start: selStart,
+                                    end: { line: 0, character: selStart.character + "TM_TRAIN_CODEC".length },
+                                },
+                                children: [],
+                            },
+                        ],
+                    },
+                ],
+            ],
+        ]);
+        const defLocsByPath = new Map([
+            [
+                cppFile,
+                {
+                    uri: `file://${cppFile}`,
+                    range: { start: selStart, end: { line: 0, character: 27 } },
+                },
+            ],
+        ]);
+        const out = await symbol(
+            { query: "TM_TRAIN_CODEC", language: "cpp", info: ["code"] },
+            dir,
+            mockClientOfRich(dir, {
+                cannedSyms: canned,
+                docSymsByPath,
+                defLocsByPath,
+                hoverTextByPath: new Map(),
+            }),
+        );
+        // Header indicates the match was found (not empty!).
+        assert.match(out, /^# 1 match for "TM_TRAIN_CODEC" — info: code\b/m);
+        // Code section present (enum members are NOT declaration-only).
+        assert.match(out, /--- code ---/);
+        // The line content appears in the code section.
+        assert.match(out, /TM_TRAIN_CODEC = 1/);
+        // It should either show the line or an appropriate message, not an ERROR.
+        // (The mock may not perfectly resolve the definition, but we at least
+        // verify the symbol was found and the code section was attempted.)
+        assert.ok(
+            !out.includes("No definition found"),
+            `definition should be found for enum member:\n${out}`,
+        );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
 test("info fan-out: regular Function (kind 12) still gets code body (not skipped)", async () => {
     const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-func-"));
