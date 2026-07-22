@@ -83,31 +83,70 @@ const MAX_LIMIT = 200;
  * Constant(14), Property(7), Field(8), and everything else (Enum/Namespace/etc.
  * — none appear in practice for our servers; if one ever does, dropping it is
  * the safe default for a "compact overview"). See docs/code_outline.md.
+ *
+ * CONTAINER_KINDS: Namespace(3), Module(2), Package(4) — structural containers
+ * whose children are lifted to the parent level with a `parent::` prefix when
+ * the container itself is not in OUTLINE_KEEP_KINDS. This lets code_outline
+ * show functions/classes inside `namespace diskann { }` as `diskann::block_convert`.
  */
-const OUTLINE_KEEP_KINDS = new Set([5, 6, 9, 11, 12, 23]);
+export const OUTLINE_KEEP_KINDS = new Set([5, 6, 9, 11, 12, 23]);
+
+/** Kinds whose children are lifted to parent level with a `parent::` prefix. */
+export const CONTAINER_KINDS = new Set([2, 3, 4]); // Module, Namespace, Package
 
 /**
  * Prune a DocumentSymbol tree to nodes whose kind is in `keep`, recursing
- * into kept nodes' children. Returns a new top-level array; may rewrite a
- * kept node's `.children` to its filtered sublist (the input comes from a
- * fresh `documentSymbol` call and is rendered once, so this in-place rewrite
- * is safe and avoids a deep clone). A dropped node's children are NOT lifted
- * to the parent — they're structural subordinates (a constant's locals, a
- * method's temps), and lifting them would distort the tree.
+ * into kept nodes' children.
+ *
+ * Nodes with `CONTAINER_KINDS` (Namespace/Module/Package) are unwrapped:
+ * their children are lifted to the parent level with a `name::` prefix on
+ * the child's name. Nested containers accumulate the prefix
+ * (`ns1::ns2::fn`). This lets code_outline show functions inside
+ * `namespace diskann { }` as `diskann::block_convert` instead of silently
+ * dropping them.
+ *
+ * Kept nodes (Class/Method/Function/…) have their name prefixed and their
+ * children pruned recursively (with an empty prefix — the container prefix
+ * is NOT inherited past a kept boundary, so a class inside a namespace
+ * becomes `diskann::Foo` but its methods stay `method`, not `diskann::Foo::method`).
  */
-function pruneDocSymbolTree(syms: DocumentSymbol[], keep: Set<number>): DocumentSymbol[] {
+export function pruneDocSymbolTree(
+    syms: DocumentSymbol[],
+    keep: Set<number>,
+    containers: Set<number>,
+    namePrefix = "",
+): DocumentSymbol[] {
     const out: DocumentSymbol[] = [];
     for (const s of syms) {
         const kind = (s as unknown as { kind?: number }).kind ?? 0;
-        if (!keep.has(kind)) continue;
         const children = (s as unknown as { children?: DocumentSymbol[] }).children;
-        if (children && children.length > 0) {
-            (s as unknown as { children?: DocumentSymbol[] }).children = pruneDocSymbolTree(
-                children,
-                keep,
-            );
+
+        if (keep.has(kind)) {
+            // Keep this node with accumulated name prefix, reset prefix for children
+            const n = namePrefix + s.name;
+            const sym = { ...s, name: n } as DocumentSymbol;
+            if (children && children.length > 0) {
+                (sym as unknown as { children?: DocumentSymbol[] }).children = pruneDocSymbolTree(
+                    children,
+                    keep,
+                    containers,
+                    "",
+                );
+            }
+            out.push(sym);
+        } else if (containers.has(kind)) {
+            // Lift children up with container prefix
+            if (children && children.length > 0) {
+                const lifted = pruneDocSymbolTree(
+                    children,
+                    keep,
+                    containers,
+                    namePrefix + s.name + "::",
+                );
+                out.push(...lifted);
+            }
         }
-        out.push(s);
+        // else: drop entirely (Variable, Property, Field, …)
     }
     return out;
 }
@@ -253,7 +292,7 @@ export async function outline(
      // has no nesting so no ancestor re-emission.
     const lines: string[] = [];
     if ("range" in syms[0] && "selectionRange" in syms[0]) {
-        const tree = pruneDocSymbolTree(syms as DocumentSymbol[], OUTLINE_KEEP_KINDS);
+        const tree = pruneDocSymbolTree(syms as DocumentSymbol[], OUTLINE_KEEP_KINDS, CONTAINER_KINDS);
         const allRows: OutlineRow[] = [];
         flattenTree(tree, [], allRows);
         if (allRows.length === 0) {
