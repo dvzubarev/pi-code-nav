@@ -49,14 +49,41 @@ runOrSkip("code_outline on a .cpp file shows ccls detail signatures + body range
         // MAX and field dropped by allowlist.
         assert.ok(!/MAX/.test(out), `MAX should be dropped:\n${out}`);
         assert.ok(!/Field field/.test(out), `field should be dropped:\n${out}`);
-        // Each kept row carries its ccls detail inline AND a body range.
-        assert.match(out, /Function main  int main\(\)  :\d+-\d+:\d+/, `main row missing:\n${out}`);
+        // Each kept row gets a multi-line block: header with kind+name+range on
+        // line 1, then sub-lines for signature and docs.
+        // Function main
         assert.match(
             out,
-            /  Method method  void Widget::method\(\)  :\d+-\d+:\d+/,
-            `method row missing:\n${out}`,
+            /^Function main  :\d+-\d+:\d+$/m,
+            `main header missing:\n${out}`,
         );
-        assert.match(out, /Struct Widget  struct Widget \{\}  :\d+-\d+:\d+/, `Widget row missing:\n${out}`);
+        assert.match(
+            out,
+            /^  signature: int main\(\)$/m,
+            `main signature missing:\n${out}`,
+        );
+        // Method method (nested under Widget, so indented)
+        assert.match(
+            out,
+            /^  Method method  :\d+-\d+:\d+$/m,
+            `method header missing:\n${out}`,
+        );
+        assert.match(
+            out,
+            /^  signature: void Widget::method\(\)$/m,
+            `method signature missing:\n${out}`,
+        );
+        // Struct Widget
+        assert.match(
+            out,
+            /^Struct Widget  :\d+-\d+:\d+$/m,
+            `Widget header missing:\n${out}`,
+        );
+        assert.match(
+            out,
+            /^  signature: struct Widget \{\}$/m,
+            `Widget signature missing:\n${out}`,
+        );
     } finally {
         await ws.cleanup();
     }

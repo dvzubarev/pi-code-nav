@@ -1,6 +1,6 @@
 /**
  * code_outline — paginated structural overview of a source file with
- * signatures, body line ranges, and a one-line doc snippet per entry.
+ * signatures, body line ranges, and a doc snippet per entry.
  *
  * Merges the old code_tree's signature-enrichment (parallel LSP hover) into
  * code_outline's allowlist-scoped overview. The old split (outline = bare
@@ -9,18 +9,23 @@
  * the hover cost (N parallel hovers per page ≈ N×4ms) that previously made
  * per-row hover unaffordable for a full-file overview. See docs/code_outline.md.
  *
- * Output row format (1-based, grep-style `:line:col` grammar so it is
- * directly reusable as input to code_hover/code_definition/code_references):
+ * Output format per entry (multi-line block, 1-based positions):
  *
- *   <pad><Kind> <name>  <signature>  :<sl>-<el>:<col>  docs: <summary>
+ *   <pad><Kind> <name>  :<sl>-<el>:<col>
+ *   <pad>  signature: <full signature (not truncated)>
+ *   <pad>  doc: <first sentence of docstring>
  *
+ * The header line carries the grep-style `:line:col` position, directly
+ * reusable as input to code_hover/code_definition/code_references.
+ *
+ *   - <pad> is indentation (2 spaces per nesting level).
  *   - <sl>-<el> is the symbol's full body range (DocumentSymbol.range), so a
  *     function with a body shows `:15-42:3` and a flat declaration shows
  *     `:10-10:3`. <col> is the selectionRange (identifier) column on <sl>.
- *   - <signature> comes from the hover (collapsed to one line by
- *     `hoverSignature`); falls back to the server `detail` field when the
- *     hover yields no signature (ccls fills `detail` even when hover is bare).
- *   - docs: <summary> is the first sentence of the docstring prose following
+ *   - signature: comes from the server `detail` field (preferred — ccls fills
+ *     this with the full signature), falling back to the hover body extracted
+ *     by `hoverSignature`. NEVER truncated.
+ *   - doc: <summary> is the first sentence of the docstring prose following
  *     the signature fence (PEP 257 / Javadoc convention), via
  *     `hoverDocSnippet`. Omitted when empty.
  *
@@ -41,10 +46,8 @@ import {
     hoverSignature,
     hoverText,
     langForFile,
-    renderSymbolInfo,
     symbolKindName,
     toAbs,
-    trunc,
 } from "./render";
 
 export interface OutlineParams {
@@ -183,15 +186,23 @@ function flattenTree(
 }
 
 /**
- * Render a content row: `<pad><Kind> <name>  <sig>  :<sl>-<el>:<col>  docs: <d>`.
- * `sig` is the hover signature (or server `detail` fallback); `docs` is the
- * one-line docstring summary. Both omitted when empty. The body range
- * `<sl>-<el>` is DocumentSymbol.range (1-based inclusive); `<col>` is the
- * selectionRange (identifier) column on <sl>, kept so the row is directly
- * reusable as input to code_hover/code_definition/code_references.
+ * Render a content row as a multi-line block:
+ *
+ *   <pad><Kind> <name>  :<sl>-<el>:<col>
+ *   <pad>  signature: <full signature>
+ *   <pad>  doc: <first sentence>
+ *
+ * The header line carries the range (`:sl-el:col`), directly reusable as
+ * input to code_hover/code_definition/code_references. The sub-lines are
+ * indented with an extra 2 spaces relative to the header and labelled with
+ * `signature:` / `doc:`. Each sub-line is omitted when the corresponding
+ * content is empty. The `signature:` and `doc:` labels make every line
+ * self-describing — the agent can grep for `signature:` on a multi-line
+ * entry without understanding the overall format.
  */
 function renderRow(row: OutlineRow, sig: string | undefined, docs: string | undefined): string {
     const pad = "  ".repeat(row.depth);
+    const sub = pad + "  "; // sub-lines indent 2 more
     const sym = row.sym;
     const kindName = symbolKindName((sym as unknown as { kind?: number }).kind);
     const r = sym.range;
@@ -201,14 +212,12 @@ function renderRow(row: OutlineRow, sig: string | undefined, docs: string | unde
     const col = sel ? sel.character + 1 : 0;
     const rangeStr =
         sl != null && el != null ? `:${sl + 1}-${el + 1}:${col}` : col ? `:${col}` : "";
-    // Join fields with two spaces so the range never butts against the
-    // signature (`<sig>:sl-el` → `<sig>  :sl-el`). Mirrors renderDocSymbol's
-    // `${name}${d}  :${pos}` two-space separator.
-    const fields = [`${kindName} ${sym.name}`];
-    if (sig) fields.push(sig);
-    if (rangeStr) fields.push(rangeStr);
-    if (docs) fields.push(`docs: ${docs}`);
-    return `${pad}${fields.join("  ")}`;
+    const header = `${pad}${kindName} ${sym.name}${rangeStr ? `  ${rangeStr}` : ""}`;
+    const subLines: string[] = [];
+    if (sig) subLines.push(`${sub}signature: ${sig}`);
+    if (docs) subLines.push(`${sub}doc: ${docs}`);
+    if (subLines.length === 0) return header;
+    return `${header}\n${subLines.join("\n")}`;
 }
 
 /**
@@ -250,11 +259,16 @@ function contextAncestorsFor(first: OutlineRow, pageRows: OutlineRow[]): { sym: 
     return out;
 }
 
-/** Format a hover signature, preferring the hover body, falling back to `detail`. */
+/**
+ * Format a hover signature, preferring the server's `detail` field over the
+ * hover body. ccls populates `detail` with the actual function/struct/method
+ * signature, while its hover text may be only the doc comment (no fenced
+ * code block). When `detail` is absent (tsserver/ty don't set it), fall
+ * back to extracting a signature from the hover body via `hoverSignature`.
+ */
 function signatureFor(body: string, detail: string | null | undefined): string {
-    const fromHover = hoverSignature(body);
-    if (fromHover) return fromHover;
-    return detail ?? "";
+    if (detail) return detail;
+    return hoverSignature(body) ?? "";
 }
 
 export async function outline(
@@ -362,9 +376,8 @@ export async function outline(
                 return client.hover(abs, start.line, start.character, text);
             }),
         );
-        // Render flat rows with the same shape as renderRow but depth 0 and no
-         // ancestors; renderSymbolInfo is the existing flat renderer but
-         // lacks the sig/docs/range columns, so render inline here.
+        // Render flat rows with the same multiline format as renderRow
+         // (depth 0, no ancestor prefix).
         for (let i = 0; i < pageRows.length; i++) {
             const s = pageRows[i];
             const r = s.location.range;
@@ -374,13 +387,18 @@ export async function outline(
             const rangeStr =
                 sl != null && el != null ? `:${sl + 1}-${el + 1}:${col}` : col ? `:${col}` : "";
             const body = hoverText(hovers[i]);
-            const sig = hoverSignature(body) || (s as { detail?: string }).detail || "";
+            const detail = (s as { detail?: string }).detail;
+            const sig = detail || hoverSignature(body) || "";
             const docs = hoverDocSnippet(body);
-            const fields = [`${symbolKindName(s.kind)} ${s.name}`];
-            if (sig) fields.push(sig);
-            if (rangeStr) fields.push(rangeStr);
-            if (docs) fields.push(`docs: ${docs}`);
-            lines.push(fields.join("  "));
+            const header = `${symbolKindName(s.kind)} ${s.name}${rangeStr ? `  ${rangeStr}` : ""}`;
+            const subLines: string[] = [];
+            if (sig) subLines.push(`  signature: ${sig}`);
+            if (docs) subLines.push(`  doc: ${docs}`);
+            if (subLines.length === 0) {
+                lines.push(header);
+            } else {
+                lines.push(`${header}\n${subLines.join("\n")}`);
+            }
         }
         const remaining = flat.length - (startIdx + pageRows.length);
         if (remaining > 0) {

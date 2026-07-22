@@ -11,12 +11,14 @@
 of a source file's structural symbols — classes, methods, functions,
 constructors, interfaces, structs — with:
 
-- **Signature** per entry (from parallel LSP hover, collapsed to one line,
-  falling back to the server's `detail` field when hover yields none).
+- **Signature** per entry (full, never truncated), sourced from the server's
+  `detail` field (preferred — ccls fills this with the full declaration) or
+  from a parallel LSP hover (`hoverSignature`) when `detail` is absent (e.g.
+  tsserver/ty).
 - **Body line range** (`:sl-el:col`), where `sl-el` is the symbol's full
   extent (1-based) and `col` is the selectionRange (identifier) column. A
   flat declaration shows `:10-10:5`; a function with body shows `:10-42:5`.
-- **One-line doc snippet** (`docs:` prefix), extracted as the first sentence
+- **One-line doc snippet** (`doc:` sub-line), extracted as the first sentence
   of the docstring prose that follows the signature fence (PEP 257 / Javadoc
   convention — the summary line). Omitted when empty.
 - **Pagination**: `offset` (1-based, default 1) and `limit` (default 20,
@@ -26,14 +28,25 @@ constructors, interfaces, structs — with:
 - **Trailing message** when more entries exist, mirroring pi's `read` tool:
   `[N more entries in <path>. Use offset=<next> to continue.]`
 
-### Output format (one row per entry)
+### Output format (multi-line block per entry)
 
 ```
-<pad><Kind> <name>  <signature>  :<sl>-<el>:<col>  docs: <summary>
+<pad><Kind> <name>  :<sl>-<el>:<col>
+<pad>  signature: <full signature>
+<pad>  doc: <first sentence>
 ```
 
+The header line (`Kind name :sl-el:col`) is a single, minimal line the agent
+can scan quickly. The sub-lines (`signature:`, `doc:`) are labelled so every
+line is self-describing — the agent can grep for `signature:` or `doc:` on a
+multi-line entry without understanding the overall format.
+
+Example for a method at depth 1 (inside a class):
+
 ```
-  Method bar  def bar(self, x: int) -> None  :15-42:3  docs: Do the thing.
+  Method bar  :15-42:3
+    signature: def bar(self, x: int) -> None
+    doc: Do the thing.
 ```
 
 `<sl>:<col>` is the identifier position (1-based), directly reusable as input

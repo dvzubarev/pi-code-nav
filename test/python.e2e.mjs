@@ -77,34 +77,29 @@ runOrSkip("code_outline on second.py shows classes/methods with signatures, rang
     try {
         const out = await nav.outline({ path: "second.py" }, ws.root, ws.clientOf);
         const lines = out.split("\n");
-        // Hierarchical DocumentSymbol[] → indented outline. Each row now carries
-        // a hover signature, a body line range `:sl-el:col`, and (when present)
-        // a one-line doc snippet. Verify the two top-level classes appear with
-        // their kind and the new range column (body range, not just sel pos).
+        // Multi-line blocks: header line with kind+name+range on the first line,
+        // then sub-lines `  signature:` and `  doc:`.
         assert.ok(
-            lines.some((l) => /^Class Point  .+  :\d+-\d+:\d+/.test(l)),
-            `Point row missing:\n${out}`,
+            lines.some((l) => /^Class Point  :\d+-\d+:\d+$/.test(l)),
+            `Point header missing:\n${out}`,
         );
         assert.ok(
-            lines.some((l) => /^Class TempC  .+  :\d+-\d+:\d+/.test(l)),
-            `TempC row missing:\n${out}`,
+            lines.some((l) => /^Class TempC  :\d+-\d+:\d+$/.test(l)),
+            `TempC header missing:\n${out}`,
         );
-        // TempC's children (__init__, punintend) are indented two spaces and
-        // carry hover-derived signatures (ty leaves detail empty).
+        // TempC's children (__init__, punintend) are indented two spaces.
         assert.ok(
-            lines.some((l) => /^  Method punintend  .+  :\d+-\d+:\d+/.test(l)),
-            `punintend row missing:\n${out}`,
+            lines.some((l) => /^  Method punintend  :\d+-\d+:\d+$/.test(l)),
+            `punintend header missing:\n${out}`,
         );
         // Doc snippets: TempC has `"""documentation of tempC"""` and punintend
-        // has `"""Documentation of punintend """`. The `docs:` column is the
-        // first sentence of the docstring prose after the signature fence
-        // (ty separates them with a `---` markdown HR, which must be skipped).
+        // has `"""Documentation of punintend """`. The `doc:` sub-line.
         assert.ok(
-            lines.some((l) => /docs: documentation of tempC/.test(l)),
+            lines.some((l) => /^  doc: documentation of tempC/.test(l)),
             `TempC doc snippet missing:\n${out}`,
         );
         assert.ok(
-            lines.some((l) => /docs: Documentation of punintend/.test(l)),
+            lines.some((l) => /^  doc: Documentation of punintend/.test(l)),
             `punintend doc snippet missing:\n${out}`,
         );
         // code_outline keeps only structural kinds (class/method/function/...).

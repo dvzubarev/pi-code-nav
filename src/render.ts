@@ -73,9 +73,9 @@ export function hoverText(h: Hover | null): string {
 }
 
 /**
- * Collapse a hover body into a one-line "signature" for the code_scan label
- * column. Handles the multi-line fenced signatures servers return (ty wraps
- * function signatures across several lines inside a ```python block):
+ * Collapse a hover body into a one-line "signature". Handles the multi-line
+ * fenced signatures servers return (ty wraps function signatures across
+ * several lines inside a ```python block):
  *
  *   ```python
  *   def alpha(
@@ -86,13 +86,12 @@ export function hoverText(h: Hover | null): string {
  *
  * becomes `def alpha(a: int, b: str) -> bool`. The rule: take the first
  * fenced code block (or, if there's no fence, the first non-blank line), join
- * its inner lines collapsing runs of whitespace into single spaces, and cap
- * the length. Returns "" for an empty hover so the caller can omit the label.
+ * its inner lines collapsing runs of whitespace into single spaces. Returns
+ * "" for an empty hover so the caller can omit the label.
  *
- * Distinct from `hoverFirstLine` (in tree-sitter-parse.ts), which returns only
- * the FIRST physical line of the hover — that's fine for code_scan's
- * include_docs label but truncates multi-line signatures mid-paren. This
- * helper exists for code_scan, where the signature IS the point.
+ * NOTE: this helper is now used only as the fallback (when the server's
+ * `detail` field is absent). For code_outline, `detail` is preferred (ccls
+ * fills it, tsserver does not).
  */
 export function hoverSignature(hoverText: string): string {
     const lines = hoverText.split(/\r?\n/);
@@ -111,34 +110,34 @@ export function hoverSignature(hoverText: string): string {
         }
         // No fence: take the first non-blank line as the signature.
         if (line) {
-            return trunc(line, 140);
+            return line;
         }
     }
     if (buf.length === 0) return "";
-    return trunc(buf.join(" ").replace(/\s+/g, " ").trim(), 140);
+    return buf.join(" ").replace(/\s+/g, " ").trim();
 }
 
 /**
  * Extract a one-line doc snippet from a hover body — the first sentence of
  * the prose that FOLLOWS the signature fence. Mirrors the Emacs / PEP 257 /
  * Javadoc convention: the first line/sentence of a docstring is a short
- * summary. `hoverSignature` consumes the fenced signature block; this helper
- * takes the first non-blank prose line after that fence closes, cut at the
- * first sentence boundary (`. ` / `! ` / `? `) and length-capped.
+ * summary.
  *
- * For a hover with NO fence (rare — all of ccls/ty/tsserver emit a fenced
- * signature), `hoverSignature` treats the first non-blank line as the
- * signature; this helper then skips that line and returns the next one. If
- * there's no prose after the signature, returns "" so the caller omits the
- * docs column. Distinct from `hoverFirstLine` (in tree-sitter-parse.ts),
- * which returns the first line INSIDE the fence (i.e. the signature itself)
- * — wrong for a docs column.
+ * When the hover HAS a fenced code block (like ty/tsserver), `hoverSignature`
+ * consumes the fenced block, and this helper takes the first non-blank prose
+ * line after that fence closes. When there is NO fence (ccls — hover body is
+ * the raw docstring with no signature block), the first non-blank line IS the
+ * doc; no line is skipped. The signature now comes from the server's `detail`
+ * field (preferred), not from the hover body, so skipping the first line would
+ * drop the actual doc content.
+ *
+ * Cut at the first sentence boundary (`. ` / `! ` / `? `) and length-capped.
+ * Returns "" when there's no prose after the fence (or no prose at all).
  */
 export function hoverDocSnippet(hoverText: string, maxLen = 100): string {
     const lines = hoverText.split(/\r?\n/);
     let inFence = false;
     let fenceSeen = false;
-    let firstLineSkipped = false; // no-fence case: skip the signature line
     for (const raw of lines) {
         const line = raw.trim();
         if (/^```/.test(line)) {
@@ -161,12 +160,8 @@ export function hoverDocSnippet(hoverText: string, maxLen = 100): string {
             // First prose line after the signature fence → the summary.
             return trunc(firstSentence(line), maxLen);
         }
-        // No-fence case: the first non-blank line was the signature (per
-        // hoverSignature); the NEXT non-blank line is the docs.
-        if (!firstLineSkipped) {
-            firstLineSkipped = true;
-            continue;
-        }
+        // No-fence case: the first non-blank line IS the doc (the signature
+        // comes from the server's `detail` field, not from the hover body).
         return trunc(firstSentence(line), maxLen);
     }
     return "";
