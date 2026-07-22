@@ -1221,3 +1221,179 @@ test("info fan-out: struct with trailing ` {}` (kind 23) is found and gets code 
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }
 });
+
+test("parseCppSymbolName: ccls enum `enum NAME : TYPE {}` strips `: TYPE` and `{}` and extracts NAME as bare", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-enumbase-"));
+    try {
+        const root = dir;
+        const canned = [
+            sym("enum DiskannBuildWorkMode : int {}", 10, `${root}/test.cpp`, 0, 5),
+            sym("enum class ScopedEnum : int {}", 10, `${root}/test.cpp`, 5, 11),
+            sym("enum SimpleEnum {}", 10, `${root}/test.cpp`, 9, 5),
+        ];
+        const out = await symbol(
+            { query: "DiskannBuildWorkMode", language: "cpp" },
+            dir,
+            mockClientOf(dir, canned),
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[cpp]"));
+        assert.ok(rows.length >= 1, `expected DiskannBuildWorkMode hit, got:\n${out}`);
+        assert.match(out, /DiskannBuildWorkMode/);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("info fan-out: enum (kind 10) with `: TYPE {}` is found and gets code body", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-enumbase-"));
+    try {
+        const root = dir;
+        const cppFile = resolve(root, "test.cpp");
+        await import("node:fs/promises").then((fs) =>
+            fs.writeFile(cppFile, "enum DiskannBuildWorkMode : uint32_t {\n    WM_NONE = 0,\n    WM_TRAIN_CODEC = 1,\n};\n", "utf8"),
+        );
+        const canned = [sym("enum DiskannBuildWorkMode : uint32_t {}", 10, cppFile, 0, 5)];
+        const selStart = { line: 0, character: 5 };
+        const docSymsByPath = new Map([
+            [
+                cppFile,
+                [
+                    {
+                        name: "DiskannBuildWorkMode",
+                        kind: 10, // Enum
+                        range: { start: selStart, end: { line: 3, character: 2 } },
+                        selectionRange: {
+                            start: selStart,
+                            end: { line: 0, character: 25 },
+                        },
+                        children: [],
+                    },
+                ],
+            ],
+        ]);
+        const defLocsByPath = new Map([
+            [cppFile, { uri: `file://${cppFile}`, range: { start: selStart, end: { line: 3, character: 2 } } }],
+        ]);
+        const out = await symbol(
+            { query: "DiskannBuildWorkMode", language: "cpp", info: ["code"] },
+            dir,
+            mockClientOfRich(dir, {
+                cannedSyms: canned,
+                docSymsByPath,
+                defLocsByPath,
+                hoverTextByPath: new Map(),
+            }),
+        );
+        assert.match(out, /^# 1 match for "DiskannBuildWorkMode" — info: code\b/m);
+        assert.match(out, /--- code ---/);
+        assert.match(out, /enum DiskannBuildWorkMode/);
+        assert.ok(!/ERROR/.test(out), `no ERROR should appear:\n${out}`);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("parseCppSymbolName: ccls enum with `: TYPE` (typed), `enum class`, and no base type all extract the name correctly", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-enumforms-"));
+    try {
+        const root = dir;
+        const canned = [
+            sym("enum DiskannBuildWorkMode : int {}", 10, `${root}/test.cpp`, 0, 5),
+            sym("enum class ScopedEnum : int {}", 10, `${root}/test.cpp`, 5, 11),
+            sym("enum SimpleEnum {}", 10, `${root}/test.cpp`, 9, 5),
+        ];
+        // Query each by bare name — all must be found (none dropped as fuzzy).
+        for (const q of ["DiskannBuildWorkMode", "ScopedEnum", "SimpleEnum"]) {
+            const out = await symbol({ query: q, language: "cpp" }, dir, mockClientOf(dir, canned));
+            const rows = out.split("\n").filter((l) => l.startsWith("[cpp]"));
+            assert.ok(rows.length >= 1, `expected ${q} hit, got:\n${out}`);
+            assert.match(out, new RegExp(q));
+        }
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("parseCppSymbolName: struct/class with inheritance strips `: <inheritance-clause>` and extracts name", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-inherit-"));
+    try {
+        const root = dir;
+        const canned = [
+            // Simple single inheritance
+            sym("struct Derived : Base {}", 23, `${root}/test.cpp`, 0, 8),
+            // Qualified base
+            sym("struct Derived : NS::Base {}", 23, `${root}/test.cpp`, 3, 8),
+            // With access specifier
+            sym("class Foo : public Bar {}", 23, `${root}/test.cpp`, 6, 6),
+            // Access specifier + qualified base
+            sym("class Foo : protected NS::Bar {}", 23, `${root}/test.cpp`, 9, 6),
+            // Virtual + access specifier
+            sym("struct Derived2 : virtual public Base1 {}", 23, `${root}/test.cpp`, 12, 8),
+            // Multiple bases with commas
+            sym("class Derived3 : public Base1, protected Base2 {}", 23, `${root}/test.cpp`, 15, 6),
+        ];
+        // Query each by bare name — all must be found.
+        for (const q of ["Derived", "Foo", "Derived2", "Derived3"]) {
+            const out = await symbol({ query: q, language: "cpp" }, dir, mockClientOf(dir, canned));
+            const rows = out.split("\n").filter((l) => l.startsWith("[cpp]"));
+            assert.ok(rows.length >= 1, `expected ${q} hit, got:\n${out}`);
+            assert.match(out, new RegExp(q));
+        }
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("info fan-out: struct/class with inheritance (kind 23) is found and gets code body", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-inherit-"));
+    try {
+        const root = dir;
+        const cppFile = resolve(root, "test.cpp");
+        await import("node:fs/promises").then((fs) =>
+            fs.writeFile(cppFile, "struct Derived : public Base { int x; };\n", "utf8"),
+        );
+        const canned = [sym("struct Derived : public Base {}", 23, cppFile, 0, 8)];
+        const selStart = { line: 0, character: 8 };
+        const docSymsByPath = new Map([
+            [
+                cppFile,
+                [
+                    {
+                        name: "Derived",
+                        kind: 23,
+                        range: { start: selStart, end: { line: 0, character: 37 } },
+                        selectionRange: {
+                            start: selStart,
+                            end: { line: 0, character: selStart.character + "Derived".length },
+                        },
+                        children: [],
+                    },
+                ],
+            ],
+        ]);
+        const defLocsByPath = new Map([
+            [cppFile, { uri: `file://${cppFile}`, range: { start: selStart, end: { line: 0, character: 37 } } }],
+        ]);
+        const out = await symbol(
+            { query: "Derived", language: "cpp", info: ["code"] },
+            dir,
+            mockClientOfRich(dir, {
+                cannedSyms: canned,
+                docSymsByPath,
+                defLocsByPath,
+                hoverTextByPath: new Map(),
+            }),
+        );
+        assert.match(out, /^# 1 match for "Derived" — info: code\b/m);
+        assert.match(out, /--- code ---/);
+        assert.match(out, /struct Derived/);
+        assert.ok(!/ERROR/.test(out), `no ERROR should appear:\n${out}`);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});

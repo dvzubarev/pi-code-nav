@@ -356,6 +356,16 @@ function parseCppSymbolName(name: string): {
         }
     }
 
+    // Strip trailing ` : <inheritance-clause>` suffix — ccls appends this
+    // for typed enums (`enum Foo : int {}`) and struct/class inheritances
+    // (`struct Derived : Base {}`, `struct Derived : NS::Base {}`,
+    // `class Foo : public Bar {}`). After `{}` stripping above, find the
+    // last ` : ` (space-colon-space) and strip everything from it onward.
+    const lastColonSpace = s.lastIndexOf(" : ");
+    if (lastColonSpace >= 0) {
+        s = s.slice(0, lastColonSpace).trim();
+    }
+
     // General case: the last whitespace-separated token is the qualified
     // declarator (after return type). Strip leading `&`/`*` (ref/pointer
     // qualifiers on the decl).
