@@ -99,7 +99,7 @@ runOrSkip("code_outline on second.py shows classes/methods with signatures, rang
             `TempC doc snippet missing:\n${out}`,
         );
         assert.ok(
-            lines.some((l) => /^  doc: Documentation of punintend/.test(l)),
+            lines.some((l) => /^    doc: Documentation of punintend/.test(l)),
             `punintend doc snippet missing:\n${out}`,
         );
         // code_outline keeps only structural kinds (class/method/function/...).
@@ -133,9 +133,10 @@ runOrSkip("code_outline paginates: limit bounds rows and emits a trailing contin
             ws.clientOf,
         );
         const lines = out.split("\n");
-        // Exactly 2 content rows + 1 trailing message.
-        const contentRows = lines.filter((l) => l && !l.startsWith("["));
-        assert.equal(contentRows.length, 2, `expected 2 content rows, got:\n${out}`);
+        // Exactly 2 entry headers + their signature/doc sub-lines + 1 trailing message.
+        // Count header lines (Kind name :range pattern) — not signature/doc sub-lines.
+        const headerRows = lines.filter((l) => /\b\w+  :\d+-\d+:\d+$/.test(l));
+        assert.equal(headerRows.length, 2, `expected 2 entry headers, got:\n${out}`);
         // Trailing message names the remaining count and the next offset.
         assert.match(
             out,
@@ -169,9 +170,16 @@ runOrSkip("code_outline pagination continues at offset, re-emitting ancestor (co
         );
         // The context row must NOT carry a signature or docs column.
         assert.ok(!/docs:/.test(lines[0]), `context row should have no docs:\n${out}`);
-        // Followed by the two content rows at depth 1 (indented).
-        assert.match(lines[1], /^  Constructor __init__ /, `__init__ missing:\n${out}`);
-        assert.match(lines[2], /^  Method punintend /, `punintend missing:\n${out}`);
+        // Followed by the two entries at depth 1 (indented), each with
+        // multi-line sub-lines (signature, doc). Find them by kind+name.
+        assert.ok(
+            lines.some((l) => /^  Constructor __init__ /.test(l)),
+            `__init__ missing:\n${out}`,
+        );
+        assert.ok(
+            lines.some((l) => /^  Method punintend /.test(l)),
+            `punintend missing:\n${out}`,
+        );
         // Last page (entry 5 is the final one) → no trailing message.
         assert.ok(!/more entries/.test(out), `last page should not paginate:\n${out}`);
     } finally {

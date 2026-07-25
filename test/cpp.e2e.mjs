@@ -70,7 +70,7 @@ runOrSkip("code_outline on a .cpp file shows ccls detail signatures + body range
         );
         assert.match(
             out,
-            /^  signature: void Widget::method\(\)$/m,
+            /^    signature: void Widget::method\(\)$/m,
             `method signature missing:\n${out}`,
         );
         // Struct Widget
