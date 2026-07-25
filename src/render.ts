@@ -173,6 +173,23 @@ function firstSentence(line: string): string {
     return m ? m[1] : line;
 }
 
+/**
+ * Detect whether a line looks like a code signature (not prose/docstring).
+ *
+ * When ccls/pyright/ty returns hover for a function WITHOUT a docstring,
+ * the hover body is just the raw signature with no fenced code block.
+ * `hoverDocSnippet` must NOT treat this as doc prose.
+ *
+ * Heuristics (covers C++, Python, TypeScript, Bash, Rust):
+ *   - Starts with a language keyword (inline, static, def, fn, class, ...)
+ *   - Contains function-call syntax: identifier followed by `(`
+ *   - Starts with `class`/`struct`/`enum`/`namespace` + name + `{`
+ *
+ * Docstrings are prose: "Check if the file exists." — they start with an
+ * uppercase letter and contain no code syntax. A false positive is
+ * extremely unlikely: a docstring starting with "inline" or "static" is
+ * not meaningful English.
+ */
 // ---------------------------------------------------------------------------
 // Symbol kind naming + DocumentSymbol / SymbolInformation rendering
 // ---------------------------------------------------------------------------

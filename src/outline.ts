@@ -213,6 +213,9 @@ function renderRow(row: OutlineRow, sig: string | undefined, docs: string | unde
     const rangeStr =
         sl != null && el != null ? `:${sl + 1}-${el + 1}:${col}` : col ? `:${col}` : "";
     const header = `${pad}${kindName} ${sym.name}${rangeStr ? `  ${rangeStr}` : ""}`;
+    // If doc starts with the signature, it's a duplicate — drop it.
+    // Happens when ccls returns bare signature with no docstring.
+    if (docs && sig && docs.startsWith(sig)) docs = undefined;
     const subLines: string[] = [];
     if (sig) subLines.push(`${sub}signature: ${sig}`);
     if (docs) subLines.push(`${sub}doc: ${docs}`);
