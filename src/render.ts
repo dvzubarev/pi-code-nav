@@ -63,10 +63,20 @@ export function hoverText(h: Hover | null): string {
     const c = h.contents;
     if (typeof c === "string") return c.trim();
     if (Array.isArray(c)) {
-        return c
-            .map((it) => (typeof it === "string" ? it : it.value))
-            .join("\n\n")
-            .trim();
+        // When ccls returns an array with both plain strings (comments) and
+        // MarkedStrings (signatures), put signatures first so hoverSignature
+        // picks up the actual signature, not the comment.
+        const plainStrings: string[] = [];
+        const markedStrings: string[] = [];
+        for (const it of c) {
+            if (typeof it === "string") {
+                plainStrings.push(it);
+            } else {
+                markedStrings.push(it.value ?? "");
+            }
+        }
+        // Signatures first, then comments.
+        return [...markedStrings, ...plainStrings].join("\n\n").trim();
     }
     // MarkupContent
     return (c as { value?: string }).value?.trim() ?? "(empty hover)";

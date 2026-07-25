@@ -41,6 +41,47 @@ test("hoverSignature returns empty for empty input", async () => {
 // hoverDocSnippet
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// hoverText
+// ---------------------------------------------------------------------------
+
+// ccls returns `[plainString(comment), MarkedString(signature)]` for pure-virtual
+// declarations with a preceding comment. hoverText must put signatures first so
+// hoverSignature picks up the actual signature, not the comment.
+test("hoverText puts MarkedStrings before plain strings (ccls comment+sig)", async () => {
+    const { hoverText } = await loadRender();
+    const hover = {
+        contents: [
+            "check here.",
+            { language: "cpp", value: "virtual bool StorageBackend::is_s3() const = 0" },
+        ],
+    };
+    const result = hoverText(hover);
+    // Signature must come first, comment after.
+    assert.equal(
+        result,
+        "virtual bool StorageBackend::is_s3() const = 0\n\ncheck here.",
+    );
+});
+
+test("hoverText handles single MarkedString in array", async () => {
+    const { hoverText } = await loadRender();
+    const hover = {
+        contents: [{ language: "cpp", value: "bool S3StorageBackend::is_s3() const override" }],
+    };
+    assert.equal(hoverText(hover), "bool S3StorageBackend::is_s3() const override");
+});
+
+test("hoverText handles single plain string in array", async () => {
+    const { hoverText } = await loadRender();
+    const hover = { contents: ["just a comment"] };
+    assert.equal(hoverText(hover), "just a comment");
+});
+
+// ---------------------------------------------------------------------------
+// hoverDocSnippet
+// ---------------------------------------------------------------------------
+
 test("hoverDocSnippet extracts prose after fence", async () => {
     const { hoverDocSnippet } = await loadRender();
     const hover = "```cpp\nbool foo()\n```\n\nCheck if foo exists.";
