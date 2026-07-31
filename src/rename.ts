@@ -5,7 +5,12 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { awaitReadyForQuery, ClientProvider, UnknownLanguageError } from "./nav-core";
+import {
+    awaitReadyForQuery,
+    ClientProvider,
+    UnknownLanguageError,
+    validatePosition,
+} from "./nav-core";
 import { applyWorkspaceEdit, langForFile, toAbs } from "./render";
 
 export interface RenameParams {
@@ -20,6 +25,7 @@ export async function rename(
     cwd: string,
     clientOf: ClientProvider,
 ): Promise<string> {
+    validatePosition(params.line, params.column);
     const lang = langForFile(params.path);
     if (lang === null) throw new UnknownLanguageError(params.path);
     const abs = toAbs(params.path, cwd);

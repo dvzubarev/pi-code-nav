@@ -19,7 +19,7 @@
   `code_diagnostics` push fallback. See `lsp.md` and `code_diagnostics.md`.
 - `index.ts` — `codeNavExtension(pi)`: registers the 3 slash commands + the
   `session_shutdown` hook + the `before_agent_start` system-prompt hook at
-  load; `registerTools()` (called only by `/code-nav`) registers the 9 LLM
+  load; `registerTools()` (called only by `/code-nav`) registers the 7 LLM
   tools. `ServerPool` manages the per-language clients. `CODE_NAV_PROMPT_BLOCK`
   is the grouped tool overview the `before_agent_start` hook appends to the
   system prompt while enabled. `applyWorkspaceEdit` / `applyTextEdits` (in
@@ -32,8 +32,8 @@
   `applyWorkspaceEdit`, `langForFile`, `EXT_LANG`. Shared verbatim by
   `index.ts`, the CLI harness, and the e2e tests — this is what killed the
   old "keep nav-cli.mjs in sync with index.ts by hand" landmine.
-- `src/nav.ts` — barrel re-exporting the nine tool implementations plus the
-  shared `ClientProvider` / `ALL_LANGS` / `UnknownLanguageError` (from
+- `src/nav.ts` — barrel re-exporting eight implementations (seven registered
+  agent tools plus the internal `scan`) and the shared `ClientProvider` / `ALL_LANGS` / `UnknownLanguageError` (from
   `src/nav-core.ts`) and project-language detection (from `src/detect.ts`).
   `index.ts` and the tests/CLI import the tools via `./src/nav` so they don't
   need to know about the per-tool file split.
@@ -44,14 +44,14 @@
   memoized per root; `clearDetectedLanguagesCache`) used by `code_search_symbol`
   so the per-language workspace/symbol loop only spawns servers that can find
   a project here.
-- `src/<tool>.ts` — one file per tool: `outline.ts`,
+- `src/<tool>.ts` — one file per implementation: `outline.ts`,
   `definition.ts`, `references.ts`, `symbol.ts`, `rename.ts`, `hover.ts`,
   `scan.ts`, `diagnostics.ts`. Each exports a plain async function
   `(params, cwd, clientOf) => text` and its `*Params` interface. No pi
   dependency; takes a `ClientProvider` (`(lang) => LspClient`) instead of
-  `ServerPool`. `index.ts`'s `registerTools` and `scripts/nav-cli.mjs` both
-  call these (via the `src/nav.ts` barrel), so the CLI and automated tests
-  exercise the EXACT code path the agent uses.
+  `ServerPool`. `index.ts` and `scripts/nav-cli.mjs` call the same exported
+  implementations via `src/nav.ts`; `scan` is exercised only by the CLI/tests
+  and `code_definition(list_symbols=true)`, not registered as an agent tool.
 - `src/tree-sitter-parse.ts` — `parseSymbols()` parses a line range with WASM
   tree-sitter, returns a deduplicated symbol table. No pi or LSP dependency.
   See `code_scan.md`.

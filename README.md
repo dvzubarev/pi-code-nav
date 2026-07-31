@@ -1,21 +1,18 @@
 # code-nav
 
-LSP-backed code navigation for pi. Eight tools the LLM can call — six backed
-by real language servers (ccls for C++, ty/pyright for Python,
-bash-language-server for bash, typescript-language-server for TypeScript &
-JavaScript) plus one backed by tree-sitter for third-party symbol discovery,
-plus one diagnostic reporter:
+LSP-backed semantic code navigation for pi. `/code-nav` enables seven agent
+tools backed by ccls, ty/pyright, bash-language-server, and
+typescript-language-server:
 
-| Tool              | Backing                            | Notes                                                |
-| ----------------- | ---------------------------------- | ---------------------------------------------------- |
-| `code_outline`    | LSP `textDocument/documentSymbol`  | File structure: functions, classes, methods, sigs   |
-| `code_definition` | LSP `textDocument/definition`      | Location + full source body of a symbol's definition   |
-| `code_references`| LSP `textDocument/references`      | All references to a symbol                            |
-| `code_search_symbol` | LSP `workspace/symbol`             | Ranked symbol search by name, workspace-wide         |
-| `code_rename`     | LSP `textDocument/rename`          | Rename, edits applied to disk                        |
-| `code_hover`      | LSP `textDocument/hover`           | Docstring / signature / type info                     |
-| `code_scan` | tree-sitter (WASM, in-process)     | Identifier table for a line range — the third-party entry point |
-| `code_diagnostics`| LSP `textDocument/diagnostic` (pull) | Errors/warnings for a file, fetched on demand       |
+| Tool | Backing | Purpose |
+| --- | --- | --- |
+| `code_outline` | `textDocument/documentSymbol` + hover | Structural file outline with signatures and docs |
+| `code_definition` | `textDocument/definition` | Definition location and complete source body |
+| `code_references` | `textDocument/references` | Semantic references/usages, including declarations |
+| `code_search_symbol` | `workspace/symbol` | Ranked workspace and indexed third-party search |
+| `code_rename` | `textDocument/rename` | Semantic rename applied to disk |
+| `code_hover` | `textDocument/hover` | Signature, inferred type, and documentation |
+| `code_diagnostics` | pull first, push fallback | Current errors, warnings, and hints |
 
 `code_definition`, `code_hover`, and `code_references` each take a **scalar**
 `(path, line, column)` — one symbol per call (no batching). `code_definition`
@@ -34,51 +31,31 @@ body, so the agent can discover third-party/stdlib symbols used inside the
 definition body and pass their coordinates to `code_hover`/
 `code_definition`/`code_references` without a separate call.
 
-Lines/columns in tool parameters are **1-based** (agent-friendly); the extension
-translates to the 0-based coords LSP uses. **Tool output is also 1-based**
-(`code_search_symbol`, `code_definition`, `code_references`, `code_outline`,
-`code_scan`, `code_diagnostics` all print 1-based `line:col`), so a
-position printed by one tool can be fed directly into another tool's
-`line`/`column` params without manual conversion.
+All tool inputs and outputs use **1-based** positions. Discovery results print
+the identifier position—not merely the enclosing range—so a printed
+`path:line:column` can be passed directly to a position-based tool.
+`code_outline` prints the reusable identifier position separately from the
+symbol's body range.
 
-**Positions point at the symbol's identifier, not the enclosing range.** The
-entry-point tools (`code_outline`, `code_search_symbol`, `code_scan`) print the
-identifier position so the coordinates resolve in `code_hover`/`code_definition`/`code_references`.
-- `code_outline` uses the server's `selectionRange` (the identifier span).
-- `code_search_symbol` resolves the identifier via `documentSymbol` per file (cached
-  for the call), falling back to a source-line scan if unavailable.
-- `code_scan` parses the line range with tree-sitter and prints each
-  identifier's absolute 1-based column (tree-sitter is 0-based; we add 1).
+## Three workflow groups
 
-This makes `code_search_symbol` / `code_outline` / `code_scan` → `code_hover` / `code_definition` / `code_references` a clean round-trip: take the printed `line:col` and pass it straight back as `line` and `column`.
-
-## Two groups: entry points → detail tools
-
-The nine tools split into two groups. **Entry points** are what you call when
-you don't yet have a precise position — they produce one. **Detail tools**
-consume a position (from an entry point, from a diagnostic, or from anywhere a
-symbol's identifier sits) and tell you something about that symbol. Every
-entry point prints 1-based `line:col` that feeds straight into a detail tool's
-`line`/`column` params.
-
-**Entry points** (no precise position yet):
+**Discovery tools** produce positions:
 
 | Tool | Use when |
-|------|----------|
-| `code_search_symbol` | you know a symbol **name** and want to find it across the workspace |
-| `code_outline` | you have a **file** and want its structure (functions/classes/methods with signatures, body ranges, and doc snippets) |
-| `code_scan` | you have a file/range and want **every identifier** with its role (calls, imports, members) |
-| `code_scan` | you have a file/range and want **every identifier** with its role (calls, imports, members) |
+| --- | --- |
+| `code_search_symbol` | You know a bare or qualified symbol name |
+| `code_outline` | You want a file's classes/functions/methods, signatures, docs, and ranges |
 
-**Detail tools** (take `path` + 1-based `line` + `column`):
+**Position-based tools** consume `path` + 1-based `line` + `column`:
 
 | Tool | Returns |
-|------|---------|
-| `code_definition` | the definition's location + **full source body** |
-| `code_references` | all call sites of the symbol |
-| `code_hover` | docstring / signature / type info |
-| `code_rename` | renames the symbol across the workspace (edits applied to disk) |
-| `code_diagnostics` | errors/warnings the language server reports for a file |
+| --- | --- |
+| `code_definition` | Definition location and complete source body |
+| `code_references` | Semantic references/usages, including the declaration |
+| `code_hover` | Signature, inferred type, and documentation |
+| `code_rename` | A semantic workspace rename applied to disk |
+
+**File-analysis tool:** `code_diagnostics(path)` reports current diagnostics.
 
 ### Prefer `code_*` over grep/read
 
@@ -90,22 +67,43 @@ their `code_*` replacement:
 |------|---------------------|----------------|
 | find a symbol by name | `rg` then `read` each hit | `code_search_symbol` |
 | read a function's source body | `grep -n "^def foo\|^function foo"` then `read` | `code_outline` to locate it, then `code_definition` |
-| list every identifier in a snippet | `rg -o '\b\w+\b'` (no roles, no positions you can reuse) | `code_scan` |
-| find all call sites of a symbol | `rg symbolname` | `code_references` |
+| find semantic usages of a symbol | `rg symbolname` | `code_references` |
 | rename a symbol | `sed -i` across files | `code_rename` |
 | check a file for errors | write a paren/quote-matching script | `code_diagnostics` |
 | learn a symbol's type or docs | `read` the file and eyeball | `code_hover` |
 
-The same grouping and table are injected into the agent's system prompt while
-`/code-nav` is enabled, so the LLM is steered toward the `code_*` tools instead
-of its default grep/read reflex.
+The same grouping is injected into the agent's system prompt while `/code-nav`
+is enabled.
 
-### Worked example: third-party docs/source via `code_scan`
+### Third-party symbol search
 
-`code_search_symbol` is workspace-scoped, so it cannot find symbols in
-`site-packages`, `node_modules`, nix store, or system headers. But
-`code_definition`/`code_hover` **do** resolve third-party symbols at a known
-position. `code_scan` bridges the gap: it parses a snippet's syntax (no LSP
+`code_search_symbol` deliberately searches beyond the project when the language
+server can index relevant dependencies:
+
+- **Python with ty:** direct dependencies discovered from the environment are
+  added as workspace roots, so ty indexes them alongside the project.
+- **C++ with ccls:** headers included by the project—and their transitive
+  includes—are available through ccls's compilation database and index.
+
+This does not mean every installed package or system header is indexed. It
+means the search covers third-party code that is relevant to the current
+project. Qualified queries such as `cbor2.loads`, `typing.cast`, and
+`std::vector::push_back` help rank and narrow those results.
+
+Use `include` to expand up to five exact matches in the same call:
+
+```text
+code_search_symbol(query="cbor2.loads", include=["definition", "hover"])
+code_search_symbol(query="vector::push_back", kinds=["method"],
+                   name_pattern="int", include=["definition", "references"])
+```
+
+### Internal `code_scan` implementation
+
+`src/scan.ts` remains available to the CLI/tests, and its tree-sitter parser is
+also used by `code_definition(list_symbols=true)`. It is not currently
+registered as an agent tool. It can bridge from a source range to third-party
+identifiers by parsing a snippet's syntax (no LSP
 index needed) and returns each identifier with a reusable 1-based position.
 Feed a row straight into a detail tool.
 
@@ -136,16 +134,13 @@ conversion. For the name-only case (you have a third-party name from docs but
 no file/position at all), see `code_scan`'s guidelines for the
 resolve-package-root → rg → `code_definition` workflow.
 
-## Why `code_diagnostics` (LSP pull model)
+## Why `code_diagnostics` (pull first, push fallback)
 
 `code_diagnostics` reports the errors/warnings a language server computes for
-a file — e.g. undefined names, type mismatches, unused variables. It is a
-**pure request/response tool**: the agent calls `code_diagnostics(path)`, the
-extension opens the document on the server and sends a single
-`textDocument/diagnostic` request (the LSP 3.17 **pull model**), and the server
-returns the diagnostic set for that document synchronously. No
-`publishDiagnostics` notification collection — the tool contract is "agent
-calls, waits, gets the result back."
+a file—e.g. undefined names, type mismatches, and unused variables. The tool
+tries the LSP 3.17 pull model first. If the server rejects it, the tool performs
+a bounded, event-driven wait for `publishDiagnostics`. In both cases the
+agent-facing contract remains synchronous: one call returns one result.
 
 ```
 code_diagnostics(path="widget.cpp")
@@ -161,23 +156,18 @@ so a row can be fed straight into `code_hover` / `code_definition` /
 `code_references` to inspect the offending symbol.
 
 **Capability advertisement is unreliable, so the tool does not gate on it.**
-ty advertises `diagnosticProvider`; pyright answers the request without
-advertising it; ccls/bash-language-server reject it with a JSON-RPC error. The
-tool sends the request and surfaces the server's actual response (or error)
-honestly — a server that can't answer returns an error rather than silently
-empty/stale results. bash-language-server and typescript-language-server do
-not implement the pull model, so `code_diagnostics` returns an error for bash
-and TypeScript files (by design — no async
-fallback).
+ty advertises `diagnosticProvider`; pyright answers the pull request without
+advertising it; ccls, bash-language-server, and typescript-language-server use
+the push fallback. If neither flow returns diagnostics within the bounded
+wait, the tool surfaces the pull failure honestly.
 
-## Why `code_scan` (tree-sitter)
+## Why the internal `code_scan` implementation exists
 
-The six LSP tools answer "tell me about the symbol at this position." They
-cannot answer "I'm looking at a snippet — what are the symbols in it and where
-do they sit?" That gap matters most for **third-party / stdlib / system**
-symbols: `code_search_symbol` (`workspace/symbol`) is useless because LSP
-`workspace/symbol` is **workspace-scoped by spec** — it indexes your project
-tree, never `site-packages` or `/usr/include`.
+Position-based LSP tools cannot answer “I’m looking at a snippet—what symbols
+occur in it, and where are they?” `code_search_symbol` can find indexed
+third-party dependencies, but a relevant package/header may not be indexed or
+the agent may know only an occurrence in the current file. The internal scan
+implementation covers that occurrence-based workflow.
 
 `code_scan` fills the gap: given a real file and a line range, it parses
 the range with tree-sitter (in-process, WASM — no LSP server) and returns a
@@ -217,7 +207,7 @@ The tools are **not** registered at session start. Opt in per session:
 
 | Command            | Effect                                                        |
 | ------------------ | ------------------------------------------------------------ |
-| `/code-nav`        | Enable the eight `code_*` tools for this session              |
+| `/code-nav`        | Enable the seven `code_*` tools for this session              |
 | `/code-nav:off`    | Disable the tools and shut down all running LSP servers      |
 | `/code-nav:status` | Show which language servers are currently running            |
 

@@ -11,17 +11,16 @@
  *
  * Output format per entry (multi-line block, 1-based positions):
  *
- *   <pad><Kind> <name>  :<sl>-<el>:<col>
+ *   <pad><Kind> <name>  <path>:<line>:<column>  range=<start>-<end>
  *   <pad>  signature: <full signature (not truncated)>
  *   <pad>  doc: <first sentence of docstring>
  *
- * The header line carries the grep-style `:line:col` position, directly
- * reusable as input to code_hover/code_definition/code_references.
+ * `path:line:column` is the symbol's selectionRange (identifier) position and
+ * is directly reusable by position-based tools. `range` is the symbol's full
+ * DocumentSymbol range and is kept separate because its start may differ from
+ * the identifier line (for example, when decorators are included).
  *
  *   - <pad> is indentation (2 spaces per nesting level).
- *   - <sl>-<el> is the symbol's full body range (DocumentSymbol.range), so a
- *     function with a body shows `:15-42:3` and a flat declaration shows
- *     `:10-10:3`. <col> is the selectionRange (identifier) column on <sl>.
  *   - signature: comes from the server `detail` field (preferred — ccls fills
  *     this with the full signature), falling back to the hover body extracted
  *     by `hoverSignature`. NEVER truncated.
@@ -171,11 +170,7 @@ interface OutlineRow {
 }
 
 /** Flatten a pruned DocumentSymbol tree into pre-order rows with depth+ancestors. */
-function flattenTree(
-    syms: DocumentSymbol[],
-    ancestors: DocumentSymbol[],
-    out: OutlineRow[],
-): void {
+function flattenTree(syms: DocumentSymbol[], ancestors: DocumentSymbol[], out: OutlineRow[]): void {
     for (const s of syms) {
         out.push({ sym: s, depth: ancestors.length, ancestors });
         const children = (s as unknown as { children?: DocumentSymbol[] }).children ?? [];
@@ -188,19 +183,24 @@ function flattenTree(
 /**
  * Render a content row as a multi-line block:
  *
- *   <pad><Kind> <name>  :<sl>-<el>:<col>
+ *   <pad><Kind> <name>  <path>:<line>:<column>  range=<start>-<end>
  *   <pad>  signature: <full signature>
  *   <pad>  doc: <first sentence>
  *
- * The header line carries the range (`:sl-el:col`), directly reusable as
- * input to code_hover/code_definition/code_references. The sub-lines are
+ * The header carries a reusable identifier position and a separate body
+ * range. The sub-lines are
  * indented with an extra 2 spaces relative to the header and labelled with
  * `signature:` / `doc:`. Each sub-line is omitted when the corresponding
  * content is empty. The `signature:` and `doc:` labels make every line
  * self-describing — the agent can grep for `signature:` on a multi-line
  * entry without understanding the overall format.
  */
-function renderRow(row: OutlineRow, sig: string | undefined, docs: string | undefined): string {
+function renderRow(
+    row: OutlineRow,
+    path: string,
+    sig: string | undefined,
+    docs: string | undefined,
+): string {
     const pad = "  ".repeat(row.depth);
     const sub = pad + "  "; // sub-lines indent 2 more
     const sym = row.sym;
@@ -209,10 +209,9 @@ function renderRow(row: OutlineRow, sig: string | undefined, docs: string | unde
     const sl = r?.start?.line;
     const el = r?.end?.line;
     const sel = sym.selectionRange?.start;
-    const col = sel ? sel.character + 1 : 0;
-    const rangeStr =
-        sl != null && el != null ? `:${sl + 1}-${el + 1}:${col}` : col ? `:${col}` : "";
-    const header = `${pad}${kindName} ${sym.name}${rangeStr ? `  ${rangeStr}` : ""}`;
+    const position = sel ? `${path}:${sel.line + 1}:${sel.character + 1}` : path;
+    const range = sl != null && el != null ? `  range=${sl + 1}-${el + 1}` : "";
+    const header = `${pad}${kindName} ${sym.name}  ${position}${range}`;
     // If doc starts with the signature, it's a duplicate — drop it.
     // Happens when ccls returns bare signature with no docstring.
     if (docs && sig && docs.startsWith(sig)) docs = undefined;
@@ -225,22 +224,22 @@ function renderRow(row: OutlineRow, sig: string | undefined, docs: string | unde
 
 /**
  * Render a re-emitted ancestor context row (page opened mid-class):
- * `<pad><Kind> <name>  (cont.)  :<sl>-<el>:<col>`. No signature/docs — the
+ * `<pad><Kind> <name>  (cont.)  <path>:<line>:<column> range=<start>-<end>`.
+ * No signature/docs — the
  * ancestor was shown in full on a previous page; here it's just structural
  * context so orphaned members aren't dangling. The `(cont.)` marker
  * distinguishes it from a fresh content row.
  */
-function renderContextRow(sym: DocumentSymbol, depth: number): string {
+function renderContextRow(sym: DocumentSymbol, depth: number, path: string): string {
     const pad = "  ".repeat(depth);
     const kindName = symbolKindName((sym as unknown as { kind?: number }).kind);
     const r = sym.range;
     const sl = r?.start?.line;
     const el = r?.end?.line;
     const sel = sym.selectionRange?.start;
-    const col = sel ? sel.character + 1 : 0;
-    const rangeStr =
-        sl != null && el != null ? `:${sl + 1}-${el + 1}:${col}` : col ? `:${col}` : "";
-    return `${pad}${kindName} ${sym.name}  (cont.)${rangeStr ? `  ${rangeStr}` : ""}`;
+    const position = sel ? `${path}:${sel.line + 1}:${sel.character + 1}` : path;
+    const range = sl != null && el != null ? `  range=${sl + 1}-${el + 1}` : "";
+    return `${pad}${kindName} ${sym.name}  (cont.)  ${position}${range}`;
 }
 
 /**
@@ -251,7 +250,10 @@ function renderContextRow(sym: DocumentSymbol, depth: number): string {
  * also above, so also needs re-emitting; everything below it is on the page).
  * Returns the ancestor symbols and their depths.
  */
-function contextAncestorsFor(first: OutlineRow, pageRows: OutlineRow[]): { sym: DocumentSymbol; depth: number }[] {
+function contextAncestorsFor(
+    first: OutlineRow,
+    pageRows: OutlineRow[],
+): { sym: DocumentSymbol; depth: number }[] {
     const pageSyms = new Set(pageRows.map((r) => r.sym));
     const out: { sym: DocumentSymbol; depth: number }[] = [];
     for (let i = 0; i < first.ancestors.length; i++) {
@@ -291,10 +293,17 @@ export async function outline(
         // a (empty) result.
         throw new Error(`Cannot read ${abs}: ${e}`);
     }
-    // Pagination params (1-based offset mirrors pi `read`). Clamp limit to
-     // MAX_LIMIT so an agent can't request 10000 rows and pay for 10000 hovers.
-    const offset = Math.max(1, Math.floor(params.offset ?? 1));
-    const limit = Math.min(MAX_LIMIT, Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT)));
+    // Pagination params are positive integers. Clamp direct/CLI callers to the
+    // same hard limit declared by the tool schema.
+    const offset = params.offset ?? 1;
+    const requestedLimit = params.limit ?? DEFAULT_LIMIT;
+    if (!Number.isInteger(offset) || offset < 1) {
+        throw new Error(`offset (${offset}) must be a positive integer`);
+    }
+    if (!Number.isInteger(requestedLimit) || requestedLimit < 1) {
+        throw new Error(`limit (${requestedLimit}) must be a positive integer`);
+    }
+    const limit = Math.min(MAX_LIMIT, requestedLimit);
     const client = await clientOf(lang);
     // Wait for ccls to finish indexing this TU before querying documentSymbol.
     // On a cold cache, documentSymbol returns stale {0:0} ranges until the
@@ -305,11 +314,15 @@ export async function outline(
     if (syms.length === 0) return `(no symbols found in ${params.path})`;
     // Hierarchical (DocumentSymbol[]) vs flat (SymbolInformation[]). The flat
     // path is a guard — no current server returns flat for documentSymbol,
-     // but we handle it rather than crash. The flat path paginates too, but
-     // has no nesting so no ancestor re-emission.
+    // but we handle it rather than crash. The flat path paginates too, but
+    // has no nesting so no ancestor re-emission.
     const lines: string[] = [];
     if ("range" in syms[0] && "selectionRange" in syms[0]) {
-        const tree = pruneDocSymbolTree(syms as DocumentSymbol[], OUTLINE_KEEP_KINDS, CONTAINER_KINDS);
+        const tree = pruneDocSymbolTree(
+            syms as DocumentSymbol[],
+            OUTLINE_KEEP_KINDS,
+            CONTAINER_KINDS,
+        );
         const allRows: OutlineRow[] = [];
         flattenTree(tree, [], allRows);
         if (allRows.length === 0) {
@@ -321,16 +334,14 @@ export async function outline(
         }
         const pageRows = allRows.slice(startIdx, startIdx + limit);
         // Ancestor context rows for the page boundary (only when the page
-         // opens mid-tree — i.e. first row's ancestors aren't on the page).
-         // These are NOT hovered and do NOT count against `limit`.
+        // opens mid-tree — i.e. first row's ancestors aren't on the page).
+        // These are NOT hovered and do NOT count against `limit`.
         const contextRows: { sym: DocumentSymbol; depth: number }[] =
-            startIdx > 0 && pageRows.length > 0
-                ? contextAncestorsFor(pageRows[0], pageRows)
-                : [];
+            startIdx > 0 && pageRows.length > 0 ? contextAncestorsFor(pageRows[0], pageRows) : [];
         // Hover every content row on the page in parallel (JSON-RPC over stdio
-         // supports concurrent in-flight requests; ~4ms each). The hover gives
-         // us BOTH the signature (via hoverSignature) AND the doc snippet
-         // (via hoverDocSnippet). Server `detail` is the signature fallback.
+        // supports concurrent in-flight requests; ~4ms each). The hover gives
+        // us BOTH the signature (via hoverSignature) AND the doc snippet
+        // (via hoverDocSnippet). Server `detail` is the signature fallback.
         const hovers = await Promise.all(
             pageRows.map((r) => {
                 const sel = r.sym.selectionRange?.start;
@@ -338,11 +349,18 @@ export async function outline(
                 return client.hover(abs, sel.line, sel.character, text);
             }),
         );
-        const renderedContext = contextRows.map((c) => renderContextRow(c.sym, c.depth));
+        const renderedContext = contextRows.map((c) =>
+            renderContextRow(c.sym, c.depth, params.path),
+        );
         const renderedPage = pageRows.map((r, i) => {
             const body = hoverText(hovers[i]);
             const detail = (r.sym as unknown as { detail?: string | null }).detail;
-            return renderRow(r, signatureFor(body, detail) || undefined, hoverDocSnippet(body) || undefined);
+            return renderRow(
+                r,
+                params.path,
+                signatureFor(body, detail) || undefined,
+                hoverDocSnippet(body) || undefined,
+            );
         });
         lines.push(...renderedContext, ...renderedPage);
         // Trailing pagination message — mirrors pi `read`'s idiom:
@@ -356,9 +374,9 @@ export async function outline(
         }
     } else {
         // Flat SymbolInformation[] — no nesting, no ancestor re-emission.
-         // Paginate the same way; range comes from location.range; col from
-         // range.start (imprecise on ty but the flat case never fires in
-         // practice). Hover each page row for sig+docs.
+        // Paginate the same way; range comes from location.range; col from
+        // range.start (imprecise on ty but the flat case never fires in
+        // practice). Hover each page row for sig+docs.
         const flat = filterSymbolInfoList(syms as SymbolInformation[], OUTLINE_KEEP_KINDS);
         if (flat.length === 0) {
             return `(no structural symbols (class/method/function/...) kept in ${params.path})`;
@@ -369,9 +387,9 @@ export async function outline(
         }
         const pageRows = flat.slice(startIdx, startIdx + limit);
         // Hover each flat row. location.range.start is column 0 of the line on
-         // some servers (not resolvable for hover), so try the symbol name on
-         // the start line as a col fallback. This path is a guard; keep it
-         // simple — most servers return hierarchical documentSymbol.
+        // some servers (not resolvable for hover), so try the symbol name on
+        // the start line as a col fallback. This path is a guard; keep it
+        // simple — most servers return hierarchical documentSymbol.
         const hovers = await Promise.all(
             pageRows.map(async (s) => {
                 const start = s.location.range?.start;
@@ -380,20 +398,22 @@ export async function outline(
             }),
         );
         // Render flat rows with the same multiline format as renderRow
-         // (depth 0, no ancestor prefix).
+        // (depth 0, no ancestor prefix).
         for (let i = 0; i < pageRows.length; i++) {
             const s = pageRows[i];
             const r = s.location.range;
             const sl = r?.start?.line;
             const el = r?.end?.line;
-            const col = r?.start?.character ? r.start.character + 1 : 0;
-            const rangeStr =
-                sl != null && el != null ? `:${sl + 1}-${el + 1}:${col}` : col ? `:${col}` : "";
+            const start = r?.start;
+            const position = start
+                ? `${params.path}:${start.line + 1}:${start.character + 1}`
+                : params.path;
+            const range = sl != null && el != null ? `  range=${sl + 1}-${el + 1}` : "";
             const body = hoverText(hovers[i]);
             const detail = (s as { detail?: string }).detail;
             const sig = detail || hoverSignature(body) || "";
             const docs = hoverDocSnippet(body);
-            const header = `${symbolKindName(s.kind)} ${s.name}${rangeStr ? `  ${rangeStr}` : ""}`;
+            const header = `${symbolKindName(s.kind)} ${s.name}  ${position}${range}`;
             const subLines: string[] = [];
             if (sig) subLines.push(`  signature: ${sig}`);
             if (docs) subLines.push(`  doc: ${docs}`);

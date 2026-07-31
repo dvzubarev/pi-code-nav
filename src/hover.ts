@@ -4,15 +4,19 @@
  * (when one can be extracted), then the full hover markdown body. A clean
  * empty result returns the parenthesized note `(no hover information)`.
  *
- * Recoverable failures (unknown language, cannot read, server unavailable)
- * are emitted as a structured `ERROR  <path>:<line>:<col>  <reason>` row.
- * See docs/code_hover.md.
+ * Operational failures throw so index.ts can mark the tool result as an error.
+ * A clean empty hover remains a normal parenthesized result.
  */
 
 import { readFile } from "node:fs/promises";
 import type { LspClient } from "./lsp-client";
-import { awaitReadyForQuery, ClientProvider } from "./nav-core";
-import { hoverSignature, hoverText, langForFile, renderErrorRow, toAbs } from "./render";
+import {
+    awaitReadyForQuery,
+    ClientProvider,
+    UnknownLanguageError,
+    validatePosition,
+} from "./nav-core";
+import { hoverSignature, hoverText, langForFile, toAbs } from "./render";
 
 export interface HoverParams {
     path: string;
@@ -25,27 +29,21 @@ export async function hover(
     cwd: string,
     clientOf: ClientProvider,
 ): Promise<string> {
+    validatePosition(params.line, params.column);
     const lang = langForFile(params.path);
-    if (lang === null) {
-        return renderErrorRow(params.path, params.line, params.column, `unknown language for file`);
-    }
+    if (lang === null) throw new UnknownLanguageError(params.path);
     let client: LspClient;
     try {
         client = await clientOf(lang);
     } catch (e) {
-        return renderErrorRow(
-            params.path,
-            params.line,
-            params.column,
-            `${lang}: server unavailable: ${e}`,
-        );
+        throw new Error(`${lang}: server unavailable: ${e}`);
     }
     const abs = toAbs(params.path, cwd);
     let text: string;
     try {
         text = await readFile(abs, "utf8");
     } catch (e) {
-        return renderErrorRow(params.path, params.line, params.column, `cannot read ${abs}: ${e}`);
+        throw new Error(`Cannot read ${abs}: ${e}`);
     }
     // Wait for ccls to finish indexing this TU before querying hover. On a
     // cold cache, textDocument/hover can return empty or partial signatures

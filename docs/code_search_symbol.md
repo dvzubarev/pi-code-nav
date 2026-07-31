@@ -1,9 +1,9 @@
 # `code_search_symbol` — workspace + third-party symbol lookup
 
 > Implementation notes for the `workspace/symbol`-backed tool
-> (`nav.ts` `symbol()`). Single entry point for finding a symbol by name,
-> whether it lives in the workspace OR in third-party/stdlib trees. See also
-> `code_scan.md` for the file-and-range entry point (a snippet, not a name).
+> (`nav.ts` `symbol()`). Single agent entry point for finding a symbol by name,
+> whether it lives in the workspace or indexed third-party/stdlib trees. See
+> `code_scan.md` for the internal file-and-range implementation.
 
 ## Two mechanisms
 
@@ -146,27 +146,28 @@ For Python/TypeScript (ty), the `name` is the bare identifier and "exact" is
 case-insensitive bare equality (case-insensitive because ty's fuzzy search
 returns case variants). Disambiguation across modules uses the Q1/Q2/Q3
 tiered module-path filter above; disambiguation across overloads (identical
-name columns) cannot be done with `filter_by_regex` — see the `info` fan-out
+name columns) cannot be done with `name_pattern`—see the `include` fan-out
 section below.
 
-## `info` fan-out (the omni entry point)
+## `include` fan-out (the omni entry point)
 
 `code_search_symbol` is the tool agents actually reach for. To close the
 round-trip gap (search → pick a row → call `code_definition` by hand), the
-optional `info` parameter makes the tool ALSO retrieve per-match detail in
-the SAME call. When `info` is non-empty, the post-tier, post-filter,
+optional public `include` parameter retrieves per-match detail in the same
+call. `index.ts` maps `definition` to the implementation's internal `code`
+section name. When `include` is non-empty, the post-tier, post-filter,
 post-dedupe exact-match set is fanned out: up to
 `SYMBOL_FANOUT_MAX_MATCHES` (5) matches each get a `== [i] [lang] <row> ==`
 block containing the requested `--- section ---` blocks.
 
-Pipeline (when `info` is non-empty):
+Pipeline (when `include` is non-empty):
 
 ```
 workspace/symbol → tier (Q1/Q2/Q3 or T1/T2/T3) → drop T3 fuzzy tail
-  → filter_by_kind → filter_by_regex → dedupe
+  → kinds → name_pattern → dedupe
   → len==0 ? "(no symbols matching ...)"
   : len≤5 ? fan-out per match
-  : row list + "narrow with filter_by_kind / filter_by_regex / a qualified name"
+  : row list + "narrow with kinds / name_pattern / a qualified name"
 ```
 
 The T3 fuzzy tail is DROPPED entirely in fan-out mode — the agent asked
@@ -175,7 +176,8 @@ would inflate the match count past the cap. Only exact matches fan out.
 
 ### Sections
 
-- `--- code ---` — the verbatim source body via `nav.definition`,
+- `--- definition ---` (public interface; `--- code ---` for the legacy CLI
+  alias) — the verbatim source body via `nav.definition`,
   head-snippeted to `floor(SYMBOL_FANOUT_CODE_BUDGET_LINES / N)` lines per
   match (2000 split evenly across N matches). The header
   `<defPath>:<sl>-<el>` shows the FULL body range (not the snippet range) so
@@ -188,20 +190,16 @@ would inflate the match count past the cap. Only exact matches fan out.
 - `--- hover ---` — signature-first line + full hover markdown body via
   `nav.hover`, uncapped (docstrings are auxiliary; the 2000-line code budget
   is the single dominant knob).
-- `--- references ---` — all call sites via `nav.references`, trimmed to
+- `--- references ---` — semantic references/usages via `nav.references`, trimmed to
   `SYMBOL_FANOUT_REFS_CAP` (25) rows with a
   `(N of M, use code_references for all)` note.
 
-### `hover` is auto-dropped when `code` is present
+### Explicit hover requests are retained
 
-`code` is a superset of `hover` for the function/class/method case (which is
-what `code` retrieves): the signature lives in the body, and the doc comment
-is already prepended by `renderSnippetBlock`'s `findEnclosingDefWithDoc` path.
-So `info: ["code", "hover"]` is normalized to `info: ["code"]` before
-rendering — the `--- hover ---` section is omitted. The minor loss
-tsserver/ty's inferred type annotation in the hover (e.g.
-`: Promise<number>` on a bare `async function`) is acceptable; the agent can
-still call `code_hover` directly if it needs it.
+Definition source often duplicates hover information, but hover can contain
+inferred types that are absent from source. Therefore
+`include: ["definition", "hover"]` returns both sections rather than silently
+changing the request.
 
 ### Overloads and the cap
 
@@ -209,39 +207,37 @@ The cap (5) protects the common-name case (10 `__init__` methods, 15
 `clone` functions) while serving the overload case (2-3 sites) the fan-out
 was designed for. The tool cannot distinguish these, so over the cap the
 agent gets a row list + a "narrow with filters" note. Filters run BEFORE the
-cap check, so an agent narrows 10 → 3 with `filter_by_kind` /
-`filter_by_regex` / a qualified name and gets the fan-out.
+cap check, so an agent narrows 10 → 3 with `kinds`, `name_pattern`, or a
+qualified name and gets the fan-out.
 
 For Python/TypeScript (ty) the `name` column is the bare identifier, so two
-overloads have identical name columns and `filter_by_regex` CANNOT separate
+overloads have identical name columns and `name_pattern` CANNOT separate
 them — they fan out together (which is usually what the agent wants: every
-overload's body). For cpp (ccls) the `name` is the full signature
-(`void foo(int)` vs `void foo(double)`), so `filter_by_regex: "foo\\(int\\"` can
+overload's body). For C++ (ccls) the `name` is the full signature
+(`void foo(int)` vs `void foo(double)`), so `name_pattern: "foo\\(int\\"` can
 single out a specific overload.
 
-## `filter_by_kind` and `filter_by_regex`
+## `kinds` and `name_pattern`
 
 Two optional filters narrow the post-tier result set. Both run AFTER the
 tier filter (so they narrow the exact-match set rather than re-introducing
 fuzzy hits the tier dropped) and BEFORE dedupe + the fan-out/cap branch.
 
-- `filter_by_kind` — array of friendly LSP SymbolKind names (case-
+- `kinds` — array of friendly LSP SymbolKind names (case-
   insensitive): `function`, `method`, `class`, `interface`, `struct`,
   `constructor`, `property`, `field`, `variable`, `constant`, `enum`,
   `enummember`, `module`, `namespace`, `package`, `file`, `event`,
   `operator`, `typeparameter`. Reverse-mapped via `symbolKindFromName`
-  (`render.ts`). Unknown names silently match nothing — the agent gets an
-  empty result and notices, which is better than a hard error that blocks a
-  partially-correct filter.
-- `filter_by_regex` — a case-insensitive regexp tested against each match's
+  (`render.ts`). The public schema restricts values to this enum.
+- `name_pattern` — a case-insensitive regexp tested against each match's
   RENDERED name column. For cpp that's the full signature
   (`void std::vector::push_back(int)`), so it can distinguish overloads; for
   py/ts it's the bare identifier, so it cannot (see the overloads note
   above). An invalid regexp is a hard error (`isError: true`), matching
   `code_scan`'s pattern contract.
 
-The intended workflow is: first call without `info` (or with `info` but over
-the cap) → see the row list → add `filter_by_kind` / `filter_by_regex` to
+The intended workflow is: first call without `include` (or with `include` but
+over the cap) → see the row list → add `kinds` / `name_pattern` to
 narrow to ≤5 (ideally 1) exact matches → the fan-out fires automatically.
 
 

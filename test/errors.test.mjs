@@ -9,12 +9,11 @@
 //     error". Covers: unknown language, cannot read, server unavailable, no
 //     definition found, could not resolve body. (Multiple definitions is NOT
 //     a failure — it returns one block per site.)
-//   - nav.references/hover soft failures emit structured ERROR rows
-//     (unknown language, cannot read, server unavailable)
+//   - scalar nav tools throw on operational failures; clean empty results are
+//     still normal successful output.
 //
-// The batched-tool soft-failure path is exercised with a `clientOf` that
-// throws — so the language-server spawn fails and we see the ERROR row for
-// "server unavailable" without needing a real server.
+// Server-failure paths use a `clientOf` that throws, so no real server is
+// required.
 //
 // Run:  npm run test:unit -- test/errors.test.mjs
 
@@ -144,37 +143,43 @@ test("nav.definition hard failure: server unavailable → throws", async () => {
     }
 });
 
-test("nav.references soft failure: server unavailable → ERROR row", async () => {
+test("nav.references hard failure: server unavailable → throws", async () => {
     const { references } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "svc.ts");
         await writeFile(file, "const x = 1;\n", "utf8");
-        const out = await references(
-            { path: "svc.ts", line: 1, column: 1 },
-            dir,
-            throwingClientOf,
+        await assert.rejects(
+            references({ path: "svc.ts", line: 1, column: 1 }, dir, throwingClientOf),
+            /typescript: server unavailable/,
         );
-        assert.match(out, /^ERROR  svc\.ts:1:1  typescript: server unavailable/, out);
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }
 });
 
-test("nav.hover soft failure: server unavailable → ERROR row", async () => {
+test("nav.hover hard failure: server unavailable → throws", async () => {
     const { hover } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
         const file = resolve(dir, "svc.ts");
         await writeFile(file, "const x = 1;\n", "utf8");
-        const out = await hover(
-            { path: "svc.ts", line: 1, column: 1 },
-            dir,
-            throwingClientOf,
+        await assert.rejects(
+            hover({ path: "svc.ts", line: 1, column: 1 }, dir, throwingClientOf),
+            /typescript: server unavailable/,
         );
-        assert.match(out, /^ERROR  svc\.ts:1:1  typescript: server unavailable/, out);
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("position-based tools reject non-positive coordinates", async () => {
+    const { definition, hover, references, rename } = await load("./src/nav.ts");
+    for (const fn of [definition, hover, references, rename]) {
+        await assert.rejects(
+            fn({ path: "x.ts", line: 0, column: 1, newName: "y" }, ".", throwingClientOf),
+            /line \(0\) must be a positive integer/,
+        );
     }
 });
 

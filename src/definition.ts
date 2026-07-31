@@ -20,7 +20,12 @@
 import { readFile } from "node:fs/promises";
 import type { DocumentSymbol, Location } from "vscode-languageserver-protocol";
 import type { LspClient } from "./lsp-client";
-import { awaitReadyForQuery, ClientProvider, UnknownLanguageError } from "./nav-core";
+import {
+    awaitReadyForQuery,
+    ClientProvider,
+    UnknownLanguageError,
+    validatePosition,
+} from "./nav-core";
 import {
     findDocSymbolBySelStart,
     langForFile,
@@ -48,6 +53,7 @@ export async function definition(
     cwd: string,
     clientOf: ClientProvider,
 ): Promise<string> {
+    validatePosition(params.line, params.column);
     const lang = langForFile(params.path);
     if (lang === null) throw new UnknownLanguageError(params.path);
     const abs = toAbs(params.path, cwd);
@@ -175,7 +181,11 @@ export async function definition(
     if (declInInput && locs.length > 0) {
         const allEnclosingParent = locs.every((loc) => {
             const p = uriToPath(loc.uri);
-            return p === abs && loc.range?.start?.line != null && loc.range.start.line < declInInput!.sl;
+            return (
+                p === abs &&
+                loc.range?.start?.line != null &&
+                loc.range.start.line < declInInput!.sl
+            );
         });
         if (allEnclosingParent) {
             return renderSnippetBlock(

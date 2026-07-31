@@ -395,7 +395,7 @@ test("cpp bare 'push_back' exact = bare equality (std::vector::push_back yes, pu
     }
 });
 
-test("filter_by_kind narrows to the requested SymbolKind", async () => {
+test("kinds narrows to the requested SymbolKind", async () => {
     const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-kindfilter-"));
     try {
@@ -409,7 +409,7 @@ test("filter_by_kind narrows to the requested SymbolKind", async () => {
             sym("foo", 5, `${root}/mod.py`, 20, 6),
         ];
         const out = await symbol(
-            { query: "foo", language: "python", filter_by_kind: ["function"] },
+            { query: "foo", language: "python", kinds: ["function"] },
             dir,
             mockClientOf(dir, canned),
         );
@@ -443,7 +443,7 @@ test("filter_by_kind accepts case-insensitive kind names", async () => {
     }
 });
 
-test("filter_by_regex (icase) narrows by the rendered name column", async () => {
+test("name_pattern (icase) narrows by the rendered name column", async () => {
     const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-regexfilter-"));
     try {
@@ -470,7 +470,7 @@ test("filter_by_regex (icase) narrows by the rendered name column", async () => 
             sym("loader", 12, `${root}/c.py`, 1, 4),
         ];
         const out = await symbol(
-            { query: "loa", language: "python", filter_by_regex: "^loads$" },
+            { query: "loa", language: "python", name_pattern: "^loads$" },
             dir,
             mockClientOf(dir, canned2),
         );
@@ -488,25 +488,25 @@ test("filter_by_regex (icase) narrows by the rendered name column", async () => 
     }
 });
 
-test("filter_by_regex with an invalid regexp is a hard error (isError)", async () => {
+test("name_pattern with an invalid regexp is a hard error (isError)", async () => {
     const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-badregex-"));
     try {
         await assert.rejects(
             () =>
                 symbol(
-                    { query: "foo", language: "python", filter_by_regex: "(" },
+                    { query: "foo", language: "python", name_pattern: "(" },
                     dir,
                     mockClientOf(dir, []),
                 ),
-            /Invalid filter_by_regex/,
+            /Invalid name_pattern/,
         );
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }
 });
 
-test("info fan-out: single match with [code, hover] dedups hover (only --- code ---)", async () => {
+test("include fan-out: single match with [definition, hover] retains both requested sections", async () => {
     const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-dedup-"));
     try {
@@ -534,25 +534,23 @@ test("info fan-out: single match with [code, hover] dedups hover (only --- code 
             ],
         ]);
         const out = await symbol(
-            { query: "foo", language: "typescript", info: ["code", "hover"] },
+            { query: "foo", language: "typescript", include: ["definition", "hover"] },
             dir,
             mockClientOfRich(dir, { cannedSyms: canned, docSymsByPath, hoverTextByPath }),
         );
         // Header line for 1 match.
         assert.match(
             out,
-            /^# 1 match for "foo" — info: code\b/m,
+            /^# 1 match for "foo" — include: definition, hover\b/m,
             `missing/incorrect header:\n${out}`,
         );
         // One match block.
         assert.match(out, /== \[1\] \[typescript\] Function foo /);
-        // `--- code ---` section present.
-        assert.match(out, /--- code ---/, `missing code section:\n${out}`);
-        // `--- hover ---` MUST be absent (deduped because code is present).
-        assert.ok(
-            !/--- hover ---/.test(out),
-            `hover should be deduped when code is present:\n${out}`,
-        );
+        // `--- definition ---` section present.
+        assert.match(out, /--- definition ---/, `missing definition section:\n${out}`);
+        // Hover remains present because it can carry inferred type information
+        // that is not written in the source definition.
+        assert.match(out, /--- hover ---/, `missing requested hover section:\n${out}`);
         // The body appears in the code section.
         assert.match(out, /function foo\(x: number\): number/, `code body missing:\n${out}`);
     } finally {

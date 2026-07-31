@@ -9,9 +9,8 @@
  *   - `ALL_LANGS`          — the single source of truth for the `Lang` union's
  *                            members (one array, many call sites — adding a
  *                            language can't silently miss one).
- *   - `UnknownLanguageError` — top-level hard failure for the single-file tools
- *                            (outline/tree/definition/rename/scan/diagnostics);
- *                            references/hover emit it inline as an ERROR row.
+ *   - `UnknownLanguageError` — hard failure for single-file tools.
+ *   - `validatePosition` — runtime validation for CLI and direct nav callers.
  *   - `awaitReadyForQuery` — openDocument + (cpp) ccls indexing wait before a
  *                            per-file LSP query, deduplicated across tools.
  *
@@ -76,15 +75,26 @@ export async function awaitReadyForQuery(
 }
 
 // ---------------------------------------------------------------------------
+// Input validation
+// ---------------------------------------------------------------------------
+
+/** Validate an agent-facing 1-based symbol position. Tool schemas enforce this
+ * too; runtime validation protects the CLI and tests that call nav.* directly. */
+export function validatePosition(line: number, column: number): void {
+    if (!Number.isInteger(line) || line < 1) {
+        throw new Error(`line (${line}) must be a positive integer`);
+    }
+    if (!Number.isInteger(column) || column < 1) {
+        throw new Error(`column (${column}) must be a positive integer`);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
 
-/** The caller (index.ts) decides whether to return isError.
- * Unknown-language is a top-level hard failure for the single-file tools
- * (outline/tree/definition/rename/scan/diagnostics); references/hover emit
- * it inline as an ERROR row. We throw here so index.ts can mark
- * isError: true for the single-file case; references/hover check
- * langForFile inline and emit an ERROR row instead of letting it escape. */
+/** Unknown-language is a hard failure for single-file tools. The wrapper in
+ * index.ts converts it to a tool result with `isError: true`. */
 export class UnknownLanguageError extends Error {
     constructor(public readonly path: string) {
         super(`Unknown language for file: ${path}`);

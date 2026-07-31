@@ -63,29 +63,17 @@ and `scripts/nav-cli.mjs` call it.)
 single-symbol-per-call and also take scalar params (rename is destructive;
 outline/symbol are already list-shaped).
 
-## Error handling: a two-tier contract
+## Error handling
 
-The `code_*` tools give the agent a machine-readable success/failure bit
-instead of having to regex-sniff inline prose. This contract is implemented
-in `index.ts`'s `err()` (which catches hard throws and sets `isError: true`)
-and in the tool bodies in `nav.ts`:
+Every scalar/single-file tool throws on an operational or input failure;
+`index.ts` catches it and sets `isError: true`. This includes outline,
+definition, references, rename, hover, diagnostics, and the internal scan
+implementation. Clean empty results remain successful normal text.
 
-  - **HARD failures** (top-level, single-file tools: outline/definition/
-    rename/scan/diagnostics) THROW. `index.ts`'s `err()` catches and sets
-    `isError: true`. Covers: `Cannot read …`, `Unknown language for file: …`,
-    `Invalid regexp`, `No grammar for …`, `parse failed: …`, bad params,
-    server unavailable, no definition found, could not resolve body range,
-    pull-diagnostics request failed. (Multiple definitions is NOT a failure —
-    it's reported as data: one block per site.) The CLI lets these throw to a
-    top-level `FAILED:` message.
-  - **SOFT failures** (per-position in the batched tools: references/hover;
-    per-language in symbol) are emitted as a structured row
-    `ERROR  <path>:<line>:<col>  <reason>` (or `ERROR  [lang]  <reason>` for
-    symbol) that parses with the SAME column grammar as a data row. The
-    leading `ERROR` token distinguishes them from data; a consumer splits
-    rows on `\n` and checks the first token. The `### <path>:<line>:<col>`
-    position header is preserved (when batching) so the agent can attribute
-    the failure.
+`code_search_symbol` is the sole soft-error exception because one language can
+fail while another succeeds. It emits `ERROR  [lang]  <reason>` for that
+language and preserves results from the others. Fan-out catches per-match
+definition/hover/reference failures for the same reason.
 
 Clean empty results (`(no symbols found in …)`, `(no diagnostics for …)`,
 `(no identifiers found)`, `(no references found for …)`) are NOT failures —
@@ -104,11 +92,10 @@ MULTIPLE definition sites (overloads, header-vs-source, re-exports) — that's
 reported as one block per site (each with the same `<defPath>:<sl>-<el>`
 header + body, blank-line-separated) plus a trailing
 `# N definitions for <inPath>:<line>:<col>` count; a single-site result has
-no separator and no count. It THROWS on any failure (no definition found,
-cannot resolve body, etc.) — the contract is "source code or a hard error",
-no fallbacks. `hover` and `references` emit a structured `ERROR` row on
-recoverable failures (unknown language, cannot read, server unavailable); a
-clean empty result (no references / no hover info) is a parenthesized note.
+no separator and no count. It throws on any failure (no definition found,
+cannot resolve body, etc.)—the contract is “source code or a hard error.”
+`hover` and `references` also throw on operational failures; clean empty
+results remain parenthesized notes.
 
 
 # User configuration

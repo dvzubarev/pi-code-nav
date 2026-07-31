@@ -54,7 +54,7 @@ runOrSkip("code_outline on a .cpp file shows ccls detail signatures + body range
         // Function main
         assert.match(
             out,
-            /^Function main  :\d+-\d+:\d+$/m,
+            /^Function main  .*\.cpp:\d+:\d+  range=\d+-\d+$/m,
             `main header missing:\n${out}`,
         );
         assert.match(
@@ -65,7 +65,7 @@ runOrSkip("code_outline on a .cpp file shows ccls detail signatures + body range
         // Method method (nested under Widget, so indented)
         assert.match(
             out,
-            /^  Method method  :\d+-\d+:\d+$/m,
+            /^  Method method  .*\.cpp:\d+:\d+  range=\d+-\d+$/m,
             `method header missing:\n${out}`,
         );
         assert.match(
@@ -76,7 +76,7 @@ runOrSkip("code_outline on a .cpp file shows ccls detail signatures + body range
         // Struct Widget
         assert.match(
             out,
-            /^Struct Widget  :\d+-\d+:\d+$/m,
+            /^Struct Widget  .*\.cpp:\d+:\d+  range=\d+-\d+$/m,
             `Widget header missing:\n${out}`,
         );
         assert.match(

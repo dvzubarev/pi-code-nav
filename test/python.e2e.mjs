@@ -80,16 +80,16 @@ runOrSkip("code_outline on second.py shows classes/methods with signatures, rang
         // Multi-line blocks: header line with kind+name+range on the first line,
         // then sub-lines `  signature:` and `  doc:`.
         assert.ok(
-            lines.some((l) => /^Class Point  :\d+-\d+:\d+$/.test(l)),
+            lines.some((l) => /^Class Point  second\.py:\d+:\d+  range=\d+-\d+$/.test(l)),
             `Point header missing:\n${out}`,
         );
         assert.ok(
-            lines.some((l) => /^Class TempC  :\d+-\d+:\d+$/.test(l)),
+            lines.some((l) => /^Class TempC  second\.py:\d+:\d+  range=\d+-\d+$/.test(l)),
             `TempC header missing:\n${out}`,
         );
         // TempC's children (__init__, punintend) are indented two spaces.
         assert.ok(
-            lines.some((l) => /^  Method punintend  :\d+-\d+:\d+$/.test(l)),
+            lines.some((l) => /^  Method punintend  second\.py:\d+:\d+  range=\d+-\d+$/.test(l)),
             `punintend header missing:\n${out}`,
         );
         // Doc snippets: TempC has `"""documentation of tempC"""` and punintend
@@ -135,7 +135,7 @@ runOrSkip("code_outline paginates: limit bounds rows and emits a trailing contin
         const lines = out.split("\n");
         // Exactly 2 entry headers + their signature/doc sub-lines + 1 trailing message.
         // Count header lines (Kind name :range pattern) — not signature/doc sub-lines.
-        const headerRows = lines.filter((l) => /\b\w+  :\d+-\d+:\d+$/.test(l));
+        const headerRows = lines.filter((l) => /\b\w+  second\.py:\d+:\d+  range=\d+-\d+$/.test(l));
         assert.equal(headerRows.length, 2, `expected 2 entry headers, got:\n${out}`);
         // Trailing message names the remaining count and the next offset.
         assert.match(
@@ -165,7 +165,7 @@ runOrSkip("code_outline pagination continues at offset, re-emitting ancestor (co
         // First line is the re-emitted ancestor context row.
         assert.match(
             lines[0],
-            /^Class TempC  \(cont\.\)  :\d+-\d+:\d+$/,
+            /^Class TempC  \(cont\.\)  second\.py:\d+:\d+  range=\d+-\d+$/,
             `expected TempC (cont.) context row first, got:\n${out}`,
         );
         // The context row must NOT carry a signature or docs column.

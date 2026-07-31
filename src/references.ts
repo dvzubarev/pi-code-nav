@@ -1,19 +1,19 @@
 /**
- * code_references — all references to the symbol at (path, line, column).
- * Output is one reference location per line (`<path>:<line>:<col>`, grep-style)
- * plus a trailing `# N references` count. A clean empty result is a
- * parenthesized note, NOT an error.
- *
- * Recoverable failures (unknown language, cannot read, server unavailable)
- * are emitted as a structured `ERROR  <path>:<line>:<col>  <reason>` row —
- * the leading `ERROR` token distinguishes them from data rows. See
- * docs/code_references.md.
+ * code_references — all semantic references/usages of the symbol at
+ * (path, line, column), including its declaration. Output is one location per
+ * line (`<path>:<line>:<col>`) plus a trailing count. A clean empty result is
+ * not an error; operational failures throw.
  */
 
 import { readFile } from "node:fs/promises";
 import type { LspClient } from "./lsp-client";
-import { awaitReadyForQuery, ClientProvider } from "./nav-core";
-import { langForFile, renderErrorRow, renderLocation, toAbs } from "./render";
+import {
+    awaitReadyForQuery,
+    ClientProvider,
+    UnknownLanguageError,
+    validatePosition,
+} from "./nav-core";
+import { langForFile, renderLocation, toAbs } from "./render";
 
 export interface ReferencesParams {
     path: string;
@@ -26,31 +26,24 @@ export async function references(
     cwd: string,
     clientOf: ClientProvider,
 ): Promise<string> {
+    validatePosition(params.line, params.column);
     const lang = langForFile(params.path);
-    if (lang === null) {
-        return renderErrorRow(params.path, params.line, params.column, `unknown language for file`);
-    }
+    if (lang === null) throw new UnknownLanguageError(params.path);
     let client: LspClient;
     try {
         client = await clientOf(lang);
     } catch (e) {
-        return renderErrorRow(
-            params.path,
-            params.line,
-            params.column,
-            `${lang}: server unavailable: ${e}`,
-        );
+        throw new Error(`${lang}: server unavailable: ${e}`);
     }
     const abs = toAbs(params.path, cwd);
     let text: string;
     try {
         text = await readFile(abs, "utf8");
     } catch (e) {
-        return renderErrorRow(params.path, params.line, params.column, `cannot read ${abs}: ${e}`);
+        throw new Error(`Cannot read ${abs}: ${e}`);
     }
     // Wait for ccls to finish indexing this TU before querying references.
-    // On a cold cache, textDocument/references can miss cross-TU call sites
-    // until indexing finishes. No-op on a warm cache.
+    // On a cold cache, cross-TU usages can be missing until indexing finishes.
     await awaitReadyForQuery(lang, client, abs, text);
     const refs = await client.references(abs, params.line - 1, params.column - 1, text);
     if (refs.length === 0) {

@@ -15,9 +15,11 @@ constructors, interfaces, structs — with:
   `detail` field (preferred — ccls fills this with the full declaration) or
   from a parallel LSP hover (`hoverSignature`) when `detail` is absent (e.g.
   tsserver/ty).
-- **Body line range** (`:sl-el:col`), where `sl-el` is the symbol's full
-  extent (1-based) and `col` is the selectionRange (identifier) column. A
-  flat declaration shows `:10-10:5`; a function with body shows `:10-42:5`.
+- **Reusable identifier position** (`path:line:column`) from the symbol's
+  `selectionRange`.
+- **Body range** (`range=start-end`) from the symbol's full LSP range. It is
+  rendered separately because its start line may differ from the identifier
+  line (for example, when decorators are included).
 - **One-line doc snippet** (`doc:` sub-line), extracted as the first sentence
   of the docstring prose that follows the signature fence (PEP 257 / Javadoc
   convention — the summary line). Omitted when empty.
@@ -31,27 +33,26 @@ constructors, interfaces, structs — with:
 ### Output format (multi-line block per entry)
 
 ```
-<pad><Kind> <name>  :<sl>-<el>:<col>
+<pad><Kind> <name>  <path>:<line>:<column>  range=<start>-<end>
 <pad>  signature: <full signature>
 <pad>  doc: <first sentence>
 ```
 
-The header line (`Kind name :sl-el:col`) is a single, minimal line the agent
-can scan quickly. The sub-lines (`signature:`, `doc:`) are labelled so every
-line is self-describing — the agent can grep for `signature:` or `doc:` on a
-multi-line entry without understanding the overall format.
+The header keeps the reusable identifier position distinct from the body
+range. The sub-lines (`signature:`, `doc:`) are labelled so every line is
+self-describing.
 
 Example for a method at depth 1 (inside a class):
 
 ```
-  Method bar  :15-42:3
+  Method bar  example.py:15:3  range=14-42
     signature: def bar(self, x: int) -> None
     doc: Do the thing.
 ```
 
-`<sl>:<col>` is the identifier position (1-based), directly reusable as input
-to `code_hover`/`code_definition`/`code_references`. `<sl>-<el>` is the body
-range for a `read` or quick size estimate.
+`example.py:15:3` is the 1-based identifier position, directly reusable as
+input to `code_hover`/`code_definition`/`code_references`. `range=14-42` is
+the enclosing symbol range for `read` or a quick size estimate.
 
 ## Allowlist
 
@@ -72,8 +73,9 @@ When `offset` lands on a row that is nested inside a symbol on a previous page
 a `(cont.)` context row:
 
 ```
-Class Foo  (cont.)  :12-45:1
-  Method bar  def bar(self)  :18-30:3  docs: ...
+Class Foo  (cont.)  example.py:12:7  range=12-45
+  Method bar  example.py:18:7  range=18-30
+    signature: def bar(self)
 ```
 
 The context row carries no signature or docs (it was shown in full on the
@@ -112,14 +114,13 @@ zoom in. The two tools confused agents (two near-duplicate entry points) and
 Rejected before the split; the allowlist is simpler and more honest than a
 flag that changes output shape.
 
-### Body ranges
+### Identifier positions and body ranges
 
-The body range (`sl-el`) comes from the LSP `DocumentSymbol.range` (the
-symbol's full extent). For a declaration without a body this is a single-line
-range (e.g. `:10-10:5`); for a definition with a body it spans the whole
-function/class/method. The start line and column are the
-`selectionRange.start` (the identifier), so `<sl>:<col>` is directly
-feedable to `code_hover`/`code_definition`/`code_references`.
+The reusable `path:line:column` comes entirely from
+`DocumentSymbol.selectionRange.start`. The separate `range=start-end` comes
+from `DocumentSymbol.range` and spans the full symbol. Keeping them separate
+avoids combining a body-range start line with an identifier column when those
+positions differ.
 
 ### Doc snippet extraction
 

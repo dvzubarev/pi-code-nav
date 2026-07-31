@@ -207,7 +207,7 @@ function firstSentence(line: string): string {
 /** LSP SymbolKind (1-based) → short label. Index 0 is unused by the spec;
  * padded so names[kind] resolves correctly. Single source of truth for kind
  * naming AND the reverse lookup (`symbolKindFromName`, used by
- * code_search_symbol's `filter_by_kind`). */
+ * code_search_symbol's public `kinds` filter). */
 export const LSP_SYMBOL_KIND_NAMES: readonly string[] = [
     "",
     "File",
@@ -247,7 +247,7 @@ export function symbolKindName(kind: number | undefined): string {
 /**
  * Reverse of `symbolKindName`: a friendly kind name (case-insensitive) → the
  * LSP SymbolKind number. Returns `undefined` for an unknown name. Used by
- * `code_search_symbol`'s `filter_by_kind` parameter to map the agent's
+ * `code_search_symbol`'s public `kinds` parameter to map the agent's
  * kind strings (e.g. `"function"`, `"Method"`) back to LSP kind numbers so
  * they can be matched against `SymbolInformation.kind`.
  */

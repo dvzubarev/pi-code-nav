@@ -121,13 +121,13 @@ runOrSkip(
             // Multi-line blocks: header on line 1, then `  signature:` sub-line.
             assert.match(
                 out,
-                /^Class Service  :\d+-\d+:\d+$/m,
+                /^Class Service  .*\.ts:\d+:\d+  range=\d+-\d+$/m,
                 `Service header missing:\n${out}`,
             );
             // Its direct members are kept (indented).
             assert.match(
                 out,
-                /^  Method getId  :\d+-\d+:\d+$/m,
+                /^  Method getId  .*\.ts:\d+:\d+  range=\d+-\d+$/m,
                 `getId header missing:\n${out}`,
             );
             // NOISE (Constant, kind 14) is dropped by the outline allowlist.
@@ -137,7 +137,11 @@ runOrSkip(
             // dropped because tsserver emits them for object-literal keys too).
             assert.ok(!/Property id/.test(out), `id should be dropped (Property not kept):\n${out}`);
             // greet (Function) IS kept (it's a structural kind).
-            assert.match(out, /^Function greet  :\d+-\d+:\d+$/m, `greet header missing:\n${out}`);
+            assert.match(
+                out,
+                /^Function greet  .*\.ts:\d+:\d+  range=\d+-\d+$/m,
+                `greet header missing:\n${out}`,
+            );
         } finally {
             await ws.cleanup();
         }

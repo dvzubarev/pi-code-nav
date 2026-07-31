@@ -2,21 +2,23 @@
  * code-nav extension
  *
  * Provides seven LLM-callable tools backed by real LSP servers (ccls for C++,
- * ty/pyright for Python, bash-language-server for bash,
- * typescript-language-server for TypeScript & JavaScript) plus tree-sitter for
- * third-party symbol discovery. They split into two groups:
+ * ty/pyright for Python, bash-language-server for bash, and
+ * typescript-language-server for TypeScript/JavaScript). They split into three
+ * workflow groups:
  *
- *   ENTRY POINTS (produce a position):
+ *   DISCOVERY TOOLS (produce a position):
  *   code_outline        — paginated file structure (functions, classes, methods)
  *                         with signatures, body line ranges, and doc snippets
  *   code_search_symbol  — ranked workspace-wide symbol lookup by name
  *
- *   DETAIL TOOLS (consume path + 1-based line + column):
+ *   POSITION-BASED TOOLS (consume path + 1-based line + column):
  *   code_definition     — location + full source body of a symbol's definition
  *   code_references     — list of references for a symbol
  *   code_hover          — hover/documentation for a symbol
  *   code_rename         — rename a symbol, edits applied to disk
- *   code_diagnostics    — errors/warnings for a file (LSP pull model, on demand)
+ *
+ *   FILE-ANALYSIS TOOL:
+ *   code_diagnostics    — errors/warnings for a file (pull-first, push fallback)
  *
  * Servers are scoped by (ctx.cwd, language): one server per language per
  * workspace, spawned lazily on first tool call, shut down on session close.
@@ -148,21 +150,25 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_outline",
         label: "Code Outline",
         description:
-            "Retrieve the structure of a source file: functions, classes, methods, with signatures, body line ranges, and a one-line doc snippet per entry. Output row is `Class/Method/Function <name> <details> :sl-el:col`. It reports line range (sl-el) to use in read tool and you can reuse first line and column as an input to detail tools. Output is paginated (default 20 entries per page); use offset/limit to page further.",
-        promptSnippet: "List functions/classes/methods in a file with signatures + doc snippets",
+            "Show the structural outline of a source file: classes, functions, methods, constructors, interfaces, and structs. Each entry includes its signature, reusable 1-based identifier position (`path:line:column`), body range, and an optional one-line documentation summary. Results are paginated (default 20 entries per page); use offset/limit to continue.",
+        promptSnippet:
+            "Show a file's structural outline with signatures and documentation summaries",
         promptGuidelines: [
-            "Use code_outline when you need to get a quick grasp of a file code structure."
+            "Use code_outline to quickly understand a file's structure and obtain positions for symbol-based tools.",
         ],
         parameters: Type.Object({
             path: Type.String({ description: "File path (absolute or relative to cwd)" }),
             offset: Type.Optional(
-                Type.Number({
+                Type.Integer({
+                    minimum: 1,
                     description: "1-based start entry for pagination. Default 1.",
                 }),
             ),
             limit: Type.Optional(
-                Type.Number({
-                    description: "Max entries per page (default 20, hard cap 200). Bounds the per-row hover cost.",
+                Type.Integer({
+                    minimum: 1,
+                    maximum: 200,
+                    description: "Maximum entries per page (default 20, hard cap 200).",
                 }),
             ),
         }),
@@ -182,19 +188,22 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_definition",
         label: "Code Definition",
         description:
-            'Retrieve the source code of a function/class/method definition. Given a symbol position (path, line, column), resolves the definition and returns function/class/method source. Output format: a header line `<defPath>:<sl>-<el>` (1-based inclusive line range) followed by the raw source lines. A position may resolve to several definition sites (overloads, etc.): one block per site, separated by a blank line, with a trailing `# N definitions` count.',
-        promptSnippet: "Retrieve source code of a function/class/method.",
+            "Return the source code for the definition of the symbol at a 1-based file position. For functions, methods, and classes, the result includes the complete source body. Multiple definition sites are returned as separate blocks. Each block starts with `<defPath>:<startLine>-<endLine>` followed by raw source text.",
+        promptSnippet: "Return the source code for a symbol's definition",
         promptGuidelines: [
-            "Call code_definition after entrypoint to obtain a source code of class/method/function from a file (prefer over grep -n + read)."
+            "Use code_definition after a discovery tool to retrieve semantic source rather than locating it with grep and read.",
         ],
         parameters: Type.Object({
             path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-            line: Type.Number({ description: "1-based line number of the symbol" }),
-            column: Type.Number({ description: "1-based column number of the symbol" }),
+            line: Type.Integer({ minimum: 1, description: "1-based line number of the symbol" }),
+            column: Type.Integer({
+                minimum: 1,
+                description: "1-based column number of the symbol",
+            }),
             list_symbols: Type.Optional(
                 Type.Boolean({
                     description:
-                        'If true, append a symbol table for the returned body (default: false). The table lists identifiers with their position and syntactic role (type/call/member/import).',
+                        "If true, append a symbol table for the returned body (default: false). The table lists identifiers with their position and syntactic role (type/call/member/import).",
                 }),
             ),
         }),
@@ -218,23 +227,27 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_references",
         label: "Code References",
         description:
-            'Find all references to the symbol at the given position (path, line, column). Returns one reference location per line (`<path>:<line>:<col>`, grep-style) plus a trailing `# N references` count. An empty result (no references) is a parenthesized note, not an error.',
-        promptSnippet: "Find all call sites of a symbol.",
+            "Find all references and usages of the symbol at a 1-based file position, including its declaration. Returns one `path:line:column` location per line plus a trailing reference count. An empty result is not an error.",
+        promptSnippet: "Find all references and usages of a symbol",
         promptGuidelines: [
-            "Call code_references after entrypoint to find every call site of method/function (prefer over grep/rg)."
+            "Use code_references after a discovery tool to find semantic usages rather than text matches from grep or rg.",
         ],
         parameters: Type.Object({
             path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-            line: Type.Number({ description: "1-based line number of the symbol" }),
-            column: Type.Number({ description: "1-based column number of the symbol" }),
+            line: Type.Integer({ minimum: 1, description: "1-based line number of the symbol" }),
+            column: Type.Integer({
+                minimum: 1,
+                description: "1-based column number of the symbol",
+            }),
         }),
         async execute(_id, params, _signal, _onUpdate, ctx) {
-            // nav.references emits a structured ERROR row on recoverable failures
-            // (unknown language, cannot read, server unavailable); a clean empty
-            // result is a parenthesized note. Never throws.
-            return text_result(
-                await nav.references(params, ctx.cwd, (lang) => state.pool.client(lang)),
-            );
+            try {
+                return text_result(
+                    await nav.references(params, ctx.cwd, (lang) => state.pool.client(lang)),
+                );
+            } catch (e) {
+                return err(e instanceof Error ? e.message : String(e));
+            }
         },
     });
 
@@ -243,11 +256,10 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_search_symbol",
         label: "Code Symbol Search",
         description:
-            'Symbol search by name across the workspace AND third-party/stdlib trees. Given a `query` return a ranked list of matching symbols (`[lang] <Kind> <name>  <path>:<line>:<col>`). Pass optional `info` to ALSO fan out per exact match.',
-        promptSnippet:
-            "Find a symbol by name (bare or qualified) across the workspace AND third-party/stdlib.",
+            "Search workspace and relevant third-party/standard-library symbols by bare or qualified name. Python direct dependencies are added as roots for ty; ccls can find included third-party headers and their transitive includes. Returns ranked `[lang] <Kind> <name>  <path>:<line>:<column>` rows. Use `include` to also retrieve details for exact matches.",
+        promptSnippet: "Find workspace and indexed third-party symbols by bare or qualified name",
         promptGuidelines: [
-            "Use code_search_symbol for code navigation — find a location of symbol by name and (optionally) get its code/hover/references in one call via `info`."
+            "Use code_search_symbol as the main name-based navigation entry point; `include` can retrieve definitions, hover information, and references in the same call.",
         ],
         parameters: Type.Object({
             query: Type.String({
@@ -259,15 +271,15 @@ function registerTools(pi: ExtensionAPI, state: State): void {
                     description: "Optional: limit the search to one language.",
                 }),
             ),
-            info: Type.Optional(
+            include: Type.Optional(
                 Type.Array(
-                    StringEnum(["code", "hover", "references"] as const, {
+                    StringEnum(["definition", "hover", "references"] as const, {
                         description:
-                            'Optional: detail to fan out per exact match. `code` → verbatim source body; `hover` → signature + docstring; `references` → up to 25 call sites. `hover` is auto-dropped when `code` is present. Up to 5 exact matches are fanned out.',
+                            "Details to retrieve for each exact match: `definition` returns source, `hover` returns signature/type/docs, and `references` returns up to 25 usages. Up to 5 exact matches are expanded.",
                     }),
                 ),
             ),
-            filter_by_kind: Type.Optional(
+            kinds: Type.Optional(
                 Type.Array(
                     StringEnum(
                         [
@@ -293,15 +305,15 @@ function registerTools(pi: ExtensionAPI, state: State): void {
                         ] as const,
                         {
                             description:
-                                "Optional: keep only matches whose LSP SymbolKind matches one of these friendly names (case-insensitive). Unknown names silently match nothing.",
+                                "Keep only matches whose LSP symbol kind is one of these values.",
                         },
                     ),
                 ),
             ),
-            filter_by_regex: Type.Optional(
+            name_pattern: Type.Optional(
                 Type.String({
                     description:
-                        "Optional: a case-insensitive regexp tested against each match's rendered name column (for cpp the full signature, for py/ts the bare identifier).",
+                        "Optional case-insensitive regular expression tested against each rendered name (the full signature for C++, the bare identifier for Python/TypeScript).",
                 }),
             ),
         }),
@@ -326,15 +338,18 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_rename",
         label: "Code Rename",
         description:
-            "Rename the symbol at (path, line, column) to newName. Edits are applied directly to disk. Returns the list of files changed and edit count per file.",
-        promptSnippet: "Rename symbols across the workspace.",
+            "Rename the symbol at a 1-based file position across the workspace. The resulting edits are applied directly to disk. Returns each changed file and its edit count.",
+        promptSnippet: "Rename a symbol semantically across the workspace",
         promptGuidelines: [
-            "Use code_rename to rename symbol across the whole workspace (prefer over sed -i or multiple edit calls).",
+            "Use code_rename instead of sed or multiple text edits when renaming a symbol across the workspace.",
         ],
         parameters: Type.Object({
             path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-            line: Type.Number({ description: "1-based line number" }),
-            column: Type.Number({ description: "1-based column number" }),
+            line: Type.Integer({ minimum: 1, description: "1-based line number of the symbol" }),
+            column: Type.Integer({
+                minimum: 1,
+                description: "1-based column number of the symbol",
+            }),
             newName: Type.String({ description: "New name for the symbol" }),
         }),
         async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -353,47 +368,40 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_hover",
         label: "Code Hover / Docs",
         description:
-            'Retrieve hover/documentation for the symbol at the given position (path, line, column). Returns a signature-first line (`signature: <collapsed one-line signature>`) when one can be extracted, followed by the full hover markdown body (docstring, signature, type info).',
-        promptSnippet: "Get signature and doc string of a given symbol.",
+            "Show the signature, inferred type information, and documentation provided by the language server for the symbol at a 1-based file position. When available, a collapsed one-line `signature:` is followed by the full hover content.",
+        promptSnippet: "Show a symbol's signature, type information, and documentation",
         promptGuidelines: [
-            "Call code_hover after entrypoint to obtain signature and docstring of method/functon."
+            "Use code_hover after a discovery tool when you need a symbol's signature, inferred type, or documentation.",
         ],
         parameters: Type.Object({
             path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-            line: Type.Number({ description: "1-based line number of the symbol" }),
-            column: Type.Number({ description: "1-based column number of the symbol" }),
+            line: Type.Integer({ minimum: 1, description: "1-based line number of the symbol" }),
+            column: Type.Integer({
+                minimum: 1,
+                description: "1-based column number of the symbol",
+            }),
         }),
         async execute(_id, params, _signal, _onUpdate, ctx) {
-            // nav.hover emits a structured ERROR row on recoverable failures
-            // (unknown language, cannot read, server unavailable). Never throws.
-            return text_result(await nav.hover(params, ctx.cwd, (lang) => state.pool.client(lang)));
+            try {
+                return text_result(
+                    await nav.hover(params, ctx.cwd, (lang) => state.pool.client(lang)),
+                );
+            } catch (e) {
+                return err(e instanceof Error ? e.message : String(e));
+            }
         },
     });
 
     // 7. code_diagnostics
-    //
-    // Pure request/response: the tool opens the document on the server (didOpen
-    // is required for the server to analyze it) and then sends a single
-    // textDocument/diagnostic request (the LSP 3.17 pull model). The server
-    // returns the diagnostic set for that document synchronously. NO
-    // publishDiagnostics notification collection — that would be async (the
-    // server publishes whenever it finishes, and the client would have to wait
-    // on a notification) and the user-facing tool contract must be: agent calls
-    // the tool, waits, gets the result back. The pull model is exactly that.
-    //
-    // Capability advertisement is unreliable here: pyright implements
-    // textDocument/diagnostic but does NOT advertise diagnosticProvider, while
-    // bash-language-server rejects the method with a JSON-RPC error. So we do
-    // NOT gate on supportsPullDiagnostics() — we send the request and let the
-    // server's actual response (or error) decide. A server that can't answer
-    // returns a method-not-found error, which we surface honestly. This is
-    // more accurate than trusting advertised capabilities.
+    // Pull diagnostics are attempted first. Servers that reject the pull model
+    // fall back to a bounded, event-driven wait for publishDiagnostics. See
+    // docs/code_diagnostics.md for the cross-server behavior.
     pi.registerTool({
         name: "code_diagnostics",
         label: "Code Diagnostics",
         description:
-            "Report diagnostics (errors, warnings, hints) for a source file, fetched on demand from the language server. Returns the list of diagnostics with severity, source, and message; an empty result means the server reported no problems.",
-        promptSnippet: "Report diagnostic information for a given file.",
+            "Report current language-server diagnostics for a source file, including severity, source, message, and reusable 1-based positions. An empty result means the server reported no problems.",
+        promptSnippet: "Report current language-server diagnostics for a file",
         promptGuidelines: [
             "Use code_diagnostics after editing a file to check it compiles/type-checks, or to find the exact location of a problem; an empty result means the server found no issues.",
         ],
@@ -529,11 +537,9 @@ export default function codeNavExtension(pi: ExtensionAPI) {
         }
     });
 
-    // Inject a grouped "entry points vs detail tools" overview + old-vs-new
-    // pattern table into the system prompt, but ONLY while code-nav tools are
-    // active. promptGuidelines (per-tool) are flat with no grouping, so they
-    // cannot express the two-group framing or the "prefer code_* over grep/read"
-    // reframing that steers the agent away from its default grep/read reflex.
+    // Inject a grouped discovery / position / file-analysis overview into the
+    // system prompt, but ONLY while code-nav tools are active. Per-tool
+    // promptGuidelines are flat and cannot express this workflow.
     // This handler is always registered; it no-ops when /code-nav hasn't run.
     pi.on("before_agent_start", async (event) => {
         if (!state?.pool.enabled()) return {};
@@ -544,47 +550,33 @@ export default function codeNavExtension(pi: ExtensionAPI) {
     });
 }
 
-/**
- * The grouped tool overview injected into the system prompt while code-nav is
- * active. Two purposes the flat per-tool promptGuidelines cannot serve:
- *   1. Group the seven tools into ENTRY POINTS (produce positions) vs DETAIL
- *      TOOLS (consume positions), making the round-trip obvious.
- *   2. Reframe common grep/read/sed reflexes as code_* calls.
- *   3. Show concrete code_search_symbol filtering examples (narrowing bare
- *      names with many matches / overloads down to one fanned-out result).
- * Kept tight — this is appended to every system prompt while enabled.
- */
-const CODE_NAV_PROMPT_BLOCK = `## code-nav tools (LSP-backed code navigation)
+/** Grouped workflow injected only while code-nav is enabled. */
+const CODE_NAV_PROMPT_BLOCK = `## code-nav tools (semantic code navigation)
 
-The code_* tools are backed by real language servers (ccls/ty/pyright). They index
-the workspace, so prefer them over grep/read/sed for code tasks.
+Prefer code_* tools over grep/read/sed when the task is semantic. All input and
+output positions are 1-based, and every printed path:line:column can be passed
+directly to a position-based tool.
 
-Two groups:
-1. ENTRYPOINTS: code_outline/code_search_symbol and code_definition(...,list_symbols=true): produce a list of symbols with position.
-2. DETAIL TOOLS: all other code_*: consume path + position (line and column).
-   Positions are 1-based throughout;
-   an entry point's printed line:col feeds straight into a detail tool's line/column params.
+DISCOVERY TOOLS (produce positions):
+- code_search_symbol — search workspace and indexed third-party symbols by bare
+  or qualified name; use include to retrieve details in the same call
+- code_outline — show a file's classes/functions/methods with signatures,
+  documentation summaries, identifier positions, and body ranges
 
-### code_search_symbol examples
+POSITION-BASED TOOLS (consume path + line + column):
+- code_definition — source code for a symbol's definition
+- code_hover — signature, inferred type, and documentation
+- code_references — semantic references/usages, including the declaration
+- code_rename — semantic workspace rename, applied directly to disk
 
-Bare name → bodies + call sites in one call (workspace first, then third-party):
-  code_search_symbol(query="parse", info=["code","references"])
+FILE-ANALYSIS TOOL:
+- code_diagnostics — current errors, warnings, and hints for a source file
 
-Qualified name pins a specific module/namespace:
-  code_search_symbol(query="vector::push_back", info=["code","references"])
-  code_search_symbol(query="cbor2.loads", info=["code"])
-  code_search_symbol(query="json.loads", info=["hover"])
+code_search_symbol examples:
+  code_search_symbol(query="parse", include=["definition","references"])
+  code_search_symbol(query="cbor2.loads", include=["definition","hover"])
+  code_search_symbol(query="vector::push_back", kinds=["method"],
+                     name_pattern="int", include=["definition"])
 
-When a query matches more than 5 sites the fan-out cap kicks in:
-you get a row list + a "narrow with filters" note.
-Re-call with filters to get the fan-out.
-When the filters leave a single match AND \`info\` is set, the detail is returned automatically (no third call).
-
-  # many cpp matches across overloads + containers — no fan-out (over cap):
-  code_search_symbol(query="push_back")
-  # narrow to methods only:
-  code_search_symbol(query="push_back", filter_by_kind=["method"], info=["code"])
-  # or by a regexp on the rendered name (filter overload by argument type):
-  code_search_symbol(query="std::to_string", filter_by_regex="long", info=["code"])
-  # or pin one method on a specific class (kind + regexp together):
-  code_search_symbol(query="std::hash", filter_by_regex="string_view", filter_by_kind=["class"], info=["code"])`;
+At most 5 exact search matches are expanded. If more remain, narrow them with
+a qualified name, kinds, or name_pattern.`;

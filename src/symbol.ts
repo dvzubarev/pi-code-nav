@@ -3,8 +3,8 @@
  * third-party/stdlib trees. The omni entry point for code navigation.
  *
  * Given a `query` (bare or qualified), returns a ranked list of matching
- * symbols. With `info` non-empty, fans out per exact match (≤ cap) appending
- * verbatim source body / hover / references sections. See
+ * symbols. With public `include` (or legacy CLI `info`) non-empty, fans out per
+ * exact match (≤ cap) with definition / hover / references sections. See
  * docs/code_search_symbol.md.
  */
 
@@ -22,20 +22,15 @@ import { renderSymbolInfo, resolveSymbolSelStart, symbolKindFromName, uriToPath 
 export interface SymbolParams {
     query: string;
     language?: string;
-    /** Optional detail to fan out on each exact match. `code` → the verbatim
-     * source body (via code_definition, head-snippeted against a shared line
-     * budget); `hover` → signature + docstring; `references` → up to 25 call
-     * sites. `hover` is auto-dropped when `code` is present (code is a
-     * superset). See docs/code_search_symbol.md. */
+    /** Public agent interface: details to retrieve for each exact match. */
+    include?: ("definition" | "hover" | "references")[];
+    /** Public agent interface: LSP symbol kinds to retain. */
+    kinds?: string[];
+    /** Public agent interface: case-insensitive regexp over rendered names. */
+    name_pattern?: string;
+    /** Legacy/internal CLI aliases retained for compatibility. */
     info?: ("code" | "hover" | "references")[];
-    /** Optional filter: keep only matches whose LSP SymbolKind matches one of
-     * these friendly names (case-insensitive, e.g. `"function"`, `"method"`,
-     * `"class"`). Unknown names silently match nothing. */
     filter_by_kind?: string[];
-    /** Optional filter: a case-insensitive regexp tested against each match's
-     * rendered name column (for cpp the full signature, for py/ts the bare
-     * identifier). Applied AFTER the existing tier filter, so it narrows the
-     * exact-match set used for fan-out. */
     filter_by_regex?: string;
 }
 
@@ -428,18 +423,17 @@ export async function symbol(
             `Unknown language "${params.language}" — must be one of: ${ALL_LANGS.join(", ")}`,
         );
     }
-    // Validate + compile filter_by_regex up front (hard error on a bad regexp,
-    // matching code_tree/code_scan's pattern contract) so the agent learns the
-    // syntax fast rather than getting a silent no-op filter mid-pipeline.
+    // Validate + compile the public name_pattern (or legacy CLI alias).
+    const usesPublicPattern = params.name_pattern !== undefined;
+    const namePattern = params.name_pattern ?? params.filter_by_regex;
     let regexFilter: RegExp | undefined;
-    if (params.filter_by_regex !== undefined && params.filter_by_regex !== "") {
+    if (namePattern !== undefined && namePattern !== "") {
         try {
-            regexFilter = new RegExp(params.filter_by_regex, "i");
+            regexFilter = new RegExp(namePattern, "i");
         } catch (e) {
+            const label = usesPublicPattern ? "name_pattern" : "filter_by_regex";
             throw new Error(
-                `Invalid filter_by_regex /${params.filter_by_regex}/: ${
-                    e instanceof Error ? e.message : e
-                }`,
+                `Invalid ${label} /${namePattern}/: ${e instanceof Error ? e.message : e}`,
             );
         }
     }
@@ -448,22 +442,21 @@ export async function symbol(
     // gets an empty result and notices, which is better than a hard error that
     // blocks a partially-correct filter.
     let kindFilter: Set<number> | undefined;
-    if (params.filter_by_kind && params.filter_by_kind.length > 0) {
+    const requestedKinds = params.kinds ?? params.filter_by_kind;
+    if (requestedKinds && requestedKinds.length > 0) {
         kindFilter = new Set<number>();
-        for (const k of params.filter_by_kind) {
+        for (const k of requestedKinds) {
             const n = symbolKindFromName(k);
             if (n !== undefined) kindFilter.add(n);
         }
     }
-    // Normalize `info`: drop `hover` when `code` is present (code is a
-    // superset — the body carries the signature; the doc comment is already
-    // prepended by renderSnippetBlock's findEnclosingDefWithDoc path). This
-    // dedup happens once, here, so the fan-out renderer can trust `info`.
-    let info: ("code" | "hover" | "references")[] = [];
-    if (params.info) {
-        const raw = params.info.filter((i) => i === "code" || i === "hover" || i === "references");
-        info = raw.includes("code") ? raw.filter((i) => i !== "hover") : raw;
-    }
+    // Keep every explicitly requested section. Hover often duplicates source,
+    // but it can carry inferred types that are absent from the definition.
+    const publicInclude = params.include;
+    const requestedInfo: ("code" | "hover" | "references")[] = publicInclude
+        ? publicInclude.map((item) => (item === "definition" ? "code" : item))
+        : (params.info ?? []);
+    const info = Array.from(new Set(requestedInfo));
     const wantInfo = info.length > 0;
     const langs: Lang[] = params.language
         ? [params.language as Lang]
@@ -805,13 +798,23 @@ export async function symbol(
             return `(no symbols matching "${params.query}")`;
         }
         if (fanoutMatches.length <= SYMBOL_FANOUT_MAX_MATCHES) {
-            return await renderSymbolFanOut(fanoutMatches, info, params.query, cwd, clientOf);
+            return await renderSymbolFanOut(
+                fanoutMatches,
+                info,
+                params.query,
+                cwd,
+                clientOf,
+                publicInclude,
+            );
         }
         const lines = fanoutMatches
             .slice(0, SYMBOL_MAX_ROWS_PER_LANG)
             .map((m) => `[${m.lang}] ${renderSymbolInfo(m.sym, m.selStart)}`);
         const shown = lines.length;
-        let note = `\n# ${fanoutMatches.length} exact matches — narrow with filter_by_kind / filter_by_regex / a qualified name`;
+        const filterNames = publicInclude
+            ? "kinds / name_pattern"
+            : "filter_by_kind / filter_by_regex";
+        let note = `\n# ${fanoutMatches.length} exact matches — narrow with ${filterNames} / a qualified name`;
         if (fanoutMatches.length > shown) note += ` (showing first ${shown})`;
         return lines.join("\n") + note;
     }
@@ -837,10 +840,8 @@ export async function symbol(
 //     matches `code_definition`'s direct output).
 //   - `references`: trimmed to SYMBOL_FANOUT_REFS_CAP (25) rows with a
 //     `(N of M, use code_references for all)` note.
-// `hover` is uncapped (docstrings are auxiliary; the 2000-line code budget is
-// the single dominant knob). `hover` is auto-dropped by `symbol()` when
-// `code` is present (code is a superset — the body carries the signature,
-// and the doc comment is already prepended by renderSnippetBlock).
+// `hover` is uncapped and retained whenever explicitly requested because it
+// may include inferred types absent from source.
 // ---------------------------------------------------------------------------
 
 /** One match in a fan-out: the language it was found under, the LSP
@@ -855,7 +856,9 @@ interface FanOutMatch {
 /** Render the full fan-out: a `# N match(es) for ...` header, then one
  * `== [i] [lang] <row> ==` block per match, each containing the requested
  * `--- section ---` blocks in order: code, then hover (if not deduped), then
- * references. Blocks are blank-line-separated.
+ * references. Explicitly requested hover information is retained even when
+ * code is also requested because hover may contain inferred types. Blocks are
+ * blank-line-separated.
  *
  * The `code` section is SKIPPED for symbol kinds whose definition IS the
  * declaration — there is no multi-line body to show, and `code_definition`
@@ -870,6 +873,7 @@ async function renderSymbolFanOut(
     query: string,
     cwd: string,
     clientOf: ClientProvider,
+    publicInclude?: ("definition" | "hover" | "references")[],
 ): Promise<string> {
     const n = matches.length;
     const wantCode = info.includes("code");
@@ -878,7 +882,11 @@ async function renderSymbolFanOut(
     // Even split of the code budget across matches; wantCode===false → unused.
     const codeBudget = wantCode ? Math.floor(SYMBOL_FANOUT_CODE_BUDGET_LINES / Math.max(1, n)) : 0;
     const blocks: string[] = [];
-    blocks.push(`# ${n} match${n === 1 ? "" : "es"} for "${query}" — info: ${info.join(", ")}`);
+    const detailLabel = publicInclude ? "include" : "info";
+    const detailNames = publicInclude ?? info;
+    blocks.push(
+        `# ${n} match${n === 1 ? "" : "es"} for "${query}" — ${detailLabel}: ${detailNames.join(", ")}`,
+    );
     for (let i = 0; i < n; i++) {
         const { lang, sym, selStart } = matches[i];
         const row = `[${lang}] ${renderSymbolInfo(sym, selStart)}`;
@@ -898,12 +906,14 @@ async function renderSymbolFanOut(
                 // definition — e.g. "using my_alias = int" or
                 // "typedef int my_typedef". Show it inline instead of
                 // running code_definition (which would return the same line).
-                matchBlocks.push(`--- code ---\n${sym.name}`);
+                const heading = publicInclude ? "definition" : "code";
+                matchBlocks.push(`--- ${heading} ---\n${sym.name}`);
             } else {
                 const section = start
                     ? await renderFanOutCodeSection(path, line1, col1, codeBudget, cwd, clientOf)
                     : `(no position to resolve definition)`;
-                matchBlocks.push(`--- code ---\n${section}`);
+                const heading = publicInclude ? "definition" : "code";
+                matchBlocks.push(`--- ${heading} ---\n${section}`);
             }
         }
         if (wantHover) {
@@ -934,12 +944,14 @@ function isDeclarationOnlyKind(kind: number): boolean {
     // ccls extended kind: 252 = using-alias / typedef.
     if (kind === 252) return true;
     // Standard LSP SymbolKinds that are declaration-only.
-    return kind === 10  // Enum
-        || kind === 26  // TypeParameter
-        || kind === 2   // Module
-        || kind === 3   // Namespace
-        || kind === 4   // Package
-        || kind === 1;  // File
+    return (
+        kind === 10 || // Enum
+        kind === 26 || // TypeParameter
+        kind === 2 || // Module
+        kind === 3 || // Namespace
+        kind === 4 || // Package
+        kind === 1
+    ); // File
 }
 
 /** `--- code ---` section: the verbatim source body from `nav.definition`,
@@ -990,10 +1002,14 @@ async function renderFanOutHoverSection(
     cwd: string,
     clientOf: ClientProvider,
 ): Promise<string> {
-    return await hover({ path, line, column }, cwd, clientOf);
+    try {
+        return await hover({ path, line, column }, cwd, clientOf);
+    } catch (e) {
+        return `ERROR: ${e instanceof Error ? e.message : String(e)}`;
+    }
 }
 
-/** `--- references ---` section: all call sites from `nav.references`, trimmed
+/** `--- references ---` section: semantic usages from `nav.references`, trimmed
  * to SYMBOL_FANOUT_REFS_CAP (25) rows with a `(N of M, use code_references
  * for all)` note. Reuses `nav.references` verbatim — the empty/error contracts
  * (`(no references found for ...)`, `ERROR  ...`) pass straight through. */
@@ -1004,7 +1020,12 @@ async function renderFanOutRefsSection(
     cwd: string,
     clientOf: ClientProvider,
 ): Promise<string> {
-    const out = await references({ path, line, column }, cwd, clientOf);
+    let out: string;
+    try {
+        out = await references({ path, line, column }, cwd, clientOf);
+    } catch (e) {
+        return `ERROR: ${e instanceof Error ? e.message : String(e)}`;
+    }
     // Pass through empty/error results unchanged.
     if (out.startsWith("ERROR") || out.startsWith("(")) return out;
     const lines = out.split("\n");

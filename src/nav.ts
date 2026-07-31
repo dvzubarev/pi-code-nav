@@ -6,8 +6,8 @@
  * single entry point preserves the old `./nav` surface (now `./src/nav`) so
  * callers don't need to know about the per-tool file split.
  *
- * The nine tools live in their own files (one per tool), sharing
- * `nav-core.ts` (ClientProvider, ALL_LANGS, UnknownLanguageError,
+ * Eight implementations live in their own files (seven registered agent tools
+ * plus the internal scan implementation), sharing `nav-core.ts` (ClientProvider, ALL_LANGS, UnknownLanguageError,
  * awaitReadyForQuery) and `detect.ts` (project language detection):
  *   outline.ts   definition.ts   references.ts   symbol.ts
  *   rename.ts    hover.ts  scan.ts         diagnostics.ts
