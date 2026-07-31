@@ -38,6 +38,30 @@ test("hoverSignature returns empty for empty input", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// hoverBodyWithoutSignature
+// ---------------------------------------------------------------------------
+
+test("hoverBodyWithoutSignature removes an exact bare signature", async () => {
+    const { hoverBodyWithoutSignature } = await loadRender();
+    const sig = "void diskann::build_cagra_index(T *vecs, size_t num_vecs)";
+    assert.equal(hoverBodyWithoutSignature(sig, sig), "");
+});
+
+test("hoverBodyWithoutSignature removes a bare signature but keeps docs", async () => {
+    const { hoverBodyWithoutSignature } = await loadRender();
+    assert.equal(
+        hoverBodyWithoutSignature("bool foo()\n\nChecks foo.", "bool foo()"),
+        "Checks foo.",
+    );
+});
+
+test("hoverBodyWithoutSignature removes a fenced signature and separator", async () => {
+    const { hoverBodyWithoutSignature } = await loadRender();
+    const body = "```python\ndef foo(\n    x: int\n) -> bool\n```\n---\n\nChecks foo.";
+    assert.equal(hoverBodyWithoutSignature(body, "def foo( x: int ) -> bool"), "Checks foo.");
+});
+
+// ---------------------------------------------------------------------------
 // hoverDocSnippet
 // ---------------------------------------------------------------------------
 
@@ -58,10 +82,7 @@ test("hoverText puts MarkedStrings before plain strings (ccls comment+sig)", asy
     };
     const result = hoverText(hover);
     // Signature must come first, comment after.
-    assert.equal(
-        result,
-        "virtual bool StorageBackend::is_s3() const = 0\n\ncheck here.",
-    );
+    assert.equal(result, "virtual bool StorageBackend::is_s3() const = 0\n\ncheck here.");
 });
 
 test("hoverText handles single MarkedString in array", async () => {
@@ -99,13 +120,27 @@ test("hoverDocSnippet returns empty when no prose after fence", async () => {
     assert.equal(hoverDocSnippet("```cpp\nbool foo()\n```"), "");
 });
 
-// When ccls returns a bare signature with no fence and no docstring,
-// hoverDocSnippet returns the signature as "doc". The dedup happens in
-// renderRow (outline.ts) by comparing doc prefix with signature.
-test("hoverDocSnippet returns bare C++ signature as-is (dedup is caller's job)", async () => {
+// Without a canonical signature the no-fence form remains ambiguous. Outline
+// supplies its selected signature so the helper can distinguish it from docs.
+test("hoverDocSnippet returns bare C++ signature without a canonical signature", async () => {
     const { hoverDocSnippet } = await loadRender();
     const hover = "inline bool file_exists(const std::string &name)";
     assert.equal(hoverDocSnippet(hover), "inline bool file_exists(const std::string &name)");
+});
+
+test("hoverDocSnippet drops a bare signature when a canonical signature is supplied", async () => {
+    const { hoverDocSnippet } = await loadRender();
+    const sig = "uint32_t diskann::optimize_beamwidth(std::unique_ptr<Index<T>> &index)";
+    assert.equal(hoverDocSnippet(sig, 100, sig), "");
+});
+
+test("hoverDocSnippet skips a bare signature and retains the following comment", async () => {
+    const { hoverDocSnippet } = await loadRender();
+    const sig = "inline bool file_exists(const std::string &name)";
+    assert.equal(
+        hoverDocSnippet(`${sig}\n\nCheck if the file exists.`, 100, sig),
+        "Check if the file exists.",
+    );
 });
 
 test("hoverDocSnippet extracts actual docstring prose (no fence)", async () => {
@@ -115,6 +150,7 @@ test("hoverDocSnippet extracts actual docstring prose (no fence)", async () => {
 
 test("hoverDocSnippet extracts prose after fence even when fence has signature", async () => {
     const { hoverDocSnippet } = await loadRender();
-    const hover = "```cpp\ninline bool file_exists(const std::string &name)\n```\n\nCheck if the file exists on disk.";
+    const hover =
+        "```cpp\ninline bool file_exists(const std::string &name)\n```\n\nCheck if the file exists on disk.";
     assert.equal(hoverDocSnippet(hover), "Check if the file exists on disk.");
 });

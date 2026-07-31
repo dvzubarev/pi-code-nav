@@ -368,7 +368,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_hover",
         label: "Code Hover / Docs",
         description:
-            "Show the signature, inferred type information, and documentation provided by the language server for the symbol at a 1-based file position. When available, a collapsed one-line `signature:` is followed by the full hover content.",
+            "Show the signature, inferred type information, and documentation provided by the language server for the symbol at a 1-based file position. When available, a collapsed one-line `signature:` is followed by the remaining non-duplicate hover content.",
         promptSnippet: "Show a symbol's signature, type information, and documentation",
         promptGuidelines: [
             "Use code_hover after a discovery tool when you need a symbol's signature, inferred type, or documentation.",

@@ -187,9 +187,10 @@ would inflate the match count past the cap. Only exact matches fan out.
   body — matches `code_definition`'s direct output). Per-match hard failures
   (no definition found, cannot resolve body) are caught and reported inline as
   `ERROR: ...` so one bad match doesn't abort the whole fan-out.
-- `--- hover ---` — signature-first line + full hover markdown body via
-  `nav.hover`, uncapped (docstrings are auxiliary; the 2000-line code budget
-  is the single dominant knob).
+- `--- hover ---` — signature-first line + the remaining hover content via
+  `nav.hover`; the promoted bare line or fenced signature block is removed so
+  it is not duplicated. Output is uncapped (docstrings are auxiliary; the
+  2000-line code budget is the single dominant knob).
 - `--- references ---` — semantic references/usages via `nav.references`, trimmed to
   `SYMBOL_FANOUT_REFS_CAP` (25) rows with a
   `(N of M, use code_references for all)` note.

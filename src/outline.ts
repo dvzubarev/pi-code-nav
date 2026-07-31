@@ -212,9 +212,6 @@ function renderRow(
     const position = sel ? `${path}:${sel.line + 1}:${sel.character + 1}` : path;
     const range = sl != null && el != null ? `  range=${sl + 1}-${el + 1}` : "";
     const header = `${pad}${kindName} ${sym.name}  ${position}${range}`;
-    // If doc starts with the signature, it's a duplicate — drop it.
-    // Happens when ccls returns bare signature with no docstring.
-    if (docs && sig && docs.startsWith(sig)) docs = undefined;
     const subLines: string[] = [];
     if (sig) subLines.push(`${sub}signature: ${sig}`);
     if (docs) subLines.push(`${sub}doc: ${docs}`);
@@ -355,12 +352,8 @@ export async function outline(
         const renderedPage = pageRows.map((r, i) => {
             const body = hoverText(hovers[i]);
             const detail = (r.sym as unknown as { detail?: string | null }).detail;
-            return renderRow(
-                r,
-                params.path,
-                signatureFor(body, detail) || undefined,
-                hoverDocSnippet(body) || undefined,
-            );
+            const sig = signatureFor(body, detail) || undefined;
+            return renderRow(r, params.path, sig, hoverDocSnippet(body, 100, sig) || undefined);
         });
         lines.push(...renderedContext, ...renderedPage);
         // Trailing pagination message — mirrors pi `read`'s idiom:
@@ -412,7 +405,7 @@ export async function outline(
             const body = hoverText(hovers[i]);
             const detail = (s as { detail?: string }).detail;
             const sig = detail || hoverSignature(body) || "";
-            const docs = hoverDocSnippet(body);
+            const docs = hoverDocSnippet(body, 100, sig);
             const header = `${symbolKindName(s.kind)} ${s.name}  ${position}${range}`;
             const subLines: string[] = [];
             if (sig) subLines.push(`  signature: ${sig}`);

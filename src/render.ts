@@ -127,6 +127,43 @@ export function hoverSignature(hoverText: string): string {
     return buf.join(" ").replace(/\s+/g, " ").trim();
 }
 
+/** Compare signature-shaped text while ignoring line wrapping and whitespace. */
+function sameSignatureText(a: string, b: string): boolean {
+    return a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Remove a leading signature from a hover body after it has been promoted to
+ * the labelled `signature:` line. Handles both a bare first line (ccls) and a
+ * fenced first code block (ty/tsserver). The rest of the hover—documentation,
+ * inferred-type notes, and additional blocks—is preserved.
+ */
+export function hoverBodyWithoutSignature(body: string, signature: string): string {
+    if (!signature) return body;
+    const lines = body.split(/\r?\n/);
+    const first = lines.findIndex((line) => line.trim().length > 0);
+    if (first < 0) return body;
+
+    let remainderStart: number;
+    if (/^```/.test(lines[first].trim())) {
+        const closeOffset = lines.slice(first + 1).findIndex((line) => /^```/.test(line.trim()));
+        if (closeOffset < 0) return body;
+        const close = first + 1 + closeOffset;
+        const fencedSignature = hoverSignature(lines.slice(first, close + 1).join("\n"));
+        if (!sameSignatureText(fencedSignature, signature)) return body;
+        remainderStart = close + 1;
+    } else {
+        if (!sameSignatureText(lines[first], signature)) return body;
+        remainderStart = first + 1;
+    }
+
+    let remainder = lines.slice(remainderStart).join("\n").trim();
+    // Language servers commonly put a markdown rule between the signature
+    // block and docs. It is only a separator, so do not leave it orphaned.
+    remainder = remainder.replace(/^([-*_])\1{2,}\s*(?:\r?\n|$)/, "").trim();
+    return remainder;
+}
+
 /**
  * Extract a one-line doc snippet from a hover body — the first sentence of
  * the prose that FOLLOWS the signature fence. Mirrors the Emacs / PEP 257 /
@@ -135,16 +172,14 @@ export function hoverSignature(hoverText: string): string {
  *
  * When the hover HAS a fenced code block (like ty/tsserver), `hoverSignature`
  * consumes the fenced block, and this helper takes the first non-blank prose
- * line after that fence closes. When there is NO fence (ccls — hover body is
- * the raw docstring with no signature block), the first non-blank line IS the
- * doc; no line is skipped. The signature now comes from the server's `detail`
- * field (preferred), not from the hover body, so skipping the first line would
- * drop the actual doc content.
+ * line after that fence closes. With no fence, the first non-blank line is the
+ * doc unless an optional canonical `signature` matches it; a matching line is
+ * skipped and a following real comment can become the summary.
  *
  * Cut at the first sentence boundary (`. ` / `! ` / `? `) and length-capped.
  * Returns "" when there's no prose after the fence (or no prose at all).
  */
-export function hoverDocSnippet(hoverText: string, maxLen = 100): string {
+export function hoverDocSnippet(hoverText: string, maxLen = 100, signature?: string): string {
     const lines = hoverText.split(/\r?\n/);
     let inFence = false;
     let fenceSeen = false;
@@ -170,8 +205,10 @@ export function hoverDocSnippet(hoverText: string, maxLen = 100): string {
             // First prose line after the signature fence → the summary.
             return trunc(firstSentence(line), maxLen);
         }
-        // No-fence case: the first non-blank line IS the doc (the signature
-        // comes from the server's `detail` field, not from the hover body).
+        // In the no-fence ccls form, the first line may be the same signature
+        // already supplied by DocumentSymbol.detail. Skip it and keep looking
+        // so a following comment is retained instead of being lost.
+        if (signature && sameSignatureText(line, signature)) continue;
         return trunc(firstSentence(line), maxLen);
     }
     return "";
@@ -183,23 +220,6 @@ function firstSentence(line: string): string {
     return m ? m[1] : line;
 }
 
-/**
- * Detect whether a line looks like a code signature (not prose/docstring).
- *
- * When ccls/pyright/ty returns hover for a function WITHOUT a docstring,
- * the hover body is just the raw signature with no fenced code block.
- * `hoverDocSnippet` must NOT treat this as doc prose.
- *
- * Heuristics (covers C++, Python, TypeScript, Bash, Rust):
- *   - Starts with a language keyword (inline, static, def, fn, class, ...)
- *   - Contains function-call syntax: identifier followed by `(`
- *   - Starts with `class`/`struct`/`enum`/`namespace` + name + `{`
- *
- * Docstrings are prose: "Check if the file exists." — they start with an
- * uppercase letter and contain no code syntax. A false positive is
- * extremely unlikely: a docstring starting with "inline" or "static" is
- * not meaningful English.
- */
 // ---------------------------------------------------------------------------
 // Symbol kind naming + DocumentSymbol / SymbolInformation rendering
 // ---------------------------------------------------------------------------

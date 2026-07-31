@@ -127,5 +127,8 @@ positions differ.
 The `hoverSignature` helper consumes the fenced signature block from the LSP
 hover response; `hoverDocSnippet` takes the first non-blank prose line after
 that block closes, skipping markdown horizontal rules (`---`) that servers
-like ty emit as a signature-docs separator. The snippet is cut at the first
+like ty emit as a signature-docs separator. For ccls's no-fence form it also
+skips a first line equal to the selected `detail`/hover signature, preventing a
+long signature (including a truncated prefix) from being mislabeled as `doc:`;
+a following real comment is still retained. The snippet is cut at the first
 sentence boundary (`. ` / `! ` / `? `).
