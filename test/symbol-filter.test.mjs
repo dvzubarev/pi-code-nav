@@ -1000,6 +1000,27 @@ test("parseCppSymbolName: ccls enum member `NAME = VALUE` extracts NAME as bare"
     }
 });
 
+test("parseCppSymbolName: ccls anonymous-namespace function is an exact bare match", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-anon-ns-"));
+    try {
+        // Exact raw workspace/symbol row from ccls for DiskANN's
+        // format_and_log_s3_error. `(anon ns)` precedes the function's
+        // parameter list, so treating its `(` as the parameter-list opener
+        // incorrectly extracted `diskann` as the bare name.
+        const rawCclsName =
+            "static std::string diskann::(anon ns)::format_and_log_s3_error(const std::string &operation, const ErrorT &err, const std::string &key)";
+        const out = await symbol(
+            { query: "format_and_log_s3_error", language: "cpp" },
+            dir,
+            mockClientOf(dir, [sym(rawCclsName, 12, `${dir}/s3_storage_backend.cpp`, 359, 19)]),
+        );
+        assert.match(out, /\[cpp\].*format_and_log_s3_error/);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
 test("info fan-out: enum member (kind 13) `NAME = VALUE` gets code body, not dropped", async () => {
     const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-enum-"));
