@@ -8,10 +8,10 @@
 
 The user-facing tool contract is **synchronous**: the agent calls
 `code_diagnostics(path)`, waits, and gets the result back. The user
-explicitly rejected an *open-ended* push-notification collection ("No async
-bullshit from notifications from the lsp server"). Do NOT convert this to an
-unbounded notification collector the tool waits on unpredictably — that's
-the async collection the user rejected.
+explicitly rejected an asynchronous push-notification collection exposed
+outside the tool ("No async bullshit from notifications from the lsp server").
+The tool itself may wait synchronously for the one notification that completes
+its request.
 
 ## The design: pull first, event-driven push fallback
 
@@ -28,14 +28,16 @@ pyright/ty answer the pull request (see table below). For servers that
 reject the pull request (tsserver, bash-language-server, ccls), the tool
 falls back to an **event-driven** wait on the push model: `openDocument` →
 (for cpp) `waitForIndexingComplete()` → `LspClient.waitForPushedDiagnostics()`.
-It resolves the instant the server actually pushes
-`textDocument/publishDiagnostics` for that URI, bounded by a timeout (5s for
-tsserver/bash, 30s for ccls after indexing). The push cache
-(`diagnosticsByUri` in `LspClient`) is latest-wins per URI, populated by a
-`textDocument/publishDiagnostics` handler installed in `start()`. It is NOT
-an open-ended collector the tool waits on unpredictably — the wait resolves
-on a real notification (or the budget), and the budget is an upper bound
-chosen per language, not the expected duration.
+It resolves when the server pushes `textDocument/publishDiagnostics` for that
+URI, with a generous **60-second deadline**. It also resolves if the language
+server exits or shuts down, preventing a dead or live-but-silent process from
+leaving a dangling waiter.
+The push cache (`diagnosticsByUri` in `LspClient`) is latest-wins per URI,
+populated by a `textDocument/publishDiagnostics` handler installed in
+`start()`. On `didChange`, the old cache entry must be cleared **before**
+sending the notification: a fast server may publish during the awaited write,
+and clearing afterward would erase the fresh result and force the caller to
+wait until its 60-second deadline.
 
 ## Why event-driven, not a fixed-budget poll
 
@@ -61,8 +63,8 @@ The new flow is event-driven on both signals ccls already emits:
    (cold cache) or a short no-begin timeout (warm cache / tiny project).
    `code_diagnostics` calls this FIRST for cpp, so the subsequent push wait
    isn't racing the indexer.
-2. **Push diagnostics** — `LspClient.waitForPushedDiagnostics(uri, ms)`
-   registers a per-URI resolver in `diagnosticWaiters` and resolves it from
+2. **Push diagnostics** — `LspClient.waitForPushedDiagnostics(uri)` registers
+   a per-URI resolver in `diagnosticWaiters` and resolves it from
    the `textDocument/publishDiagnostics` handler the moment a set arrives
    for that URI (returning a cached snapshot immediately if one is already
    present, covering the "already published during didOpen round-trip" race).
@@ -71,9 +73,10 @@ The new flow is event-driven on both signals ccls already emits:
    instead of hanging or timing out.
 
 For non-cpp push servers (tsserver, bash-language-server) there is no
-project-wide index, so the indexing wait is skipped and the tool waits
-event-drivenly for the publish (5s budget — tsserver's diagnostics delayer
-is 300-800ms by line count; the wait resolves the moment the publish lands).
+project-wide index, so the indexing wait is skipped and the tool waits directly
+for publication. Tsserver's diagnostics delayer is normally 300-800ms; the
+60-second deadline is only a safety bound for a live server that never
+publishes.
 
 ## The push fallback is gated on a client capability we must advertise
 
@@ -102,9 +105,23 @@ we support, verified empirically:
 `LspClient.supportsPullDiagnostics()` exists as introspection (it reads
 `ServerCapabilities.diagnosticProvider`) but the tool does **not** pre-gate
 on it — pyright would be wrongly rejected if it did. The tool tries pull
-first; on rejection it falls back to the event-driven push wait; if no push
-arrives within the budget, it surfaces the pull error honestly. This is more
-accurate than trusting advertised capabilities.
+first; on rejection it falls back to the event-driven push wait. If the server
+terminates before publishing, it surfaces both facts as a hard error. This is
+more accurate than trusting advertised capabilities.
+
+## Success and failure messages
+
+An empty pull result or an empty push notification is authoritative and renders
+`(no diagnostics for <path>)`. A rejected pull request alone is not evidence
+that the file is clean. The tool waits up to 60 seconds for the push. If no
+notification arrives before then (including when the server terminates), it
+returns a hard error that names both failures, for example:
+
+```
+typescript: diagnostics unavailable for src/example.ts: the server does not support pull diagnostics (Unhandled method textDocument/diagnostic); push diagnostics were not received within 60 seconds
+```
+
+This means diagnostics could not be obtained—not that the file has no issues.
 
 ## Rendering
 

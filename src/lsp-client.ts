@@ -262,6 +262,13 @@ const silentLogger: Logger = {
  * unit tests to keep the silent-server regression test fast.
  */
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
+/**
+ * Upper bound for push-only diagnostic servers (ccls, tsserver, and bash).
+ * ccls can need tens of seconds to finish a cold project index, so this is
+ * deliberately larger than the normal per-request deadline. It still bounds
+ * the live-but-silent-server case that a process-exit handler cannot detect.
+ */
+export const DEFAULT_PUSH_DIAGNOSTICS_TIMEOUT_MS = 60_000;
 function resolveRequestTimeoutMs(): number {
     return (
         Number.parseInt(process.env.CODE_NAV_REQUEST_TIMEOUT_MS ?? "", 10) ||
@@ -391,10 +398,10 @@ export class LspClient {
      * polling `diagnosticsByUri` on a fixed budget (which is too short for
      * ccls — it publishes only after indexing, often 10-60s on a cold cache),
      * the caller awaits a promise that resolves the moment the server
-     * actually pushes diagnostics for that URI. The contract stays
-     * synchronous (one bounded wait → one result); it is NOT an open-ended
-     * notification collector. Resolvers left dangling on shutdown/exit are
-     * rejected with undefined via `resetPushState()`.
+     * actually pushes diagnostics for that URI. The tool call remains
+     * synchronous from the agent's perspective. Resolvers waiting when the
+     * server shuts down or exits are completed with undefined by
+     * `resetPushState()`.
      */
     private diagnosticWaiters = new Map<string, Set<(diags: Diagnostic[] | undefined) => void>>();
     /**
@@ -850,18 +857,17 @@ export class LspClient {
             // the server's initialize result declares its preferred
             // textDocumentSync (all four servers we use accept full-content
             // didChange).
+            // Clear stale diagnostics BEFORE sending didChange. The server can
+            // publish a fresh set as soon as it receives the notification; if
+            // deletion happened after the awaited write, that fresh set could
+            // arrive during the await and then be accidentally erased, causing
+            // code_diagnostics to time out despite a successful publication.
+            this.diagnosticsByUri.delete(uri);
             await notifyWithTimeout(this.conn!, "textDocument/didChange", {
                 textDocument: { uri, version },
                 contentChanges: [{ text }],
             });
             this.openDocs.set(uri, { version, text });
-            // Clear any stale push-diagnostics cached for this URI: after a
-            // didChange the server will re-publish a fresh set (possibly
-            // empty) keyed to the new version. Dropping the old set prevents
-            // code_diagnostics' push fallback from returning diagnostics for
-            // the pre-edit snapshot during the brief window before the new
-            // publish arrives.
-            this.diagnosticsByUri.delete(uri);
             return;
         }
         const version = 1;
@@ -1317,28 +1323,22 @@ export class LspClient {
 
     /**
      * Event-driven wait for the NEXT `textDocument/publishDiagnostics`
-     * notification for `absPath`, bounded by `timeoutMs`. Unlike the old
-     * fixed-budget poll, this resolves the instant the server pushes
-     * diagnostics for that URI — which for ccls is AFTER whole-project
-     * indexing finishes (often 10-60s on a cold cache; the caller should
-     * `waitForIndexingComplete()` first for cpp, or pass a generous budget).
+     * notification for `absPath`. Unlike the old fixed-budget poll, this
+     * resolves exactly when the server pushes diagnostics for that URI — which
+     * for ccls can be after lengthy whole-project indexing.
      *
      * Returns:
-     *   - the freshly-published `Diagnostic[]` (a copy) if a notification
-     *     arrives within `timeoutMs`, or if the cache already holds a set
-     *     for this URI at call time (covers the "already published during
-     *     initialize/didOpen round-trip" race);
-     *   - `undefined` if the budget elapses with no notification, or if the
-     *     server exits/shuts down mid-wait (the exit handler resolves the
-     *     waiter with undefined via `resetPushState`).
+     *   - the freshly-published `Diagnostic[]` (a copy), or a cached set if one
+     *     already exists (covering publication during didOpen/didChange);
+     *   - `undefined` if the server exits or shuts down mid-wait, or if no
+     *     publication arrives within `timeoutMs` (60 seconds by default).
      *
-     * The contract stays synchronous (one bounded wait → one result). It is
-     * NOT an open-ended notification collector — `timeoutMs` is the upper
-     * bound the caller chose; the waiter is unregistered on resolve.
+     * `resetPushState()` resolves waiters during shutdown, and the deadline
+     * bounds a live-but-silent server that never emits diagnostics.
      */
     waitForPushedDiagnostics(
         absPath: string,
-        timeoutMs = 10000,
+        timeoutMs = DEFAULT_PUSH_DIAGNOSTICS_TIMEOUT_MS,
     ): Promise<Diagnostic[] | undefined> {
         const uri = pathToFileURL(absPath).href;
         // Fast path: the server already published for this URI (e.g. during

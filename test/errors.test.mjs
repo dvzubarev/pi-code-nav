@@ -173,6 +173,51 @@ test("nav.hover hard failure: server unavailable → throws", async () => {
     }
 });
 
+test("nav.diagnostics uses a 60-second push deadline and reports an unavailable result", async () => {
+    const { diagnostics } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
+    try {
+        await writeFile(resolve(dir, "svc.ts"), "const x = 1;\n", "utf8");
+        const client = {
+            openDocument: async () => {},
+            pullDiagnostics: async () => {
+                throw new Error("Unhandled method textDocument/diagnostic");
+            },
+            waitForPushedDiagnostics: async (_path, timeoutMs) => {
+                assert.equal(timeoutMs, 60_000);
+                return undefined; // Simulate expiry or server exit/shutdown.
+            },
+        };
+        await assert.rejects(
+            diagnostics({ path: "svc.ts" }, dir, async () => client),
+            /diagnostics unavailable for svc\.ts: the server does not support pull diagnostics .*; push diagnostics were not received within 60 seconds/,
+        );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("nav.diagnostics treats an empty push notification as a clean result", async () => {
+    const { diagnostics } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
+    try {
+        await writeFile(resolve(dir, "svc.ts"), "const x = 1;\n", "utf8");
+        const client = {
+            openDocument: async () => {},
+            pullDiagnostics: async () => {
+                throw new Error("Unhandled method textDocument/diagnostic");
+            },
+            waitForPushedDiagnostics: async () => [],
+        };
+        assert.equal(
+            await diagnostics({ path: "svc.ts" }, dir, async () => client),
+            "(no diagnostics for svc.ts)",
+        );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
 test("position-based tools reject non-positive coordinates", async () => {
     const { definition, hover, references, rename } = await load("./src/nav.ts");
     for (const fn of [definition, hover, references, rename]) {

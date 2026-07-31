@@ -89,9 +89,10 @@ scan lists identifiers with their absolute 1-based position and syntactic role
   (default: type,call,member,import — i.e. all except var, which are noisy
   locals). Pass e.g. --roles var to see only locals, or
   --roles type,call,member,import,var to see everything.
-diagnostics fetches errors/warnings for a file via the LSP pull model
-  (textDocument/diagnostic, request/response — no push notifications). Output
-  positions are 1-based and reusable as (file line col) input to the others.
+diagnostics fetches errors/warnings for a file using pull diagnostics first,
+  with a bounded push-diagnostics fallback for servers that do not support the
+  pull method. Output positions are 1-based and reusable as (file line col)
+  input to the others.
 
 env:
   CODE_NAV_ROOT  workspace root (default: cwd)`);

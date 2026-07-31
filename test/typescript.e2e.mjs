@@ -94,6 +94,25 @@ runOrSkip(
 );
 
 runOrSkip(
+    "code_diagnostics receives fresh push diagnostics after didChange",
+    async () => {
+        const ws = await withWorkspace([]);
+        try {
+            const file = resolve(ws.root, "changed.ts");
+            await writeFile(file, `const x: number = "wrong";\n`, "utf8");
+            const before = await nav.diagnostics({ path: "changed.ts" }, ws.root, ws.clientOf);
+            assert.match(before, /diagnostic\(s\)/, `expected an initial error:\n${before}`);
+
+            await writeFile(file, `const x: number = 42;\n`, "utf8");
+            const after = await nav.diagnostics({ path: "changed.ts" }, ws.root, ws.clientOf);
+            assert.match(after, /no diagnostics/, `expected a fresh clean result:\n${after}`);
+        } finally {
+            await ws.cleanup();
+        }
+    },
+);
+
+runOrSkip(
     "code_outline on a .ts file fetches signatures via parallel hover (detail empty)",
     async () => {
         // tsserver leaves DocumentSymbol.detail empty, so code_outline falls

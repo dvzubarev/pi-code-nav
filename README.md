@@ -139,8 +139,9 @@ resolve-package-root → rg → `code_definition` workflow.
 `code_diagnostics` reports the errors/warnings a language server computes for
 a file—e.g. undefined names, type mismatches, and unused variables. The tool
 tries the LSP 3.17 pull model first. If the server rejects it, the tool performs
-a bounded, event-driven wait for `publishDiagnostics`. In both cases the
-agent-facing contract remains synchronous: one call returns one result.
+a bounded, event-driven wait for `publishDiagnostics` (up to 60 seconds). In
+both cases the agent-facing contract remains synchronous: one call returns one
+result.
 
 ```
 code_diagnostics(path="widget.cpp")

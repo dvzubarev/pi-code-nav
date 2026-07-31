@@ -6,7 +6,8 @@
  * (textDocument/diagnostic). The push model (textDocument/publishDiagnostics)
  * is the fallback for servers that reject the pull request
  * (typescript-language-server, bash-language-server, ccls). The push wait is
- * event-driven (blocks on the actual notification, not a fixed poll budget).
+ * event-driven with a generous 60-second deadline, so a live server that
+ * silently omits the notification cannot hang the tool indefinitely.
  *
  * Capability advertisement is unreliable: pyright implements
  * textDocument/diagnostic but does NOT advertise diagnosticProvider, while
@@ -17,12 +18,19 @@
 
 import { readFile } from "node:fs/promises";
 import type { Diagnostic } from "vscode-languageserver-protocol";
-import type { Lang, LspClient } from "./lsp-client";
+import { DEFAULT_PUSH_DIAGNOSTICS_TIMEOUT_MS, type LspClient } from "./lsp-client";
 import { awaitReadyForQuery, ClientProvider, UnknownLanguageError } from "./nav-core";
 import { langForFile, renderDiagnostic, toAbs } from "./render";
 
 export interface DiagnosticsParams {
     path: string;
+}
+
+function pullFailureDescription(error: Error): string {
+    const unsupported = /unhandled method|method not found|unknown request/i.test(error.message);
+    return unsupported
+        ? `the server does not support pull diagnostics (${error.message})`
+        : `the pull-diagnostics request failed (${error.message})`;
 }
 
 export async function diagnostics(
@@ -79,8 +87,9 @@ export async function diagnostics(
     // publishes only after whole-project indexing — often 10-60s on a cold
     // cache), we block on a promise that resolves the instant the server
     // actually pushes diagnostics for this URI. The contract stays
-    // synchronous (one bounded wait → one result); it is NOT an open-ended
-    // notification collector.
+    // synchronous (one bounded wait → one result). The 60-second cap leaves
+    // room for ccls cold indexing but prevents a live silent server from
+    // hanging the agent forever.
     //
     // For cpp specifically, ccls publishes publishDiagnostics for a file only
     // once its translation unit has compiled — which on a cold cache happens
@@ -93,22 +102,23 @@ export async function diagnostics(
         // cpp indexing was already waited for above (awaitReadyForQuery), so
         // ccls's publishDiagnostics (which fires only after the TU compiles)
         // is now ready to arrive. We just wait for the push.
-        const pushed = await client.waitForPushedDiagnostics(abs);
+        const pushed = await client.waitForPushedDiagnostics(
+            abs,
+            DEFAULT_PUSH_DIAGNOSTICS_TIMEOUT_MS,
+        );
         if (pushed !== undefined) {
-            // Push succeeded. If the push cache is ALSO empty but pull rejected,
-            // mention the pull failure so the user can tell a clean file from a
-            // silent server.
-            if (pushed.length === 0 && pullError) {
-                return `(no diagnostics for ${params.path}; pull model rejected: ${pullError.message})`;
-            }
+            // An empty pushed set is an authoritative clean result. Pull
+            // rejection is expected for push-only servers and is irrelevant
+            // once their fallback succeeds.
             return renderDiagnostics(params.path, pushed);
         }
-        // No push diagnostics arrived either - surface the pull error honestly.
+        // An exhausted push deadline or server termination is NOT a clean-file
+        // result. Make that explicit rather than returning an empty result.
         if (pullError) {
-            // Hard failure: the pull request errored AND no push diagnostics
-            // arrived — the server cannot report diagnostics for this file.
             throw new Error(
-                `${lang}: textDocument/diagnostic request failed: ${pullError.message}`,
+                `${lang}: diagnostics unavailable for ${params.path}: ${pullFailureDescription(
+                    pullError,
+                )}; push diagnostics were not received within 60 seconds`,
             );
         }
         return `(no diagnostics returned for ${params.path})`;
