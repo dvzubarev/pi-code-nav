@@ -620,27 +620,34 @@ runOrSkip("code_hover emits a signature-first line before the markdown body", as
     }
 });
 
-runOrSkip("code_references on Point class lists __init__ usages", async () => {
+runOrSkip("code_references adds Python AST roles, source, and enclosing symbols", async () => {
     const ws = await withWorkspace(["second.py"]);
     try {
-        // Point is defined at second.py:10:7. Its references include its use as
-        // a default parameter in TempC.__init__ (p: Point = Point()).
+        // Point is defined at second.py:10:7. ty reports its declaration, type
+        // annotation, and constructor call in TempC.__init__. This exercises
+        // real LSP locations followed by real Python tree-sitter context.
         const out = await nav.references(
             { path: "second.py", line: 10, column: 7 },
             ws.root,
             ws.clientOf,
         );
-        // The count is now a trailing `# N references` comment (trivially
-        // ignorable), not a leading `N reference(s):` glue line. At least one
-        // reference row should be present (the def itself, plus the default-arg
-        // usage and the call in TempC.__init__).
-        assert.match(out, /# \d+ references$/, `trailing count comment missing:\n${out}`);
-        // renderLocation now emits `<path>:<line>:<col>` (grep-style,
-        // single position instead of a start - end range).
-        const rows = out
-            .split("\n")
-            .filter((l) => /second\.py:\d+:\d+/.test(l));
-        assert.ok(rows.length >= 1, `no reference rows:\n${out}`);
+        assert.match(out, /kind: declaration\n\n10 \| Point/);
+        assert.match(out, /kind: type\n\n20 \| Point/);
+        assert.match(out, /kind: call\n\n20 \| Point\(\)/);
+        assert.match(out, /enclosing: TempC\.__init__  .*second\.py:20:9/);
+        assert.match(out, /# 3 references$/, `reference count missing:\n${out}`);
+
+        // code_search_symbol(include=["references"]) must use the identical
+        // contextual renderer rather than reducing references to locations.
+        const search = await nav.symbol(
+            { query: "Point", language: "python", include: ["references"] },
+            ws.root,
+            ws.clientOf,
+        );
+        assert.match(search, /--- references ---/);
+        assert.match(search, /kind: type\n\n20 \| Point/);
+        assert.match(search, /kind: call\n\n20 \| Point\(\)/);
+        assert.match(search, /enclosing: TempC\.__init__  .*second\.py:20:9/);
     } finally {
         await ws.cleanup();
     }

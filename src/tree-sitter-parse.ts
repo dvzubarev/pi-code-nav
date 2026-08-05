@@ -39,7 +39,7 @@
  * vscode-languageserver-protocol; see code_scan.md "Dependency — WASM, not native bindings".
  */
 
-import { Parser, Language } from "web-tree-sitter";
+import { Parser, Language, Node } from "web-tree-sitter";
 import { getWasmPath } from "tree-sitter-wasm";
 import { readFile } from "node:fs/promises";
 
@@ -403,6 +403,320 @@ function classifyRole(node: TSNode, lang: TsLang): SymbolRole | null {
  * exists). Callers wanting locals pass `roles` including `var`.
  */
 export const DEFAULT_SYMBOL_ROLES: readonly SymbolRole[] = ["type", "call", "member", "import"];
+
+// ---------------------------------------------------------------------------
+// Reference context extraction.
+//
+// code_references already has the semantically-correct locations from LSP.
+// This helper adds AST context without trying to rediscover references. It is
+// intentionally best-effort: callers can fall back to the LSP location if a
+// grammar cannot parse an individual result file.
+// ---------------------------------------------------------------------------
+
+export type ReferenceContextMode = "syntax" | "enclosing";
+
+export interface ReferenceSyntaxContext {
+    kind: "call" | "type" | "member" | "import" | "write" | "override" | "declaration" | "read";
+    startLine: number;
+    endLine: number;
+    /** Numbered, source-formatted lines for the selected AST construct. */
+    source: string;
+    enclosing?: { name: string; line: number; column: number };
+}
+
+const CALL_NODE_TYPES = new Set(["call", "call_expression", "new_expression"]);
+const IMPORT_NODE_TYPES = new Set([
+    "import_statement",
+    "import_from_statement",
+    "import_declaration",
+    "export_statement",
+    "using_declaration",
+]);
+const MEMBER_NODE_TYPES = new Set(["attribute", "field_expression", "member_expression"]);
+const TYPE_NODE_TYPES = new Set([
+    "type",
+    "type_identifier",
+    "generic_type",
+    "template_type",
+    "type_annotation",
+    "predefined_type",
+]);
+const DEFINITION_NODE_TYPES = new Set([
+    "function_definition",
+    "class_definition",
+    "function_declaration",
+    "generator_function_declaration",
+    "method_definition",
+    "class_declaration",
+    "abstract_class_declaration",
+    "interface_declaration",
+    "function_expression",
+    "arrow_function",
+    "class",
+    "class_specifier",
+    "struct_specifier",
+    "union_specifier",
+    "namespace_definition",
+    "lambda_expression",
+]);
+const STATEMENT_NODE_TYPES = new Set([
+    "expression_statement",
+    "return_statement",
+    "assignment",
+    "assignment_expression",
+    "augmented_assignment",
+    "declaration",
+    "lexical_declaration",
+    "variable_declaration",
+    "if_statement",
+    "for_statement",
+    "for_in_statement",
+    "while_statement",
+    "switch_statement",
+    "try_statement",
+    "with_statement",
+]);
+
+function containsNode(outer: Node, inner: Node): boolean {
+    const a = outer.startIndex;
+    const b = outer.endIndex;
+    return a <= inner.startIndex && b >= inner.endIndex;
+}
+
+function ancestors(node: Node): Node[] {
+    const out: Node[] = [];
+    for (let n: Node | null = node; n; n = n.parent) out.push(n);
+    return out;
+}
+
+function nearest(nodes: Node[], types: Set<string>): Node | undefined {
+    return nodes.find((n) => types.has(n.type));
+}
+
+function callContainingCallee(nodes: Node[], selected: Node): Node | undefined {
+    for (const n of nodes) {
+        if (!CALL_NODE_TYPES.has(n.type)) continue;
+        const callee =
+            n.childForFieldName("function") ??
+            n.childForFieldName("constructor") ??
+            n.childForFieldName("name");
+        if (callee && containsNode(callee, selected)) return n;
+    }
+    return undefined;
+}
+
+function assignmentContainingLeft(nodes: Node[], selected: Node): Node | undefined {
+    for (const n of nodes) {
+        if (!/assignment|declarator|declaration|parameter/.test(n.type)) continue;
+        const left =
+            n.childForFieldName("left") ??
+            n.childForFieldName("name") ??
+            n.childForFieldName("declarator");
+        if (left && containsNode(left, selected)) return n;
+    }
+    return undefined;
+}
+
+function definitionName(node: Node): Node | null {
+    const direct = node.childForFieldName("name");
+    if (direct) return direct;
+    // Anonymous function/arrow/lambda assigned to a variable: use the binding
+    // as the enclosing symbol name (`const load = () => ...`).
+    if (/function_expression|arrow_function|lambda/.test(node.type)) {
+        const parent = node.parent;
+        const binding =
+            parent?.childForFieldName("name") ??
+            parent?.childForFieldName("left") ??
+            parent?.childForFieldName("declarator");
+        if (binding && !containsNode(binding, node)) return binding;
+    }
+    let declarator = node.childForFieldName("declarator");
+    while (declarator) {
+        // Preserve an out-of-line C++ qualified name (`ns::Class::method`)
+        // instead of drilling down to only its final identifier.
+        if (declarator.type === "qualified_identifier" || declarator.type === "scoped_identifier") {
+            return declarator;
+        }
+        const name =
+            declarator.childForFieldName("name") ?? declarator.childForFieldName("declarator");
+        if (!name || name.id === declarator.id) break;
+        declarator = name;
+    }
+    if (declarator && /identifier|declarator/.test(declarator.type)) return declarator;
+    return null;
+}
+
+function terminalNameNode(node: Node): Node {
+    const child = node.childForFieldName("name") ?? node.childForFieldName("declarator");
+    return child && child.id !== node.id ? terminalNameNode(child) : node;
+}
+
+function enclosingSymbol(
+    nodes: Node[],
+    lang: TsLang,
+    sourceLines: string[],
+): ReferenceSyntaxContext["enclosing"] {
+    const defs = nodes.filter((n) => DEFINITION_NODE_TYPES.has(n.type));
+    if (defs.length === 0) return undefined;
+    const named = defs
+        .map((node) => ({ node, nameNode: definitionName(node) }))
+        .filter((x): x is { node: Node; nameNode: Node } => x.nameNode !== null);
+    if (named.length === 0) return undefined;
+    // ancestors() is inner-to-outer. Reverse it to render Class.method rather
+    // than method.Class, while using the innermost identifier as the position.
+    const names = [...named]
+        .reverse()
+        .map((x) => x.nameNode.text.trim())
+        .filter(Boolean);
+    const inner = terminalNameNode(named[0].nameNode);
+    const sep = lang === "cpp" ? "::" : ".";
+    return {
+        name: names.join(sep),
+        line: inner.startPosition.row + 1,
+        column:
+            byteToStringColumn(
+                sourceLines[inner.startPosition.row] ?? "",
+                inner.startPosition.column,
+            ) + 1,
+    };
+}
+
+function byteColumn(textLine: string, utf16Column: number): number {
+    return Buffer.byteLength(textLine.slice(0, utf16Column), "utf8");
+}
+
+function byteToStringColumn(textLine: string, bytes: number): number {
+    const buf = Buffer.from(textLine, "utf8");
+    return buf.subarray(0, Math.min(bytes, buf.length)).toString("utf8").length;
+}
+
+const MAX_CONTEXT_LINES = 80;
+const MAX_CONTEXT_CHARS = 12_000;
+
+function renderNodeSource(node: Node, text: string): string {
+    const lines = text.split(/\r?\n/);
+    const start = node.startPosition;
+    const end = node.endPosition;
+    let selected = lines.slice(start.row, end.row + 1);
+    if (selected.length === 0) return "";
+    const firstCol = byteToStringColumn(selected[0], start.column);
+    selected[0] = selected[0].slice(firstCol);
+    const lastSource = lines[end.row] ?? "";
+    const lastCol = byteToStringColumn(lastSource, end.column);
+    if (selected.length === 1) selected[0] = selected[0].slice(0, Math.max(0, lastCol - firstCol));
+    else selected[selected.length - 1] = selected[selected.length - 1].slice(0, lastCol);
+
+    let omitted = 0;
+    if (selected.length > MAX_CONTEXT_LINES) {
+        omitted = selected.length - MAX_CONTEXT_LINES;
+        selected = [...selected.slice(0, 60), ...selected.slice(-20)];
+    }
+    let rendered = selected.map((line, i) => `${start.row + 1 + i} | ${line}`);
+    if (omitted > 0) {
+        rendered = [
+            ...rendered.slice(0, 60),
+            `... | … ${omitted} lines omitted …`,
+            ...rendered
+                .slice(60)
+                .map((line, i) => line.replace(/^\d+/, String(end.row - 19 + i + 1))),
+        ];
+    }
+    let out = rendered.join("\n");
+    if (out.length > MAX_CONTEXT_CHARS)
+        out = out.slice(0, MAX_CONTEXT_CHARS) + "\n... | … context truncated …";
+    return out;
+}
+
+/** Return AST-aware source context for one 0-based LSP reference position. */
+export async function referenceSyntaxContext(
+    lang: TsLang,
+    text: string,
+    line: number,
+    character: number,
+    mode: ReferenceContextMode = "syntax",
+): Promise<ReferenceSyntaxContext | null> {
+    const sourceLines = text.split(/\r?\n/);
+    if (line < 0 || line >= sourceLines.length) return null;
+    const language = await getLanguage(lang);
+    const parser = new Parser();
+    parser.setLanguage(language);
+    const tree = parser.parse(text);
+    if (!tree) return null;
+    try {
+        const column = byteColumn(sourceLines[line], character);
+        let selected = tree.rootNode.descendantForPosition(
+            { row: line, column },
+            { row: line, column: column + 1 },
+        );
+        if (!selected) return null;
+        // Punctuation can be the smallest descendant when an LSP range starts
+        // at a qualifier boundary. Prefer the nearest named ancestor.
+        while (selected && !selected.isNamed && selected.parent) selected = selected.parent;
+        const chain = ancestors(selected);
+        const call = callContainingCallee(chain, selected);
+        const imported = nearest(chain, IMPORT_NODE_TYPES);
+        const member = nearest(chain, MEMBER_NODE_TYPES);
+        const typeNodes = chain.filter((n) => TYPE_NODE_TYPES.has(n.type));
+        // The outer type node carries the complete expression (`list[Point]`,
+        // `std::vector<T>`), while the innermost is often just one identifier.
+        const typed = typeNodes.length > 0 ? typeNodes[typeNodes.length - 1] : undefined;
+        const assigned = assignmentContainingLeft(chain, selected);
+        const definition = chain.find((n) => {
+            if (!DEFINITION_NODE_TYPES.has(n.type)) return false;
+            const name = definitionName(n);
+            return !!name && containsNode(name, selected);
+        });
+
+        let kind: ReferenceSyntaxContext["kind"] = "read";
+        let syntaxNode = selected;
+        if (call) {
+            kind = "call";
+            syntaxNode = call;
+        } else if (imported) {
+            kind = "import";
+            syntaxNode = imported;
+        } else if (definition) {
+            kind = /\boverride\b/.test(definition.text) ? "override" : "declaration";
+            // Do not return the whole function/class body for its declaration
+            // reference. The enclosing metadata composes with code_definition
+            // when that body is wanted; the identifier is the smallest useful
+            // declaration construct here.
+            syntaxNode = selected;
+        } else if (assigned) {
+            // Assignment wins over member/type shape: `obj.field = value` is
+            // semantically a write, not merely a member occurrence.
+            kind = "write";
+            syntaxNode = nearest(chain, STATEMENT_NODE_TYPES) ?? assigned;
+        } else if (typed) {
+            kind = "type";
+            syntaxNode = typed;
+        } else if (member) {
+            kind = "member";
+            syntaxNode = member;
+        }
+
+        if (mode === "enclosing") {
+            // Return the nearest containing statement/control construct above
+            // the syntax node, but never inflate to the whole function/class;
+            // its reusable position is supplied separately as metadata.
+            const syntaxAncestors = ancestors(syntaxNode);
+            const upper = syntaxAncestors.find(
+                (n) => n.id !== syntaxNode.id && STATEMENT_NODE_TYPES.has(n.type),
+            );
+            if (upper) syntaxNode = upper;
+        }
+        return {
+            kind,
+            startLine: syntaxNode.startPosition.row + 1,
+            endLine: syntaxNode.endPosition.row + 1,
+            source: renderNodeSource(syntaxNode, text),
+            enclosing: enclosingSymbol(chain, lang, sourceLines),
+        };
+    } finally {
+        tree.delete();
+        parser.delete();
+    }
+}
 
 export interface ParseSymbolsOptions {
     /** The real file's text (full file — we slice to [startLine, endLine]). */

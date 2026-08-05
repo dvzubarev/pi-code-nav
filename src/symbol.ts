@@ -75,10 +75,7 @@ const SYMBOL_FANOUT_MAX_MATCHES = 5;
  * N matches each get a head snippet big enough to decide between them. */
 const SYMBOL_FANOUT_CODE_BUDGET_LINES = 2000;
 
-/** Per-match cap on the `references` section in a fan-out. Reuses
- * `nav.references` verbatim (which has no cap) and trims to this many rows,
- * appending a `(N of M, use code_references for all)` note so the agent can
- * reach the full set via the standalone tool. */
+/** Per-match page size for contextual references in a fan-out. */
 const SYMBOL_FANOUT_REFS_CAP = 25;
 
 /**
@@ -843,8 +840,8 @@ export async function symbol(
 //     `# (showing X of Y lines; use code_definition for full body)` note.
 //     Single match → full 2000-line budget (effectively the whole body —
 //     matches `code_definition`'s direct output).
-//   - `references`: trimmed to SYMBOL_FANOUT_REFS_CAP (25) rows with a
-//     `(N of M, use code_references for all)` note.
+//   - `references`: first contextual page of SYMBOL_FANOUT_REFS_CAP (25)
+//     results, with pagination metadata and a code_references follow-up note.
 // `hover` is uncapped and retained whenever explicitly requested because it
 // may include inferred types absent from source.
 // ---------------------------------------------------------------------------
@@ -1014,10 +1011,9 @@ async function renderFanOutHoverSection(
     }
 }
 
-/** `--- references ---` section: semantic usages from `nav.references`, trimmed
- * to SYMBOL_FANOUT_REFS_CAP (25) rows with a `(N of M, use code_references
- * for all)` note. Reuses `nav.references` verbatim — the empty/error contracts
- * (`(no references found for ...)`, `ERROR  ...`) pass straight through. */
+/** `--- references ---` section: the same AST-aware contextual page returned
+ * by code_references. Pagination and total-count reporting are owned by
+ * nav.references, so blocks are never split by a line-based post-processor. */
 async function renderFanOutRefsSection(
     path: string,
     line: number,
@@ -1025,22 +1021,15 @@ async function renderFanOutRefsSection(
     cwd: string,
     clientOf: ClientProvider,
 ): Promise<string> {
-    let out: string;
     try {
-        out = await references({ path, line, column }, cwd, clientOf);
+        const out = await references(
+            { path, line, column, context: "syntax", offset: 1, limit: SYMBOL_FANOUT_REFS_CAP },
+            cwd,
+            clientOf,
+        );
+        const page = /# showing references 1-(\d+) of (\d+)$/.exec(out);
+        return page ? `${out}\n(${page[1]} of ${page[2]}, use code_references for all)` : out;
     } catch (e) {
         return `ERROR: ${e instanceof Error ? e.message : String(e)}`;
     }
-    // Pass through empty/error results unchanged.
-    if (out.startsWith("ERROR") || out.startsWith("(")) return out;
-    const lines = out.split("\n");
-    const last = lines[lines.length - 1];
-    const m = /^# (\d+) references$/.exec(last);
-    const total = m ? Number(m[1]) : lines.length;
-    const dataLines = m ? lines.slice(0, -1) : lines;
-    if (dataLines.length > SYMBOL_FANOUT_REFS_CAP) {
-        const shown = dataLines.slice(0, SYMBOL_FANOUT_REFS_CAP).join("\n");
-        return `${shown}\n(${SYMBOL_FANOUT_REFS_CAP} of ${total}, use code_references for all)`;
-    }
-    return out;
 }

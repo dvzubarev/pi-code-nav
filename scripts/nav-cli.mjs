@@ -20,7 +20,7 @@
 //   node nav-cli.mjs outline <file> [offset:1-based] [limit]
 //   node nav-cli.mjs hover <file> <line:1-based> <col:1-based>
 //   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [--list-symbols]
-//   node nav-cli.mjs references <file> <line:1-based> <col:1-based>
+//   node nav-cli.mjs references <file> <line:1-based> <col:1-based> [--context none|syntax|enclosing] [--offset N] [--limit N]
 //   node nav-cli.mjs rename <file> <line:1-based> <col:1-based> <newName>
 //   node nav-cli.mjs symbol <query> [python|cpp|bash|typescript]
 //   node nav-cli.mjs scan <file> [<startLine:1-based> <endLine:1-based>] [--pattern <regexp>] [--docs] [--roles type,call,member,import,var]
@@ -66,7 +66,7 @@ function usage() {
   node nav-cli.mjs outline <file> [offset:1-based] [limit]
   node nav-cli.mjs hover <file> <line:1-based> <col:1-based>
   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [--list-symbols]
-  node nav-cli.mjs references <file> <line:1-based> <col:1-based>
+  node nav-cli.mjs references <file> <line:1-based> <col:1-based> [--context none|syntax|enclosing] [--offset N] [--limit N]
   node nav-cli.mjs rename <file> <line:1-based> <col:1-based> <newName>
   node nav-cli.mjs symbol <query> [python|cpp|bash|typescript]
   node nav-cli.mjs scan <file> [<startLine:1-based> <endLine:1-based>] [--pattern <regexp>] [--docs] [--roles type,call,member,import,var]
@@ -128,14 +128,27 @@ async function main() {
         console.log(await nav.outline(params, ROOT, clientOf));
     } else if (cmd === "hover" || cmd === "references") {
         // Both take a SINGLE (file line col) triple — one symbol per call.
-        if (rest.length !== 3) usage();
+        if (rest.length < 3) usage();
         const params = {
             path: rest[0],
             line: parseInt(rest[1], 10),
             column: parseInt(rest[2], 10),
         };
-        if (cmd === "hover") console.log(await nav.hover(params, ROOT, clientOf));
-        else console.log(await nav.references(params, ROOT, clientOf));
+        if (cmd === "hover") {
+            if (rest.length !== 3) usage();
+            console.log(await nav.hover(params, ROOT, clientOf));
+        } else {
+            for (let i = 3; i < rest.length; i += 2) {
+                const flag = rest[i];
+                const value = rest[i + 1];
+                if (!value) usage();
+                if (flag === "--context") params.context = value;
+                else if (flag === "--offset") params.offset = parseInt(value, 10);
+                else if (flag === "--limit") params.limit = parseInt(value, 10);
+                else usage();
+            }
+            console.log(await nav.references(params, ROOT, clientOf));
+        }
     } else if (cmd === "definition") {
         // definition takes a SINGLE (file line col) triple — it returns the
         // verbatim source body of one symbol (no batching). --list-symbols is

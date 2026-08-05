@@ -25,6 +25,13 @@ case the tool returns one block per site (each with the same
 `# N definitions for <inPath>:<line>:<col>` count — multiple sites are data,
 not an error.
 
+`code_references` defaults to the first 25 results with AST-aware source
+context: the complete call/type/member/import construct, its syntactic role,
+and the enclosing function/class position. Pass `context: "none"` for compact
+location-only output, or `context: "enclosing"` for the containing statement.
+Use `offset` and `limit` to paginate. `code_search_symbol(include=["references"])`
+uses the same contextual format.
+
 `code_definition` also accepts an optional `list_symbols` boolean (default
 `false`). When true, a tree-sitter symbol table is appended to the returned
 body, so the agent can discover third-party/stdlib symbols used inside the

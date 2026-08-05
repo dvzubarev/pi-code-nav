@@ -227,7 +227,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_references",
         label: "Code References",
         description:
-            "Find all references and usages of the symbol at a 1-based file position, including its declaration. Returns one `path:line:column` location per line plus a trailing reference count. An empty result is not an error.",
+            "Find semantic references/usages, including declarations. Results are paginated (default 25) and include AST-aware source context, syntactic role, and enclosing symbol metadata. Use context='none' for compact locations.",
         promptSnippet: "Find all references and usages of a symbol",
         promptGuidelines: [
             "Use code_references after a discovery tool to find semantic usages rather than text matches from grep or rg.",
@@ -239,6 +239,25 @@ function registerTools(pi: ExtensionAPI, state: State): void {
                 minimum: 1,
                 description: "1-based column number of the symbol",
             }),
+            context: Type.Optional(
+                StringEnum(["none", "syntax", "enclosing"] as const, {
+                    description:
+                        "Context mode (default: syntax). none returns locations only; syntax returns the smallest useful AST construct; enclosing returns its containing statement/control construct.",
+                }),
+            ),
+            offset: Type.Optional(
+                Type.Integer({
+                    minimum: 1,
+                    description: "1-based start reference for pagination. Default 1.",
+                }),
+            ),
+            limit: Type.Optional(
+                Type.Integer({
+                    minimum: 1,
+                    maximum: 200,
+                    description: "Maximum references per page (default 25, hard cap 200).",
+                }),
+            ),
         }),
         async execute(_id, params, _signal, _onUpdate, ctx) {
             try {
@@ -566,7 +585,8 @@ DISCOVERY TOOLS (produce positions):
 POSITION-BASED TOOLS (consume path + line + column):
 - code_definition — source code for a symbol's definition
 - code_hover — signature, inferred type, and documentation
-- code_references — semantic references/usages, including the declaration
+- code_references — paginated semantic usages with syntax context, role, and
+  enclosing symbol metadata; context="none" gives compact locations
 - code_rename — semantic workspace rename, applied directly to disk
 
 FILE-ANALYSIS TOOL:

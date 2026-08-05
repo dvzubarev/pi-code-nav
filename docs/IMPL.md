@@ -95,7 +95,10 @@ header + body, blank-line-separated) plus a trailing
 no separator and no count. It throws on any failure (no definition found,
 cannot resolve body, etc.)—the contract is “source code or a hard error.”
 `hover` and `references` also throw on operational failures; clean empty
-results remain parenthesized notes.
+results remain parenthesized notes. `references` defaults to a 25-result page
+of AST-aware syntax context with role and enclosing-symbol metadata; its
+`context: "none"` mode preserves compact location rows. See
+`code_references.md` for pagination, truncation, and rendering details.
 
 
 # User configuration

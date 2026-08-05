@@ -46,7 +46,9 @@
   a project here.
 - `src/<tool>.ts` — one file per implementation: `outline.ts`,
   `definition.ts`, `references.ts`, `symbol.ts`, `rename.ts`, `hover.ts`,
-  `scan.ts`, `diagnostics.ts`. Each exports a plain async function
+  `scan.ts`, `diagnostics.ts`. Reference context extraction lives in
+  `tree-sitter-parse.ts`; its output contract is in `code_references.md`.
+  Each tool exports a plain async function
   `(params, cwd, clientOf) => text` and its `*Params` interface. No pi
   dependency; takes a `ClientProvider` (`(lang) => LspClient`) instead of
   `ServerPool`. `index.ts` and `scripts/nav-cli.mjs` call the same exported
@@ -135,7 +137,7 @@ the per-tool output contracts are documented in `IMPL.md`. CLI subcommands
   outline <file> [offset:1-based] [limit]
   hover <file> <line:1> <col:1>
   definition <file> <line:1> <col:1> [--list-symbols]
-  references <file> <line:1> <col:1>
+  references <file> <line:1> <col:1> [--context none|syntax|enclosing] [--offset N] [--limit N]
   rename <file> <line:1> <col:1> <newName>
   symbol <query> [python|cpp|bash]
   scan <file> [<startLine:1> <endLine:1>] [--pattern <re>] [--docs] [--roles ...]

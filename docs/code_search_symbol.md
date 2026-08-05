@@ -191,9 +191,11 @@ would inflate the match count past the cap. Only exact matches fan out.
   `nav.hover`; the promoted bare line or fenced signature block is removed so
   it is not duplicated. Output is uncapped (docstrings are auxiliary; the
   2000-line code budget is the single dominant knob).
-- `--- references ---` — semantic references/usages via `nav.references`, trimmed to
-  `SYMBOL_FANOUT_REFS_CAP` (25) rows with a
-  `(N of M, use code_references for all)` note.
+- `--- references ---` — the first 25 semantic references/usages via
+  `nav.references`, with the same AST-aware syntax context, role, enclosing
+  symbol metadata, pagination count, and per-expression truncation as the
+  standalone tool. See `code_references.md`. A compatibility note directs the
+  agent to `code_references` when more results remain.
 
 ### Explicit hover requests are retained
 

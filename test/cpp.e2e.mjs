@@ -89,6 +89,49 @@ runOrSkip("code_outline on a .cpp file shows ccls detail signatures + body range
     }
 });
 
+runOrSkip("code_references adds C++ multiline call context and enclosing symbols", async () => {
+    const ws = await withWorkspace([]);
+    try {
+        const file = resolve(ws.root, "refs.cpp");
+        await writeFile(
+            file,
+            [
+                `int compute(int value) {`,
+                `  return value * 2;`,
+                `}`,
+                ``,
+                `int main() {`,
+                `  int result = compute(`,
+                `      21`,
+                `  );`,
+                `  return result;`,
+                `}`,
+                ``,
+            ].join("\n"),
+            "utf8",
+        );
+
+        // ccls supplies the semantic reference positions; tree-sitter must
+        // expand the call site to the complete multiline call expression.
+        const out = await nav.references(
+            { path: "refs.cpp", line: 1, column: 5 },
+            ws.root,
+            ws.clientOf,
+        );
+        assert.match(out, /kind: declaration\n\n1 \| compute/);
+        assert.match(out, /enclosing: compute  .*refs\.cpp:1:5/);
+        assert.match(out, /enclosing: main  .*refs\.cpp:5:5/);
+        assert.match(
+            out,
+            /kind: call\n\n6 \| compute\(\n7 \|       21\n8 \|   \)/,
+            `complete multiline call context missing:\n${out}`,
+        );
+        assert.match(out, /# 2 references$/, `reference count missing:\n${out}`);
+    } finally {
+        await ws.cleanup();
+    }
+});
+
 // ---------------------------------------------------------------------------
 // code_diagnostics on ccls — the push-fallback + event-driven indexing wait.
 // ---------------------------------------------------------------------------

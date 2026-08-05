@@ -1,8 +1,10 @@
 /**
  * code_references — all semantic references/usages of the symbol at
- * (path, line, column), including its declaration. Output is one location per
- * line (`<path>:<line>:<col>`) plus a trailing count. A clean empty result is
- * not an error; operational failures throw.
+ * (path, line, column), including its declaration. By default each paginated
+ * result includes AST-aware source context, its syntactic role, and the
+ * enclosing symbol's reusable position. `context: "none"` preserves the
+ * compact location-only survey format. A clean empty result is not an error;
+ * operational failures throw. See docs/code_references.md.
  */
 
 import { readFile } from "node:fs/promises";
@@ -13,12 +15,37 @@ import {
     UnknownLanguageError,
     validatePosition,
 } from "./nav-core";
-import { langForFile, renderLocation, toAbs } from "./render";
+import { langForFile, renderLocation, toAbs, uriToPath } from "./render";
+import { referenceSyntaxContext, ReferenceContextMode, tsLangForFile } from "./tree-sitter-parse";
 
 export interface ReferencesParams {
     path: string;
     line: number; // 1-based
     column: number; // 1-based
+    /** Source context mode. Defaults to "syntax". */
+    context?: "none" | ReferenceContextMode;
+    /** 1-based reference offset. Defaults to 1. */
+    offset?: number;
+    /** Maximum references returned. Defaults to 25; hard cap 200. */
+    limit?: number;
+}
+
+const DEFAULT_REFERENCE_LIMIT = 25;
+const MAX_REFERENCE_LIMIT = 200;
+/** Keep a default contextual page below pi's tool-output truncation threshold. */
+const CONTEXT_PAGE_BUDGET_CHARS = 36_000;
+
+function validatePagination(params: ReferencesParams): { offset: number; limit: number } {
+    const offset = params.offset ?? 1;
+    const limit = params.limit ?? DEFAULT_REFERENCE_LIMIT;
+    if (!Number.isInteger(offset) || offset < 1) throw new Error("offset must be an integer >= 1");
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_REFERENCE_LIMIT) {
+        throw new Error(`limit must be an integer between 1 and ${MAX_REFERENCE_LIMIT}`);
+    }
+    if (params.context !== undefined && !["none", "syntax", "enclosing"].includes(params.context)) {
+        throw new Error('context must be one of: "none", "syntax", "enclosing"');
+    }
+    return { offset, limit };
 }
 
 export async function references(
@@ -27,6 +54,8 @@ export async function references(
     clientOf: ClientProvider,
 ): Promise<string> {
     validatePosition(params.line, params.column);
+    const { offset, limit } = validatePagination(params);
+    const context = params.context ?? "syntax";
     const lang = langForFile(params.path);
     if (lang === null) throw new UnknownLanguageError(params.path);
     let client: LspClient;
@@ -54,10 +83,64 @@ export async function references(
         // symbol" for a failure.
         return `(no references found for ${params.path}:${params.line}:${params.column})`;
     }
-    const rendered = refs.map((r) => renderLocation(r));
-    // Drop the leading "N reference(s):" count line — it was prose the agent
-    // had to strip to get the list. A trailing comment line (# N references)
-    // is trivially ignorable while keeping the count for the few callers that
-    // want it.
-    return rendered.join("\n") + `\n# ${rendered.length} references`;
+    const page = refs.slice(offset - 1, offset - 1 + limit);
+    if (page.length === 0) {
+        return `(no references at offset ${offset}; ${refs.length} total references)`;
+    }
+
+    let rendered: string[];
+    if (context === "none") {
+        rendered = page.map((r) => renderLocation(r));
+    } else {
+        const fileCache = new Map<string, Promise<string>>();
+        rendered = await Promise.all(
+            page.map(async (ref) => {
+                const location = renderLocation(ref);
+                const refPath = uriToPath(ref.uri);
+                const tsLang = tsLangForFile(refPath);
+                if (!tsLang) return location;
+                let source = fileCache.get(refPath);
+                if (!source) {
+                    source = readFile(refPath, "utf8");
+                    fileCache.set(refPath, source);
+                }
+                try {
+                    const sourceText = await source;
+                    const ast = await referenceSyntaxContext(
+                        tsLang,
+                        sourceText,
+                        ref.range.start.line,
+                        ref.range.start.character,
+                        context,
+                    );
+                    if (!ast) return location;
+                    const metadata = ast.enclosing
+                        ? `enclosing: ${ast.enclosing.name}  ${refPath}:${ast.enclosing.line}:${ast.enclosing.column}\n`
+                        : "";
+                    return `${location}\n${metadata}kind: ${ast.kind}\n\n${ast.source}`;
+                } catch {
+                    // A reference may point into a generated, deleted, or
+                    // unsupported external file. Keep the semantically useful
+                    // LSP location rather than failing every result.
+                    return location;
+                }
+            }),
+        );
+        // A page of 25 pathological template expressions must not consume
+        // 25 × the per-expression cap. Divide a page budget fairly while
+        // leaving small/normal constructs untouched.
+        const perResultBudget = Math.max(220, Math.floor(CONTEXT_PAGE_BUDGET_CHARS / page.length));
+        rendered = rendered.map((block) => {
+            if (block.length <= perResultBudget) return block;
+            const cut = block.lastIndexOf("\n", perResultBudget);
+            return `${block.slice(0, cut > 0 ? cut : perResultBudget)}\n... | … context truncated for page budget …`;
+        });
+    }
+
+    const end = offset + page.length - 1;
+    const count =
+        offset === 1 && end === refs.length
+            ? `# ${refs.length} references`
+            : `# showing references ${offset}-${end} of ${refs.length}`;
+    return rendered.join(context === "none" ? "\n" : "\n\n") + `\n${count}`;
 }
