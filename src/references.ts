@@ -35,6 +35,59 @@ const MAX_REFERENCE_LIMIT = 200;
 /** Keep a default contextual page below pi's tool-output truncation threshold. */
 const CONTEXT_PAGE_BUDGET_CHARS = 36_000;
 
+/** Trim one pathological block without ever dropping the referenced line.
+ * Structural skeletons can place that line between a signature and footer, so
+ * a simple prefix cut would defeat the purpose of `context: "enclosing"`. */
+function truncateContextBlock(block: string, budget: number, focusLine: number, focusColumn: number): string {
+    if (block.length <= budget) return block;
+    const lines = block.split("\n");
+    const sourceStart = lines.findIndex((line) => /^\d+ \| /.test(line));
+    const focus = lines.findIndex((line) => line.startsWith(`${focusLine} | `));
+    if (sourceStart < 0 || focus < 0) {
+        return `${block.slice(0, budget)}\n... | … context truncated for page budget …`;
+    }
+
+    const keep = new Set<number>();
+    for (let i = 0; i < sourceStart; i++) keep.add(i); // location + metadata
+    for (let i = Math.max(sourceStart, focus - 2); i <= Math.min(lines.length - 1, focus + 2); i++) keep.add(i);
+    // Retain enough of the structural signature/footer to explain the sparse
+    // middle when budget permits.
+    for (let i = sourceStart; i < Math.min(lines.length, sourceStart + 3); i++) keep.add(i);
+    for (let i = Math.max(sourceStart, lines.length - 2); i < lines.length; i++) keep.add(i);
+
+    const renderKept = () => {
+        const indexes = [...keep].sort((a, b) => a - b);
+        const out: string[] = [];
+        for (let i = 0; i < indexes.length; i++) {
+            if (i > 0 && indexes[i] > indexes[i - 1] + 1) out.push("... | … context truncated for page budget …");
+            out.push(lines[indexes[i]]);
+        }
+        return out.join("\n");
+    };
+    let out = renderKept();
+    // Neighbouring context is optional; the location/metadata and exact
+    // referenced source line are not.
+    for (const index of [...keep]) {
+        if (out.length <= budget) break;
+        if (index >= sourceStart && index !== focus) {
+            keep.delete(index);
+            out = renderKept();
+        }
+    }
+    if (out.length <= budget) return out;
+    const prefix = lines.slice(0, sourceStart).join("\n");
+    const marker = "... | … context truncated for page budget …";
+    const fixed = `${prefix}\n${marker}\n`;
+    const focusPrefix = `${focusLine} | `;
+    const sourceLine = lines[focus].startsWith(focusPrefix)
+        ? lines[focus].slice(focusPrefix.length)
+        : lines[focus];
+    const available = Math.max(80, budget - fixed.length - focusPrefix.length - 2);
+    const start = Math.max(0, Math.min(focusColumn - Math.floor(available / 2), sourceLine.length - available));
+    const excerpt = sourceLine.slice(start, start + available);
+    return `${fixed}${focusPrefix}${start > 0 ? "…" : ""}${excerpt}${start + available < sourceLine.length ? "…" : ""}`;
+}
+
 function validatePagination(params: ReferencesParams): { offset: number; limit: number } {
     const offset = params.offset ?? 1;
     const limit = params.limit ?? DEFAULT_REFERENCE_LIMIT;
@@ -130,11 +183,14 @@ export async function references(
         // 25 × the per-expression cap. Divide a page budget fairly while
         // leaving small/normal constructs untouched.
         const perResultBudget = Math.max(220, Math.floor(CONTEXT_PAGE_BUDGET_CHARS / page.length));
-        rendered = rendered.map((block) => {
-            if (block.length <= perResultBudget) return block;
-            const cut = block.lastIndexOf("\n", perResultBudget);
-            return `${block.slice(0, cut > 0 ? cut : perResultBudget)}\n... | … context truncated for page budget …`;
-        });
+        rendered = rendered.map((block, index) =>
+            truncateContextBlock(
+                block,
+                perResultBudget,
+                page[index].range.start.line + 1,
+                page[index].range.start.character,
+            ),
+        );
     }
 
     const end = offset + page.length - 1;

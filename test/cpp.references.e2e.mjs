@@ -85,7 +85,10 @@ cppScenario("code_references supports enclosing context with a non-default offse
             clientOf,
         ),
     then: [
-        matches(/kind: read\n\n69 \| data\.putVar\(dataOut\);/, "enclosing statement missing"),
+        matches(/kind: read\n\n34 \| int main\(\)\n35 \| \{/, "function signature missing"),
+        matches(/\.\.\. \| <\.\.\.>\n66 \|       \/\/ Write the data to the file\./, "adjacent comments missing"),
+        matches(/69 \|       data\.putVar\(dataOut\);/, "referenced statement missing"),
+        matches(/\.\.\. \| <\.\.\.>\n84 \| \}/, "closing delimiter missing"),
         matches(/enclosing: main  .*simple_xy_wr\.cpp:34:5/),
         matches(/# showing references 2-2 of 3$/, "offset and limit pagination missing"),
     ],

@@ -17,7 +17,7 @@
 
 - `none` returns compact `path:line:column` rows.
 - `syntax` returns the smallest useful AST construct: a complete call, member expression, import, type expression, or assignment/declaration occurrence. A plain read expands to its nearest complete expression (and, when needed, its containing statement), so an argument reference renders `write(value)` rather than only `value`; multiline expressions retain all of their source lines.
-- `enclosing` expands that construct to its nearest containing statement or control-flow construct. It deliberately does not return the whole function/class; use the `enclosing` position with `code_definition` for that.
+- `enclosing` finds the nearest meaningful structural ancestor: a loop, branch, switch/case, function/method, class, namespace, or `with`. Plain compound blocks and `try` are skipped. It renders a sparse, tree-aware skeleton rather than dumping the ancestor's contiguous range: the structural header/signature, `<...>` gaps, comments directly adjacent to the containing statement, the complete statement/expression, and a closing delimiter when the language has one. Thus a reference directly in a function body gets function context, while one inside a loop gets the nearer loop.
 
 Every contextual result includes a best-effort role (`call`, `type`, `member`, `import`, `write`, `override`, `declaration`, or `read`) and enclosing function/class/namespace metadata when available:
 
@@ -31,7 +31,7 @@ kind: call
 1575 |     data_file);
 ```
 
-Source keeps its original formatting and absolute line numbers. Individual contexts are capped at 80 lines and 12,000 characters; large constructs retain a marked head/tail excerpt. A 36,000-character page budget is then divided across the requested results so several pathological expressions cannot trigger pi's whole-output truncation; affected blocks carry an explicit marker. A generated, deleted, unreadable, or unsupported result file falls back to its LSP location rather than failing the whole page.
+Source keeps its original formatting and absolute line numbers. Syntax contexts are capped at 80 lines and 12,000 characters. Enclosing skeletons apply separate limits to structural signatures, referenced bodies, and closing sections; gaps are explicit and the referenced source line is always retained. A 36,000-character page budget is then divided across the requested results so several pathological expressions cannot trigger pi's whole-output truncation; affected blocks carry an explicit marker while preserving the reference line. A generated, deleted, unreadable, or unsupported result file falls back to its LSP location rather than failing the whole page.
 
 ## Pagination and counts
 

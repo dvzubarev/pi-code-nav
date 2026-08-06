@@ -628,6 +628,169 @@ function byteToStringColumn(textLine: string, bytes: number): number {
 const MAX_CONTEXT_LINES = 80;
 const MAX_CONTEXT_CHARS = 12_000;
 
+/** Structural ancestors used by `context: "enclosing"`. Plain blocks and
+ * `try` are intentionally absent: they say little about why a statement runs. */
+const STRUCTURAL_NODE_TYPES = new Set([
+    "if_statement",
+    "elif_clause",
+    "else_clause",
+    "conditional_statement",
+    "for_statement",
+    "for_in_statement",
+    "range_based_for_statement",
+    "while_statement",
+    "do_statement",
+    "switch_statement",
+    "case_statement",
+    "case_clause",
+    "switch_case",
+    "switch_default",
+    "match_statement",
+    "with_statement",
+    ...DEFINITION_NODE_TYPES,
+]);
+
+const BLOCK_NODE_TYPES = new Set([
+    "block",
+    "compound_statement",
+    "statement_block",
+    "class_body",
+    "declaration_list",
+]);
+
+/** Nodes which are complete executable/declaration statements rather than
+ * expression fragments. Structural statements are handled separately. */
+const COMPLETE_STATEMENT_NODE_TYPES = new Set([
+    "expression_statement",
+    "return_statement",
+    "co_return_statement",
+    "throw_statement",
+    "raise_statement",
+    "break_statement",
+    "continue_statement",
+    "assignment",
+    "augmented_assignment",
+    "declaration",
+    "field_declaration",
+    "lexical_declaration",
+    "variable_declaration",
+    "using_declaration",
+    "import_statement",
+    "import_from_statement",
+    "import_declaration",
+    "export_statement",
+    "command",
+    "redirected_statement",
+]);
+
+const MAX_STRUCTURAL_SIGNATURE_LINES = 24;
+const MAX_STRUCTURAL_BODY_LINES = 80;
+const MAX_STRUCTURAL_FOOTER_LINES = 8;
+
+function containingBody(structure: Node, target: Node): Node | null {
+    const fields = ["body", "consequence", "alternative"];
+    for (const field of fields) {
+        const child = structure.childForFieldName(field);
+        if (child && containsNode(child, target)) return child;
+    }
+    // Grammar field names vary (notably bash and switch/case grammars). A
+    // containing block child is still unambiguous and keeps this best-effort.
+    return structure.namedChildren.find((child) => BLOCK_NODE_TYPES.has(child.type) && containsNode(child, target)) ?? null;
+}
+
+function completeContainingStatement(syntaxNode: Node): Node {
+    for (let node: Node | null = syntaxNode; node; node = node.parent) {
+        if (COMPLETE_STATEMENT_NODE_TYPES.has(node.type)) return node;
+        if (STRUCTURAL_NODE_TYPES.has(node.type) || BLOCK_NODE_TYPES.has(node.type)) break;
+    }
+    return syntaxNode;
+}
+
+function adjacentCommentRange(statement: Node, text: string): { start: number; end: number } {
+    let start = statement.startPosition.row;
+    let end = statement.endPosition.row;
+    const parent = statement.parent;
+    if (!parent) return { start, end };
+    const siblings = parent.namedChildren;
+    const index = siblings.findIndex((node) => node.id === statement.id);
+    if (index < 0) return { start, end };
+
+    // Include an immediately preceding comment block, but stop at a blank
+    // line. Following comments are included only when trailing on the same
+    // line; a next-line comment normally documents the next statement.
+    for (let i = index - 1; i >= 0 && siblings[i].type === "comment"; i--) {
+        const comment = siblings[i];
+        const gap = text.slice(comment.endIndex, statement.startIndex);
+        if (/\n[\t ]*\n/.test(gap)) break;
+        start = comment.startPosition.row;
+    }
+    const following = siblings[index + 1];
+    if (following?.type === "comment" && following.startPosition.row === statement.endPosition.row) {
+        end = following.endPosition.row;
+    }
+    return { start, end };
+}
+
+interface LineSection { start: number; end: number; limit: number }
+
+function limitedRows(start: number, end: number, limit: number, focus: number): number[] {
+    if (end < start) return [];
+    const count = end - start + 1;
+    if (count <= limit) return Array.from({ length: count }, (_, i) => start + i);
+    // Keep both ends plus the referenced area. This matters for giant template
+    // signatures and generated statements: the actual reference never falls
+    // out of the skeleton merely because one section hit its own limit.
+    const rows = new Set<number>();
+    const edge = Math.max(2, Math.floor(limit / 4));
+    for (let row = start; row < start + edge; row++) rows.add(row);
+    for (let row = end - edge + 1; row <= end; row++) rows.add(row);
+    const remaining = limit - rows.size;
+    const aroundStart = Math.max(start, Math.min(focus - Math.floor(remaining / 2), end - remaining + 1));
+    for (let row = aroundStart; row < aroundStart + remaining; row++) rows.add(row);
+    return [...rows].sort((a, b) => a - b);
+}
+
+function renderStructuralSkeleton(structure: Node, syntaxNode: Node, selected: Node, text: string): string {
+    const lines = text.split(/\r?\n/);
+    const statement = completeContainingStatement(syntaxNode);
+    const comments = adjacentCommentRange(statement, text);
+    const body = containingBody(structure, statement);
+    const sections: LineSection[] = [];
+
+    if (body) {
+        const delimited = body.type !== "block";
+        const headerEnd = body.startPosition.row - (delimited ? 0 : 1);
+        sections.push({ start: structure.startPosition.row, end: headerEnd, limit: MAX_STRUCTURAL_SIGNATURE_LINES });
+        sections.push({ start: comments.start, end: comments.end, limit: MAX_STRUCTURAL_BODY_LINES });
+        if (delimited) {
+            sections.push({ start: body.endPosition.row, end: structure.endPosition.row, limit: MAX_STRUCTURAL_FOOTER_LINES });
+        }
+    } else {
+        // A case/branch body or a single unbraced statement may not have a
+        // grammar `body` field. The structure's first line is still its useful
+        // header; retain the target and a closing line when one exists.
+        sections.push({ start: structure.startPosition.row, end: structure.startPosition.row, limit: MAX_STRUCTURAL_SIGNATURE_LINES });
+        sections.push({ start: comments.start, end: comments.end, limit: MAX_STRUCTURAL_BODY_LINES });
+        sections.push({ start: structure.endPosition.row, end: structure.endPosition.row, limit: MAX_STRUCTURAL_FOOTER_LINES });
+    }
+
+    const focus = selected.startPosition.row;
+    const rows = new Set<number>();
+    for (const section of sections) {
+        for (const row of limitedRows(section.start, section.end, section.limit, focus)) rows.add(row);
+    }
+    const ordered = [...rows].filter((row) => row >= 0 && row < lines.length).sort((a, b) => a - b);
+    const rendered: string[] = [];
+    for (let i = 0; i < ordered.length; i++) {
+        if (i > 0 && ordered[i] > ordered[i - 1] + 1) rendered.push("... | <...>");
+        rendered.push(`${ordered[i] + 1} | ${lines[ordered[i]]}`);
+    }
+    // Do not prefix-truncate a skeleton here: its reference is often in the
+    // middle. The references renderer applies its page budget around the exact
+    // reference line after metadata has been added.
+    return rendered.join("\n");
+}
+
 function renderNodeSource(node: Node, text: string): string {
     const lines = text.split(/\r?\n/);
     const start = node.startPosition;
@@ -744,21 +907,29 @@ export async function referenceSyntaxContext(
                 expressionContaining(chain) ?? nearest(chain, STATEMENT_NODE_TYPES) ?? selected;
         }
 
+        let contextNode = syntaxNode;
+        let renderedSource: string;
         if (mode === "enclosing") {
-            // Return the nearest containing statement/control construct above
-            // the syntax node, but never inflate to the whole function/class;
-            // its reusable position is supplied separately as metadata.
-            const syntaxAncestors = ancestors(syntaxNode);
-            const upper = syntaxAncestors.find(
-                (n) => n.id !== syntaxNode.id && STATEMENT_NODE_TYPES.has(n.type),
-            );
-            if (upper) syntaxNode = upper;
+            // Select the nearest ancestor with control/scope meaning, skipping
+            // plain blocks and try. Render a sparse AST-aware skeleton so a
+            // huge function/loop does not hide the referenced statement.
+            const structure = chain.find((node) => STRUCTURAL_NODE_TYPES.has(node.type));
+            if (structure) {
+                contextNode = structure;
+                renderedSource = renderStructuralSkeleton(structure, syntaxNode, selected, text);
+            } else {
+                const statement = completeContainingStatement(syntaxNode);
+                contextNode = statement;
+                renderedSource = renderNodeSource(statement, text);
+            }
+        } else {
+            renderedSource = renderNodeSource(syntaxNode, text);
         }
         return {
             kind,
-            startLine: syntaxNode.startPosition.row + 1,
-            endLine: syntaxNode.endPosition.row + 1,
-            source: renderNodeSource(syntaxNode, text),
+            startLine: contextNode.startPosition.row + 1,
+            endLine: contextNode.endPosition.row + 1,
+            source: renderedSource,
             enclosing: enclosingSymbol(chain, lang, sourceLines),
         };
     } finally {

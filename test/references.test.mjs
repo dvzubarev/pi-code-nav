@@ -62,6 +62,49 @@ consume(
     assert.equal(read.source, "2 | consume(\n3 |   payload\n4 | )");
 });
 
+test("enclosing context renders the nearest structural skeleton with adjacent comments", async () => {
+    const { referenceSyntaxContext } = await load("./src/tree-sitter-parse.ts");
+    const input = `void work() {
+  int payload = 1;
+  if (ready()) {
+    prepare();
+    // This use needs the prepared state.
+    consume(payload);
+    finish();
+  }
+}
+`;
+
+    const context = await referenceSyntaxContext("cpp", input, 5, 12, "enclosing");
+    assert.equal(context.startLine, 3, "the if, not the function or plain block, is nearest");
+    assert.equal(context.endLine, 8);
+    assert.match(context.source, /^3 \|   if \(ready\(\)\) \{/);
+    assert.match(context.source, /\.\.\. \| <\.\.\.>\n5 \|     \/\/ This use needs the prepared state\./);
+    assert.match(context.source, /6 \|     consume\(payload\);/);
+    assert.match(context.source, /\.\.\. \| <\.\.\.>\n8 \|   \}$/);
+    assert.doesNotMatch(context.source, /void work|prepare\(\)|finish\(\)/);
+});
+
+test("enclosing context skips try and falls back to the containing function", async () => {
+    const { referenceSyntaxContext } = await load("./src/tree-sitter-parse.ts");
+    const input = `function run(payload: string) {
+  try {
+    consume(payload);
+  } finally {
+    cleanup();
+  }
+}
+`;
+
+    const context = await referenceSyntaxContext("typescript", input, 2, 12, "enclosing");
+    assert.equal(context.startLine, 1);
+    assert.equal(context.endLine, 7);
+    assert.match(context.source, /^1 \| function run\(payload: string\) \{/);
+    assert.match(context.source, /3 \|     consume\(payload\);/);
+    assert.match(context.source, /7 \| \}$/);
+    assert.doesNotMatch(context.source, /2 \|   try|finally|cleanup/);
+});
+
 test("references compact mode is paginated and reports the total", async () => {
     const { references } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-refs-page-"));
