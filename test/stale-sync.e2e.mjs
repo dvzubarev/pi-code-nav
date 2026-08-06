@@ -16,64 +16,83 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { nav, withWorkspace, serverAvailable, SHOULD_RUN_E2E } from "./e2e-helpers.mjs";
+import { nav, serverAvailable, SHOULD_RUN_E2E } from "./e2e-helpers.mjs";
+import { scenario } from "./scenario.mjs";
 
 const skip = !SHOULD_RUN_E2E;
 const tyOk = SHOULD_RUN_E2E ? await serverAvailable("python") : false;
 const runOrSkip = (name, fn) => (skip || !tyOk ? test.skip(name, fn) : test(name, fn));
 
-runOrSkip("diagnostics reflects on-disk edits (no stale results)", async () => {
-    const ws = await withWorkspace([]);
-    try {
-        const file = resolve(ws.root, "stale_repro.py");
-        // v1: undefined name `missing_thing` — ty reports an error.
-        await writeFile(file, "def f():\n    return missing_thing\n", "utf8");
+scenario("diagnostics reflects on-disk edits (no stale results)", {
+    skip: skip || !tyOk,
 
-        const before = await nav.diagnostics({ path: "stale_repro.py" }, ws.root, ws.clientOf);
-        assert.match(before, /1 diagnostic\(s\)/, `expected an error before the fix:\n${before}`);
-        assert.match(before, /missing_thing/, `error should name the undefined symbol:\n${before}`);
+    given: {
+        files: {
+            "stale_repro.py": `
+                def f():
+                    return missing_thing
+            `,
+        },
+    },
 
-        // v2: fix the file — no undefined name anymore.
-        await writeFile(file, "def f():\n    return 42\n", "utf8");
+    when: async ({ root, clientOf }) => {
+        const before = await nav.diagnostics({ path: "stale_repro.py" }, root, clientOf);
+        await writeFile(resolve(root, "stale_repro.py"), "def f():\n    return 42\n", "utf8");
+        const after = await nav.diagnostics({ path: "stale_repro.py" }, root, clientOf);
+        return { before, after };
+    },
 
-        const after = await nav.diagnostics({ path: "stale_repro.py" }, ws.root, ws.clientOf);
-        assert.match(after, /no diagnostics/, `expected NO error after the fix:\n${after}`);
-        assert.doesNotMatch(
-            after,
-            /missing_thing/,
-            `stale error must NOT appear after the fix:\n${after}`,
-        );
-    } finally {
-        await ws.cleanup();
-    }
+    then: [
+        ({ before, after }) => {
+            assert.match(
+                before,
+                /1 diagnostic\(s\)/,
+                `expected an error before the fix:\n${before}`,
+            );
+            assert.match(
+                before,
+                /missing_thing/,
+                `error should name the undefined symbol:\n${before}`,
+            );
+            assert.match(after, /no diagnostics/, `expected NO error after the fix:\n${after}`);
+            assert.doesNotMatch(
+                after,
+                /missing_thing/,
+                `stale error must NOT appear after the fix:\n${after}`,
+            );
+        },
+    ],
 });
 
-runOrSkip("outline reflects newly-added symbols (no stale index)", async () => {
-    const ws = await withWorkspace([]);
-    try {
-        const file = resolve(ws.root, "stale_outline.py");
-        // v1: one function.
-        await writeFile(file, "def alpha():\n    return 1\n", "utf8");
+scenario("outline reflects newly-added symbols (no stale index)", {
+    skip: skip || !tyOk,
 
-        const before = await nav.outline({ path: "stale_outline.py" }, ws.root, ws.clientOf);
-        assert.match(before, /Function alpha/, `alpha should be in the outline:\n${before}`);
-        assert.doesNotMatch(
-            before,
-            /beta/,
-            `beta must not appear yet (not added):\n${before}`,
+    given: {
+        files: {
+            "stale_outline.py": `
+                def alpha():
+                    return 1
+            `,
+        },
+    },
+
+    when: async ({ root, clientOf }) => {
+        const before = await nav.outline({ path: "stale_outline.py" }, root, clientOf);
+        await writeFile(
+            resolve(root, "stale_outline.py"),
+            "def alpha():\n    return 1\n\ndef beta():\n    return 2\n",
+            "utf8",
         );
+        const after = await nav.outline({ path: "stale_outline.py" }, root, clientOf);
+        return { before, after };
+    },
 
-        // v2: add a second function.
-        await writeFile(file, "def alpha():\n    return 1\n\ndef beta():\n    return 2\n", "utf8");
-
-        const after = await nav.outline({ path: "stale_outline.py" }, ws.root, ws.clientOf);
-        assert.match(after, /Function alpha/, `alpha should still be present:\n${after}`);
-        assert.match(
-            after,
-            /Function beta/,
-            `beta should appear after the edit (didChange must have fired):\n${after}`,
-        );
-    } finally {
-        await ws.cleanup();
-    }
+    then: [
+        ({ before, after }) => {
+            assert.match(before, /Function alpha/, `alpha should be in the outline:\n${before}`);
+            assert.doesNotMatch(before, /beta/, `beta must not appear yet:\n${before}`);
+            assert.match(after, /Function alpha/, `alpha should still be present:\n${after}`);
+            assert.match(after, /Function beta/, `beta should appear after the edit:\n${after}`);
+        },
+    ],
 });

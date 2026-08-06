@@ -75,6 +75,15 @@
   scoped to a temp workspace with fixture files — the EXACT code path
   `index.ts` uses. Skip automatically when a server isn't on PATH (see
   `serverAvailable` in `test/e2e-helpers.mjs`).
+- **Scenario-style e2e tests**: use `test/scenario.mjs` when the fixture → tool
+  call → rendered-response contract is clearer as `given`, `when`, and `then`.
+  All Python and C++ e2e cases use this style. It is a thin layer over
+  `node:test` and `withWorkspace`, not a second test framework. `given.files`
+  accepts dedented source templates (or a workspace callback for generated
+  files such as `compile_commands.json`); use `matches()` / `notMatches()` for
+  stable response contracts rather than full snapshots of language-server
+  output. See `test/python.e2e.mjs`, `test/cpp.e2e.mjs`, and
+  `test/cpp.symbol.e2e.mjs`.
 - **Full extension (commands register)**: `printf '{"type":"get_commands"}' |
 pi --mode rpc --no-session | grep code-nav`. The tools themselves are best
   exercised by the LLM after `/code-nav`, or by `npm run test:e2e`.

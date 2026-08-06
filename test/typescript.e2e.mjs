@@ -20,56 +20,32 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { nav, withWorkspace, serverAvailable, SHOULD_RUN_E2E } from "./e2e-helpers.mjs";
+import { matches, scenario } from "./scenario.mjs";
 
 const skip = !SHOULD_RUN_E2E;
 const tsOk = SHOULD_RUN_E2E ? await serverAvailable("typescript") : false;
 const runOrSkip = (name, fn) => (skip || !tsOk ? test.skip(name, fn) : test(name, fn));
 
-runOrSkip(
-    "code_diagnostics on a .ts file with type errors reports them (push fallback)",
-    async () => {
-        // tsserver does NOT implement the LSP 3.17 pull model — it rejects
-        // textDocument/diagnostic with "Unhandled method". code_diagnostics must
-        // fall back to the publishDiagnostics push cache. This test verifies that
-        // fallback works end-to-end: the two real type errors below must appear.
-        const ws = await withWorkspace([]);
-        try {
-            const bad = resolve(ws.root, "bad.ts");
-            await writeFile(
-                bad,
-                [
-                    `const x: number = "string";`,
-                    `console.log(x.notReal);`,
-                    ``, // trailing newline
-                ].join("\n"),
-                "utf8",
-            );
-            const out = await nav.diagnostics({ path: "bad.ts" }, ws.root, ws.clientOf);
-            // We expect a header line plus at least one diagnostic row. We do NOT
-            // assert the exact error text (tsserver wording can drift across
-            // versions); we assert the two distinct errors are both reported.
-            assert.match(
-                out,
-                /\d+ diagnostic\(s\) for bad\.ts:/,
-                `diagnostic header missing:\n${out}`,
-            );
-            // Type 'string' is not assignable to type 'number' (line 0).
-            assert.match(
-                out,
-                /string['"s]? is not assignable to type ['"n]?number/i,
-                `type-assignability diagnostic missing:\n${out}`,
-            );
-            // Property 'notReal' does not exist on type 'number' (line 1).
-            assert.match(
-                out,
-                /Property ['"]?notReal['"]? does not exist on type/i,
-                `nonexistent-property diagnostic missing:\n${out}`,
-            );
-        } finally {
-            await ws.cleanup();
-        }
+scenario("code_diagnostics uses tsserver's push fallback", {
+    skip: skip || !tsOk,
+
+    given: {
+        files: {
+            "bad.ts": `
+                const x: number = "string";
+                console.log(x.notReal);
+            `,
+        },
     },
-);
+
+    when: ({ root, clientOf }) => nav.diagnostics({ path: "bad.ts" }, root, clientOf),
+
+    then: [
+        matches(/\d+ diagnostic\(s\) for bad\.ts:/, "diagnostic header missing"),
+        matches(/string['"s]? is not assignable to type ['"n]?number/i, "type mismatch missing"),
+        matches(/Property ['"]?notReal['"]? does not exist on type/i, "missing-property error missing"),
+    ],
+});
 
 runOrSkip(
     "code_diagnostics on a clean .ts file reports no diagnostics (push fallback)",
