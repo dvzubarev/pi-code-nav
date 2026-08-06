@@ -459,6 +459,31 @@ const DEFINITION_NODE_TYPES = new Set([
     "namespace_definition",
     "lambda_expression",
 ]);
+const EXPRESSION_NODE_TYPES = new Set([
+    // Calls are useful context even when the reference is an argument rather
+    // than the callee (`write(value)`). In that case the role remains `read`,
+    // but rendering only `value` throws away more context than grep would.
+    "call",
+    "call_expression",
+    "new_expression",
+    "attribute",
+    "field_expression",
+    "member_expression",
+    "subscript",
+    "subscript_expression",
+    "subscription",
+    "binary_expression",
+    "binary_operator",
+    "boolean_operator",
+    "comparison_operator",
+    "conditional_expression",
+    "ternary_expression",
+    "unary_expression",
+    "unary_operator",
+    "await_expression",
+    "cast_expression",
+    "parenthesized_expression",
+]);
 const STATEMENT_NODE_TYPES = new Set([
     "expression_statement",
     "return_statement",
@@ -505,16 +530,26 @@ function callContainingCallee(nodes: Node[], selected: Node): Node | undefined {
     return undefined;
 }
 
+function bindingDeclarationContaining(nodes: Node[], selected: Node): Node | undefined {
+    for (const n of nodes) {
+        if (!/declarator|declaration|parameter/.test(n.type)) continue;
+        const name = n.childForFieldName("name") ?? n.childForFieldName("declarator");
+        if (name && containsNode(name, selected)) return n;
+    }
+    return undefined;
+}
+
 function assignmentContainingLeft(nodes: Node[], selected: Node): Node | undefined {
     for (const n of nodes) {
-        if (!/assignment|declarator|declaration|parameter/.test(n.type)) continue;
-        const left =
-            n.childForFieldName("left") ??
-            n.childForFieldName("name") ??
-            n.childForFieldName("declarator");
+        if (!/assignment/.test(n.type)) continue;
+        const left = n.childForFieldName("left");
         if (left && containsNode(left, selected)) return n;
     }
     return undefined;
+}
+
+function expressionContaining(nodes: Node[]): Node | undefined {
+    return nearest(nodes, EXPRESSION_NODE_TYPES);
 }
 
 function definitionName(node: Node): Node | null {
@@ -660,6 +695,7 @@ export async function referenceSyntaxContext(
         // The outer type node carries the complete expression (`list[Point]`,
         // `std::vector<T>`), while the innermost is often just one identifier.
         const typed = typeNodes.length > 0 ? typeNodes[typeNodes.length - 1] : undefined;
+        const declaration = bindingDeclarationContaining(chain, selected);
         const assigned = assignmentContainingLeft(chain, selected);
         const definition = chain.find((n) => {
             if (!DEFINITION_NODE_TYPES.has(n.type)) return false;
@@ -682,6 +718,12 @@ export async function referenceSyntaxContext(
             // when that body is wanted; the identifier is the smallest useful
             // declaration construct here.
             syntaxNode = selected;
+        } else if (declaration) {
+            // A variable/parameter binding introduces the name; it is not a
+            // write reference merely because its declarator is a left-hand
+            // syntactic field (for example `int data[N]`).
+            kind = "declaration";
+            syntaxNode = nearest(chain, STATEMENT_NODE_TYPES) ?? declaration;
         } else if (assigned) {
             // Assignment wins over member/type shape: `obj.field = value` is
             // semantically a write, not merely a member occurrence.
@@ -693,6 +735,13 @@ export async function referenceSyntaxContext(
         } else if (member) {
             kind = "member";
             syntaxNode = member;
+        } else {
+            // An identifier by itself is usually less useful than grep output.
+            // Select the nearest complete expression (including a containing
+            // call when this is a bare argument), and fall back to a statement
+            // for constructs such as `return value`.
+            syntaxNode =
+                expressionContaining(chain) ?? nearest(chain, STATEMENT_NODE_TYPES) ?? selected;
         }
 
         if (mode === "enclosing") {

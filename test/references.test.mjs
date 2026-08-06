@@ -45,6 +45,23 @@ test("references defaults to syntax context with role and enclosing metadata", a
     }
 });
 
+test("syntax context renders complete read expressions and distinguishes declarations", async () => {
+    const { referenceSyntaxContext } = await load("./src/tree-sitter-parse.ts");
+    const input = `const payload = 1;
+consume(
+  payload
+);
+`;
+
+    const declaration = await referenceSyntaxContext("typescript", input, 0, 6);
+    assert.equal(declaration.kind, "declaration");
+    assert.equal(declaration.source, "1 | const payload = 1;");
+
+    const read = await referenceSyntaxContext("typescript", input, 2, 2);
+    assert.equal(read.kind, "read");
+    assert.equal(read.source, "2 | consume(\n3 |   payload\n4 | )");
+});
+
 test("references compact mode is paginated and reports the total", async () => {
     const { references } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-refs-page-"));

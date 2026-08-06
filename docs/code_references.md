@@ -16,7 +16,7 @@
 ```
 
 - `none` returns compact `path:line:column` rows.
-- `syntax` returns the smallest useful AST construct: a complete call, member expression, import, type expression, assignment/declaration occurrence, or identifier read.
+- `syntax` returns the smallest useful AST construct: a complete call, member expression, import, type expression, or assignment/declaration occurrence. A plain read expands to its nearest complete expression (and, when needed, its containing statement), so an argument reference renders `write(value)` rather than only `value`; multiline expressions retain all of their source lines.
 - `enclosing` expands that construct to its nearest containing statement or control-flow construct. It deliberately does not return the whole function/class; use the `enclosing` position with `code_definition` for that.
 
 Every contextual result includes a best-effort role (`call`, `type`, `member`, `import`, `write`, `override`, `declaration`, or `read`) and enclosing function/class/namespace metadata when available:

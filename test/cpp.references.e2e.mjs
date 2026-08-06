@@ -58,8 +58,11 @@ cppScenario("code_references supports syntax context with explicit pagination", 
         ),
     then: [
         matches(/kind: write\n\n44 \| dataOut\[i\]\[j\] = i \* NY \+ j/),
-        matches(/kind: read\n\n69 \| dataOut/),
-        matches(/kind: write\n\n38 \| int dataOut\[NX\]\[NY\];/),
+        matches(
+            /kind: read\n\n69 \| data\.putVar\(dataOut\)/,
+            "read should include its complete containing expression",
+        ),
+        matches(/kind: declaration\n\n38 \| int dataOut\[NX\]\[NY\];/),
         matches(/# 3 references$/, "explicit limit should include the full page"),
     ],
 });
