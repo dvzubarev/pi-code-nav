@@ -1,15 +1,10 @@
 // Fresh-ccls indexing scenarios for code_search_symbol.
 
 import { resolve } from "node:path";
-import { nav, serverAvailable, SHOULD_RUN_E2E } from "./e2e-helpers.mjs";
-import { matches, scenario } from "./scenario.mjs";
+import { nav, cppScenario } from "./cpp-helpers.mjs";
+import { matches } from "./scenario.mjs";
 
-const skip = !SHOULD_RUN_E2E;
-const cppOk = SHOULD_RUN_E2E ? await serverAvailable("cpp") : false;
-const unavailable = skip || !cppOk;
-
-scenario("code_search_symbol waits for a fresh ccls whole-project index", {
-    skip: unavailable,
+cppScenario("code_search_symbol waits for a fresh ccls whole-project index", {
     given: {
         files: {
             "alpha.cpp": "struct AlphaGadget { int value; };\nint main() { return 0; }",
@@ -48,8 +43,7 @@ scenario("code_search_symbol waits for a fresh ccls whole-project index", {
     ],
 });
 
-scenario("code_search_symbol warms up fresh ccls without a compile database", {
-    skip: unavailable,
+cppScenario("code_search_symbol warms up fresh ccls without a compile database", {
     given: {
         files: {
             "sample.cpp": `
@@ -61,7 +55,6 @@ scenario("code_search_symbol warms up fresh ccls without a compile database", {
             `,
         },
     },
-    when: ({ root, clientOf }) =>
-        nav.symbol({ query: "Gadget", language: "cpp" }, root, clientOf),
+    when: ({ root, clientOf }) => nav.symbol({ query: "Gadget", language: "cpp" }, root, clientOf),
     then: [matches(/\[cpp\].*Gadget/, "Gadget missing after warm-up")],
 });

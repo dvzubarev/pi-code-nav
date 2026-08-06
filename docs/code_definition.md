@@ -28,12 +28,13 @@ our code. Two causes, two fixes:
 
 ### Tests pinning the fix
 
-- `test/cpp.e2e.mjs` "code_definition on a cpp def returns the cpp body (not
-  the header decl)" — real reproducer using the user's minimal `fbin_file`
-  example. **Fails on the baseline** (bounces to header), **passes with the
-  fix** (returns cpp body). Cold-cache path (waits for indexing).
-- `test/python.e2e.mjs` — 5 new tests: top-level def, class def, method inside
-  class, call site → def jump, class call site → class def. The call-site
-  tests pin that step 0 does NOT short-circuit on a use (only on a def).
+- `test/cpp.definition.e2e.mjs` "code_definition on a cpp def returns the cpp
+  body (not the header decl)" — real reproducer using the user's minimal
+  `fbin_file` example. **Fails on the baseline** (bounces to header), **passes
+  with the fix** (returns cpp body). Cold-cache path (waits for indexing).
+- `test/python.definition.e2e.mjs` — 5 new tests: top-level def, class def,
+  method inside class, call site → def jump, class call site → class def. The
+  call-site tests pin that step 0 does NOT short-circuit on a use (only on a
+  def).
 - `test/errors.test.mjs` — mocks updated to add `openDocument` /
   `waitForIndexingComplete` to the mock client (the new pre-query calls).

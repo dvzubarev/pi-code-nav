@@ -82,8 +82,9 @@
   accepts dedented source templates (or a workspace callback for generated
   files such as `compile_commands.json`); use `matches()` / `notMatches()` for
   stable response contracts rather than full snapshots of language-server
-  output. See `test/python.e2e.mjs`, `test/cpp.e2e.mjs`, and
-  `test/cpp.symbol.e2e.mjs`.
+  output. E2E files are split by language and tool, for example
+  `test/python.definition.e2e.mjs`, `test/cpp.symbol.e2e.mjs`, and
+  `test/typescript.diagnostics.e2e.mjs`.
 - **Full extension (commands register)**: `printf '{"type":"get_commands"}' |
 pi --mode rpc --no-session | grep code-nav`. The tools themselves are best
   exercised by the LLM after `/code-nav`, or by `npm run test:e2e`.

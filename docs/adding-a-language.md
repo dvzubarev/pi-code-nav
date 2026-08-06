@@ -174,10 +174,11 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
 - `npm run check` — tsc passes (the `Lang` union widening surfaces every
   `Record<Lang, ...>` that needs the new key).
 - `npm test` — all unit tests pass, including the new `test/<lang>.test.mjs`.
-- `npm run test:e2e` — add `test/<lang>.e2e.mjs` (mirror `test/python.e2e.mjs`)
-  exercising `outline`/`symbol`/`definition`/`references`/`hover`/`diagnostics`
-  against the real server via `nav.*`. Skip gracefully when the server isn't on
-  PATH (see `serverAvailable` in `test/e2e-helpers.mjs`).
+- `npm run test:e2e` — add `test/<lang>.<tool>.e2e.mjs` files (mirror the
+  language/tool split in `test/python.definition.e2e.mjs`) exercising
+  `outline`/`symbol`/`definition`/`references`/`hover`/`diagnostics` against the
+  real server via `nav.*`. Skip gracefully when the server isn't on PATH (see
+  `serverAvailable` in `test/e2e-helpers.mjs`).
 - End-to-end (manual): run `node scripts/nav-cli.mjs` against a real file
   of the new language for `outline`, `symbol`, `scan --docs`,
   `definition`, `references`, `hover`. The last three are the round-trip
