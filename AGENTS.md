@@ -38,6 +38,9 @@ The tsconfig `paths` for `@earendil-works/pi-coding-agent`, `typebox`, and
 (`/home/denin/.npm-local/lib/...`) — they are machine-specific. The runtime
 (jiti) resolves these differently; tsc needs them for type-checking only.
 
+### Trace LSP server
+Use `scripts/lsp-trace.mjs`. Read more info in `docs/lsp-trace.md`.
+
 ## Installing
 
 `./install.sh` symlinks this directory to `~/.pi/agent/extensions/code-nav/`.
