@@ -8,7 +8,7 @@
  * docs/code_search_symbol.md.
  */
 
-import { readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import type { DocumentSymbol, SymbolInformation } from "vscode-languageserver-protocol";
 import type { Lang, LspClient } from "./lsp-client";
@@ -290,8 +290,23 @@ function parseCppSymbolName(name: string): {
     // Strip the parameter list: everything from the first `(`. ccls's
     // workspace/symbol `name` has at most one remaining top-level `(...)`
     // (the function's); return types don't contain `(` for the cases we handle.
-    const parenIdx = s.indexOf("(");
-    if (parenIdx >= 0) s = s.slice(0, parenIdx);
+    // Exception: C++ operator() where the first () is the operator NAME, not
+    // the parameter list. In that case, skip past operator() and find the real
+    // parameter list.
+    let parenIdx = s.indexOf("(");
+    if (parenIdx >= 0) {
+        if (
+            s.slice(0, parenIdx).endsWith("operator") &&
+            parenIdx + 1 < s.length &&
+            s[parenIdx + 1] === ")"
+        ) {
+            // operator() found — the () is part of the name.
+            const nextParen = s.indexOf("(", parenIdx + 2);
+            s = nextParen >= 0 ? s.slice(0, nextParen) : s;
+        } else {
+            s = s.slice(0, parenIdx);
+        }
+    }
     s = s.trim();
 
     // Handle `using NAME = TYPE` (ccls name: `using <qual>::<name> = <type>`).
@@ -866,9 +881,10 @@ interface FanOutMatch {
  * declaration — there is no multi-line body to show, and `code_definition`
  * just echoes the line already in the row. This includes ccls extended kind
  * 252 (using-aliases, typedefs) and any standard LSP kind where the body
- * would be the declaration line itself (Enum 10, TypeParameter 26, etc. —
- * singletons, not methods/functions/classes). The agent can always call
- * `code_definition` directly if it needs the raw line. */
+ * would be the declaration line itself (TypeParameter 26, etc. — singletons,
+ * not methods/functions/classes/enums; an enum's enumerator list IS a body).
+ * The agent can always call `code_definition` directly if it needs the raw
+ * line. */
 async function renderSymbolFanOut(
     matches: FanOutMatch[],
     info: ("code" | "hover" | "references")[],
@@ -901,15 +917,29 @@ async function renderSymbolFanOut(
             // Skip `code` for declaration-only symbol kinds where the
             // definition IS the declaration line (already shown in the row):
             // ccls extended kind 252 (using-aliases, typedefs) and standard
-            // LSP kinds whose body adds nothing (Enum, TypeParameter, etc.).
+            // LSP kinds whose body adds nothing (TypeParameter, Module,
+            // Namespace, etc.). Enums are NOT declaration-only — their
+            // enumerator list IS a body code_definition surfaces.
             // The agent can still call code_definition directly.
             if (isDeclarationOnlyKind(sym.kind ?? 0)) {
-                // For declaration-only kinds, the ccls `name` *is* the
-                // definition — e.g. "using my_alias = int" or
-                // "typedef int my_typedef". Show it inline instead of
-                // running code_definition (which would return the same line).
+                // For declaration-only kinds, show the verbatim source line
+                // from the file (not ccls's fully-qualified `name`, which
+                // differs from what the user wrote — e.g. ccls renders
+                // `using DealableCard = std::unique_ptr<Card>` as
+                // `using blackjack::Deck::DealableCard = std::unique_ptr<Card>`).
                 const heading = publicInclude ? "definition" : "code";
-                matchBlocks.push(`--- ${heading} ---\n${sym.name}`);
+                let declText: string;
+                try {
+                    const src = await readFile(path, "utf8");
+                    const srcLines = src.split(/\r?\n/);
+                    const range = sym.location.range;
+                    const sl = range?.start?.line ?? (start?.line ?? 0);
+                    const el = range?.end?.line ?? sl;
+                    declText = srcLines.slice(sl, el + 1).join("\n") || sym.name;
+                } catch {
+                    declText = sym.name;
+                }
+                matchBlocks.push(`--- ${heading} ---\n${declText}`);
             } else {
                 const section = start
                     ? await renderFanOutCodeSection(path, line1, col1, codeBudget, cwd, clientOf)
@@ -939,15 +969,17 @@ async function renderSymbolFanOut(
  * surface via `code_definition`). For these kinds the `code` section is
  * skipped in the fan-out — the declaration line is already in the row.
  * Covers ccls extended kind 252 (using-aliases, typedefs) and standard LSP
- * SymbolKinds where the symbol IS the declaration (Enum, TypeParameter,
- * etc. — anything that is not a function/method/class/struct with a
- * multi-line body). */
+ * SymbolKinds where the symbol IS the declaration (TypeParameter, Module,
+ * Namespace, etc. — anything that is not a function/method/class/struct/enum
+ * with a multi-line body). Enum is NOT declaration-only: an enum's
+ * enumerator list (`enum class Rank : std::uint16_t { ACE = 1, TWO, ... };`)
+ * is a valuable multi-line body that `code_definition` surfaces, so it goes
+ * through the normal `code` path. */
 function isDeclarationOnlyKind(kind: number): boolean {
     // ccls extended kind: 252 = using-alias / typedef.
     if (kind === 252) return true;
     // Standard LSP SymbolKinds that are declaration-only.
     return (
-        kind === 10 || // Enum
         kind === 26 || // TypeParameter
         kind === 2 || // Module
         kind === 3 || // Namespace
