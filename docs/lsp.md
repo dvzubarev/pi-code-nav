@@ -162,11 +162,27 @@ first `didOpen` of a file in that project. `workspace/symbol` (tsserver's
 works around this with `LspClient.ensureProjectLoaded()`: if no document has
 been opened yet, it scans the workspace root (skipping `node_modules`,
 `build`, `dist`, `.git`, hidden dirs) for the first source file of the
-server's language and opens it. This is a no-op for the other servers (they
-return true immediately when `openDocs.size > 0` or when `lang !==
-"typescript"`). `code_outline`/`code_hover`/`code_definition`/
-`code_references`/`code_rename` all open the target document first, so they
-load the project naturally and don't need `ensureProjectLoaded`.
+server's language and opens it.
+
+`didOpen` alone is NOT a completion barrier: it is an LSP notification, and a
+cold `workspace/symbol` sent immediately afterward can run while tsserver is
+still loading the `tsconfig`, returning only symbols from the opened file (or
+none). typescript-language-server translates tsserver's
+`projectLoadingStart`/`projectLoadingFinish` events into standard LSP
+work-done progress: a server-created UUID token followed by `$/progress`
+`begin`/`end`. `ensureProjectLoaded()` records the generic progress revision
+before the bootstrap open, waits briefly for that interval to start, then
+waits for its end before allowing `workspace/symbol`. The generic token
+tracker is shared transport machinery with ccls, but completion policy is
+server-specific: TypeScript trusts the matching work-done `end`; ccls still
+polls authoritative `$ccls/info` counters because it can omit progress for a
+one-TU batch.
+
+The warm-up is a no-op for other servers (they return true immediately when
+`openDocs.size > 0` or when `lang !== "typescript"`). `code_outline`/
+`code_hover`/`code_definition`/`code_references`/`code_rename` all open the
+target document first, so they load the project naturally and don't need the
+cold workspace-search barrier.
 
 **Diagnostics via push fallback.** typescript-language-server does NOT
 implement the LSP 3.17 `textDocument/diagnostic` pull model — see

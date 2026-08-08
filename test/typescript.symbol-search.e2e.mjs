@@ -30,6 +30,22 @@ typescriptScenario("code_search_symbol auto-detects TypeScript in a checkout ser
     ],
 });
 
+// The bootstrap scan opens api/checkout.ts first. InvoiceLedger exists only in
+// billing/invoice.ts, so this catches the cold-project race where didOpen was
+// followed by workspace/symbol before tsserver finished loading the tsconfig.
+typescriptScenario("code_search_symbol waits for a cold TypeScript project to load", {
+    given: { fixtures, workspaceRoot: "symbol-search-typescript" },
+    when: ({ root, clientOf }) =>
+        nav.symbol({ query: "InvoiceLedger", language: "typescript" }, root, clientOf),
+    then: [
+        matches(
+            /\[typescript\] Class InvoiceLedger  .*billing[\\/]invoice\.ts:\d+:\d+/,
+            "symbol from an unopened project file missing",
+        ),
+        notMatches(/api[\\/]checkout\.ts/, "an import binding was returned instead of the declaration"),
+    ],
+});
+
 // Reproduce from the repository root:
 //   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-typescript" node scripts/nav-cli.mjs symbol billing.invoice.Invoice typescript
 // The qualified query should select the domain interface, not another exact
@@ -130,7 +146,7 @@ typescriptScenario("code_search_symbol name_pattern matches TypeScript names cas
 
 // Reproduce from the repository root:
 //   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-typescript" node scripts/nav-cli.mjs symbol serialize typescript --kinds method --name-pattern '^SERIALIZE$' --include definition
-// Filters run before include fan-out, so only the two exact methods receive
+// Filters run before include fan-out, so only the three exact methods receive
 // definition sections and the functions do not leak into the response.
 typescriptScenario("code_search_symbol combines kinds, name_pattern, and include", {
     given: { fixtures, workspaceRoot: "symbol-search-typescript" },
@@ -149,7 +165,7 @@ typescriptScenario("code_search_symbol combines kinds, name_pattern, and include
         ),
     then: [
         matches(
-            /^# 1 match for "serialize" — include: definition$/m,
+            /^# 3 matches for "serialize" — include: definition$/m,
             "filtered fan-out count missing",
         ),
         matches(/== \[1\] \[typescript\] Method serialize /, "method fan-out missing"),

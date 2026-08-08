@@ -414,6 +414,18 @@ export class LspClient {
      * waitForIndexingComplete().
      */
     private indexState: "idle" | "in_progress" | "ended" = "idle";
+    /**
+     * Generic LSP work-done-progress tracking. Unlike ccls's `indexState`
+     * (whose completion is verified through `$ccls/info`), this tracks the
+     * actual lifetime of server-created progress tokens. TypeScript uses a
+     * fresh UUID token around tsserver's projectLoadingStart/projectLoadingFinish
+     * events, which gives ensureProjectLoaded an authoritative cold-project
+     * barrier before its first workspace/symbol request.
+     */
+    private workDoneRegistered = new Set<string>();
+    private workDoneActive = new Set<string>();
+    private workDoneRevision = 0;
+    private workDoneWaiters = new Set<() => void>();
 
     constructor(lang: Lang, rootPath: string, cfg: ServerConfig, logDir?: string) {
         this.lang = lang;
@@ -653,27 +665,25 @@ export class LspClient {
                 }
             },
         );
-        // ccls reports project-wide indexing via the LSP work-done-progress
-        // protocol. It registers the "index" token through a SERVER-initiated
-        // window/workDoneProgress/create REQUEST (has both id and method) and
-        // then may push $/progress notifications (begin/report/end) on that
-        // token. We answer the create request and retain those notifications
-        // for observability, but do not treat "end" as authoritative: one-TU
-        // batches emit no pair, and it can race with newly opened work.
-        // waitForIndexingComplete uses `$ccls/info` pipeline counters.
-        // Registered BEFORE initialize (like publishDiagnostics) so the create
-        // request ccls sends ~1s after initialize is never dropped. String
-        // method names per the landmine #2 rule. Only ccls uses this; other
-        // servers send no such request, and the handlers are inert for them.
+        // Work-done progress is used by both ccls and typescript-language-server:
+        // ccls uses the stable "index" token, while TypeScript creates a UUID
+        // token for each tsserver project-loading interval. Track the generic
+        // token lifecycle for TypeScript's cold-project barrier, and separately
+        // retain ccls's specialized state (whose authoritative completion comes
+        // from `$ccls/info`, not from progress). Register BEFORE initialize so
+        // no early server-created token is missed. String method names per the
+        // protocol-package compatibility rule in docs/lsp.md.
         conn.onRequest(
             "window/workDoneProgress/create",
-            // params: { token: string | number }. Accept any token ccls
-            // registers; the result is void (null on the wire).
-            () => null,
+            (params: { token?: string | number }) => {
+                this.handleWorkDoneCreate(params?.token);
+                return null;
+            },
         );
         conn.onNotification(
             "$/progress",
             (params: { token?: string | number; value?: { kind?: string } }) => {
+                this.handleWorkDoneProgress(params);
                 this.handleIndexProgress(params);
             },
         );
@@ -758,10 +768,10 @@ export class LspClient {
                 workspace: {
                     symbol: {},
                 },
-                // Opt into the work-done-progress protocol so ccls reports
-                // project-wide indexing via $/progress when the batch is large
-                // enough (see handleIndexProgress / waitForIndexingComplete).
-                // Other servers ignore this capability.
+                // Opt into work-done progress. ccls reports indexing batches;
+                // typescript-language-server reports tsserver project loading.
+                // See handleWorkDoneProgress / waitForWorkDoneSince and the
+                // ccls-specific handleIndexProgress / waitForIndexingComplete.
                 window: {
                     workDoneProgress: true,
                 },
@@ -903,7 +913,8 @@ export class LspClient {
      * that requires one. Two servers need a warm-up:
      *   - tsserver loads its project lazily on the first didOpen of a file in
      *     that project; `workspace/symbol` (navto) throws "No Project." before
-     *     then. didOpen alone suffices (project load is triggered on open).
+     *     then and can return a partial project while loading. The standard
+     *     work-done begin/end interval is the completion barrier.
      *   - ccls populates its `workspace/symbol` index by parsing ALL the
      *     translation units listed in compile_commands.json. On a COLD cache
      *     this takes several seconds; until it finishes, workspace/symbol sees
@@ -915,21 +926,40 @@ export class LspClient {
      * Implementation: if no document has been opened yet, find one source file
      * of this server's language under the workspace root and open it (the file
      * stays open for the session — matching the no-close-until-shutdown
-     * policy); for ccls, also wait for background indexing to finish so
-     * workspace/symbol sees the WHOLE project. Returns true if a project is
+     * policy); then wait for TypeScript's work-done interval or ccls's
+     * authoritative pipeline counters so workspace/symbol sees the WHOLE
+     * project. Returns true if a project is
      * known to be loaded; false if no matching source file could be found.
      */
     async ensureProjectLoaded(): Promise<boolean> {
         await this.ensureReady();
         if (this.lang !== "typescript" && this.lang !== "cpp") return true;
+        let progressBeforeOpen: number | undefined;
         if (this.openDocs.size === 0) {
             try {
                 const file = await findFirstSourceFile(this.rootUri, this.lang);
                 if (!file) return false;
                 const text = await readFile(file, "utf8");
+                if (this.lang === "typescript") progressBeforeOpen = this.workDoneRevision;
                 await this.openDocument(file, text);
             } catch {
                 return false;
+            }
+        }
+        // typescript-language-server turns tsserver's projectLoadingStart /
+        // projectLoadingFinish events into an LSP work-done progress interval.
+        // didOpen is only a notification and can return before that interval
+        // even starts; wait for the interval generated by the bootstrap open
+        // before issuing workspace/symbol. Without this barrier a cold navto
+        // sees only the opened file (or no symbols) while tsconfig loading is
+        // still in flight. If another tool opened the document, only wait when
+        // a progress token is currently registered/active; completed loading
+        // needs no additional grace period.
+        if (this.lang === "typescript") {
+            if (progressBeforeOpen !== undefined) {
+                await this.waitForWorkDoneSince(progressBeforeOpen);
+            } else if (this.workDoneRegistered.size > 0 || this.workDoneActive.size > 0) {
+                await this.waitForWorkDoneSince(this.workDoneRevision);
             }
         }
         // Opening a document is not evidence that ccls's background index is
@@ -939,6 +969,98 @@ export class LspClient {
         // an empty symbol result.
         if (this.lang === "cpp") await this.waitForIndexingComplete();
         return true;
+    }
+
+    private workDoneKey(token: string | number): string {
+        return `${typeof token}:${token}`;
+    }
+
+    private signalWorkDoneChange(): void {
+        this.workDoneRevision++;
+        const waiters = [...this.workDoneWaiters];
+        this.workDoneWaiters.clear();
+        for (const resolve of waiters) resolve();
+    }
+
+    private handleWorkDoneCreate(token: string | number | undefined): void {
+        if (token === undefined) return;
+        this.workDoneRegistered.add(this.workDoneKey(token));
+        this.signalWorkDoneChange();
+    }
+
+    private handleWorkDoneProgress(params: {
+        token?: string | number;
+        value?: { kind?: string };
+    }): void {
+        if (params.token === undefined) return;
+        const key = this.workDoneKey(params.token);
+        const kind = params.value?.kind;
+        if (kind === "begin") {
+            // Be tolerant of servers that skip window/workDoneProgress/create.
+            this.workDoneRegistered.add(key);
+            this.workDoneActive.add(key);
+            this.signalWorkDoneChange();
+        } else if (kind === "end") {
+            this.workDoneActive.delete(key);
+            this.workDoneRegistered.delete(key);
+            this.signalWorkDoneChange();
+        }
+        // report does not change token lifetime.
+    }
+
+    private async waitForWorkDoneChange(revision: number, timeoutMs: number): Promise<void> {
+        if (this.workDoneRevision !== revision || timeoutMs <= 0) return;
+        await new Promise<void>((resolve) => {
+            let settled = false;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                this.workDoneWaiters.delete(finish);
+                resolve();
+            };
+            const timer = setTimeout(finish, timeoutMs);
+            this.workDoneWaiters.add(finish);
+            // Close the check→registration race with a second revision check.
+            if (this.workDoneRevision !== revision) finish();
+        });
+    }
+
+    /**
+     * Wait for a server-created work-done interval occurring after `revision`.
+     * A short start window is necessary because didOpen is a notification and
+     * TypeScript creates its progress token asynchronously. Once activity is
+     * observed, failure to receive the matching end is a hard timeout rather
+     * than an empty/partial workspace-symbol result.
+     */
+    private async waitForWorkDoneSince(revision: number, startMs = 1000, endMs = 60000): Promise<void> {
+        const resolvedStartMs = process.env.CODE_NAV_PROJECT_LOAD_START_TIMEOUT_MS
+            ? parseInt(process.env.CODE_NAV_PROJECT_LOAD_START_TIMEOUT_MS, 10)
+            : startMs;
+        const resolvedEndMs = process.env.CODE_NAV_PROJECT_LOAD_END_TIMEOUT_MS
+            ? parseInt(process.env.CODE_NAV_PROJECT_LOAD_END_TIMEOUT_MS, 10)
+            : endMs;
+
+        const startDeadline = Date.now() + resolvedStartMs;
+        while (
+            this.workDoneRevision === revision &&
+            this.workDoneRegistered.size === 0 &&
+            this.workDoneActive.size === 0
+        ) {
+            const remaining = startDeadline - Date.now();
+            if (remaining <= 0) return; // Server did not report project loading.
+            await this.waitForWorkDoneChange(revision, remaining);
+        }
+
+        const endDeadline = Date.now() + resolvedEndMs;
+        while (this.workDoneRegistered.size > 0 || this.workDoneActive.size > 0) {
+            const remaining = endDeadline - Date.now();
+            if (remaining <= 0) {
+                throw new Error(`TypeScript project loading timed out after ${resolvedEndMs}ms`);
+            }
+            const before = this.workDoneRevision;
+            await this.waitForWorkDoneChange(before, remaining);
+        }
     }
 
     /**
@@ -1026,6 +1148,9 @@ export class LspClient {
     /** Drop any progress-tracking state (used on shutdown/exit/spawn-fail). */
     private resetIndexingState(): void {
         this.indexState = "idle";
+        this.workDoneRegistered.clear();
+        this.workDoneActive.clear();
+        this.signalWorkDoneChange();
     }
 
     /**
