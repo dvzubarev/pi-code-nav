@@ -612,12 +612,11 @@ export async function symbol(
             continue;
         }
         // For python/typescript: when a qualifier is present, the agent asked
-        // for a SPECIFIC symbol (e.g. `typing.cast`, `cbor2.loads`). Keep ONLY
-        // exact-name matches whose module path matches the qualifier — fuzzy
-        // partials in the same module are noise. A qualifier implies a third-
-        // party request, so workspace-root results (whose home folder is
-        // `rootPath`, i.e. module path is project-relative, not a third-party
-        // dotted module) are dropped — they don't carry the qualifier.
+        // for a SPECIFIC symbol (e.g. workspace `commerce.domain.Invoice` or
+        // dependency `typing.cast`). Keep ONLY exact-name matches, tiered by
+        // how closely the result's module path matches the qualifier. Every
+        // workspace folder participates, including the project root and added
+        // third-party roots; qualification says nothing about symbol ownership.
         if (lang !== "cpp" && qualifier !== null) {
             // Qualified query (python/typescript): the agent asked for a
             // SPECIFIC symbol like `typing.cast`, `cbor2.loads`,
@@ -634,13 +633,14 @@ export async function symbol(
             // path from the result file's location. Three tiers, first
             // non-empty wins (so a precise qualifier is never drowned by the
             // broad fallback):
-            //   Q1 — exact name, third-party, module path matches the
-            //        qualifier precisely (`mod === qualifier` or
+            //   Q1 — exact name in any workspace folder, module path matches
+            //        the qualifier precisely (`mod === qualifier` or
             //        `mod.startsWith(qualifier + ".")`). This is the happy
-            //        path: `typing.cast` -> `typing`, `cbor2.loads` ->
-            //        `cbor2._decoder` (matches `cbor2.`).
-            //   Q2 — exact name, third-party, module path shares the
-            //        qualifier's LEADING component. The qualifier's leading
+            //        path: workspace `commerce.domain.Invoice` ->
+            //        `commerce.domain`, `typing.cast` -> `typing`, and
+            //        `cbor2.loads` -> `cbor2._decoder` (matches `cbor2.`).
+            //   Q2 — exact name in any workspace folder whose module path
+            //        shares the qualifier's LEADING component. The leading
             //        component is its first path segment (e.g. `aiohttp` for
             //        `aiohttp.StreamReader` and `aiohttp.web`). This catches
             //        the two cases `modulePathOf`-vs-qualifier mismatch that
@@ -654,12 +654,9 @@ export async function symbol(
             //            `aiohttp.web_request` does NOT `.startsWith("aiohttp.web.")`
             //            (the `_` breaks the `.` boundary), but its leading
             //            component `aiohttp` matches.
-            //        A workspace-root hit is excluded (a bare name in the
-            //        workspace almost always means the agent's own symbol,
-            //        not a third-party one).
-            //   Q3 — exact name, third-party, anything else. Last resort so a
-            //        qualified query never returns empty when exact-name
-            //        third-party hits exist; the agent can disambiguate from
+            //   Q3 — exact name in any workspace folder, anything else. Last
+            //        resort so a qualified query never returns empty when
+            //        exact-name hits exist; the agent can disambiguate from
             //        the rendered paths.
             // Fuzzy/partial-name matches are ALWAYS dropped for a qualified
             // query — the agent asked for a specific symbol, so fuzzy noise
@@ -673,25 +670,21 @@ export async function symbol(
             // a qualified query is not.)
             const exactName = (s: SymbolInformation): boolean => s.name === bare;
             const qualLeading = qualifier.split(QUALIFIED_SEP[lang]!)[0];
-            const isThirdParty = (s: SymbolInformation): boolean => {
-                const home = homeFolderOf(s.location.uri, folders);
-                return !!home && home !== client.rootPath;
-            };
             const modLeadingCmp = (uri: string): string | null => {
                 const mod = modulePathOf(uri, folders);
                 if (mod === null) return null;
                 return mod.split(".")[0];
             };
-            const exactThirdParty = syms.filter((s) => exactName(s) && isThirdParty(s));
-            const q1 = exactThirdParty.filter((s) => {
+            const exactMatches = syms.filter(exactName);
+            const q1 = exactMatches.filter((s) => {
                 const mod = modulePathOf(s.location.uri, folders);
                 return mod !== null && (mod === qualifier || mod.startsWith(qualifier + "."));
             });
-            const q2 = exactThirdParty.filter((s) => {
+            const q2 = exactMatches.filter((s) => {
                 const lead = modLeadingCmp(s.location.uri);
                 return lead !== null && lead === qualLeading;
             });
-            const q3 = exactThirdParty;
+            const q3 = exactMatches;
             syms = q1.length > 0 ? q1 : q2.length > 0 ? q2 : q3;
             // TODO(future): precise container disambiguation via documentSymbol.
             //   Q2 (leading-component fallback) is deliberately loose — it

@@ -95,8 +95,9 @@ server can index relevant dependencies:
 
 This does not mean every installed package or system header is indexed. It
 means the search covers third-party code that is relevant to the current
-project. Qualified queries such as `cbor2.loads`, `typing.cast`, and
-`std::vector::push_back` help rank and narrow those results.
+project. Qualified queries search every indexed workspace folder—not only
+third-party roots—and names such as `commerce.domain.Invoice`, `cbor2.loads`,
+`typing.cast`, and `std::vector::push_back` help rank and narrow results.
 
 Use `include` to expand up to five exact matches in the same call:
 

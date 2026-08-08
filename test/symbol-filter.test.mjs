@@ -227,6 +227,32 @@ test("python bare 'load' (no workspace exact) keeps only substring-matching fuzz
     }
 });
 
+test("python qualified workspace module query retains the matching project-root symbol", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symfilter-py-qualified-"));
+    try {
+        const root = dir;
+        const queries = [];
+        const canned = [
+            sym("Invoice", 5, `${root}/commerce/domain.py`, 20, 6),
+            sym("Invoice", 5, `${root}/other.py`, 3, 6),
+            sym("InvoiceFactory", 5, `${root}/commerce/domain.py`, 30, 6),
+        ];
+        const out = await symbol(
+            { query: "commerce.domain.Invoice", language: "python" },
+            dir,
+            mockClientOf(dir, canned, (query) => queries.push(query)),
+        );
+        const rows = out.split("\n").filter((line) => line.startsWith("[python]"));
+        assert.deepEqual(queries, ["Invoice"], "ty should receive the bare symbol tail");
+        assert.equal(rows.length, 1, `expected only the qualified workspace match:\n${out}`);
+        assert.match(rows[0], /Class Invoice  .*commerce[\\/]domain\.py:/);
+        assert.doesNotMatch(out, /other\.py|InvoiceFactory/);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
 test("python bare 'tempc' with workspace TempC returns ONLY TempC (case-insensitive exact)", async () => {
     const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symfilter-case-"));

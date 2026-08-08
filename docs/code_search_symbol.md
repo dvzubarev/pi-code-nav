@@ -58,11 +58,16 @@ for a QUALIFIED query is CASE-SENSITIVE (the agent spelled the exact symbol
 (ty's fuzzy search returns case variants and a bare name is ambiguous).
 Fuzzy/partial-name matches are ALWAYS dropped for a qualified query.
 
-- **Q1** = exact name, third-party, module path matches the qualifier
-  precisely (`mod === qualifier` or `mod.startsWith(qualifier + ".")`).
-  Happy path: `typing.cast` -> `typing`, `cbor2.loads` -> `cbor2._decoder`.
-- **Q2** = exact name, third-party, module path shares the qualifier's
-  LEADING component (first `.`-segment). Graceful fallback for two cases a
+All workspace folders participate in every tier: the project root as well as
+added dependency/stdlib roots. A qualified name identifies a module or
+container; it does **not** imply that the symbol is third-party.
+
+- **Q1** = exact name, module path matches the qualifier precisely
+  (`mod === qualifier` or `mod.startsWith(qualifier + ".")`). Happy paths:
+  workspace `commerce.domain.Invoice` -> `commerce.domain`, `typing.cast` ->
+  `typing`, and `cbor2.loads` -> `cbor2._decoder`.
+- **Q2** = exact name, module path shares the qualifier's LEADING component
+  (first `.`-segment). Graceful fallback for two cases a
   precise module-path match silently dropped before:
   * `aiohttp.StreamReader.iter_chunks` — the qualifier's `StreamReader` is a
     CLASS, not a module; the method lives in `aiohttp.streams`. Shared
@@ -71,9 +76,8 @@ Fuzzy/partial-name matches are ALWAYS dropped for a qualified query.
     (re-exported from `aiohttp.web`). `aiohttp.web_request` does NOT
     `.startsWith("aiohttp.web.")` (the `_` breaks the `.` boundary), but the
     leading component `aiohttp` matches.
-- **Q3** = exact name, third-party, anything else (last resort so a
-  qualified query never returns empty when exact-name third-party hits
-  exist).
+- **Q3** = exact name in any workspace folder, anything else (last resort so
+  a qualified query never returns empty when exact-name hits exist).
 
 ## Ranking (workspace-first tiering)
 

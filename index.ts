@@ -289,7 +289,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         parameters: Type.Object({
             query: Type.String({
                 description:
-                    "Symbol name to search for. A bare name (e.g. `loads`, `TempC`) searches the workspace first, then third-party/stdlib. A qualified name (`typing.cast`, `cbor2.loads`, `std::vector::push_back`) pins a specific module/namespace.",
+                    "Symbol name to search for. A bare name (e.g. `loads`, `TempC`) searches the workspace first, then third-party/stdlib. A qualified name (`commerce.domain.Invoice`, `typing.cast`, `std::vector::push_back`) pins a specific workspace or dependency module/namespace.",
             }),
             language: Type.Optional(
                 StringEnum(ALL_LANGS, {
