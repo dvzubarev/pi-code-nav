@@ -138,7 +138,7 @@ async function main() {
             if (rest.length !== 3) usage();
             console.log(await nav.hover(params, ROOT, clientOf));
         } else {
-            for (let i = 3; i < rest.length; ) {
+            for (let i = 3; i < rest.length;) {
                 const flag = rest[i];
                 if (flag === "--list-symbols") {
                     params.list_symbols = true;

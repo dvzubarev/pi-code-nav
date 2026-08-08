@@ -88,7 +88,10 @@ cppScenario("code_definition keeps comments before C++ class, method, and functi
     }),
     then: [
         ({ classBody, methodBody, functionBody }) => {
-            matches(/(^|\/)definition-comments\.cpp:1-13$/m, "class body range is wrong")(classBody);
+            matches(
+                /(^|\/)definition-comments\.cpp:1-13$/m,
+                "class body range is wrong",
+            )(classBody);
             matches(
                 /^2 \| \/\/ comments before the class body$/m,
                 "class line comment missing",
@@ -108,7 +111,10 @@ cppScenario("code_definition keeps comments before C++ class, method, and functi
             matches(/^11 \|         return 7;$/m, "class body method missing")(classBody);
             notMatches(/free-function body/, "class body leaked the following function")(classBody);
 
-            matches(/(^|\/)definition-comments\.cpp:6-12$/m, "method body range is wrong")(methodBody);
+            matches(
+                /(^|\/)definition-comments\.cpp:6-12$/m,
+                "method body range is wrong",
+            )(methodBody);
             matches(
                 /^7 \|     \/\/\/ comments before the method body$/m,
                 "method line comment missing",

@@ -460,7 +460,9 @@ function parseCppSymbolName(name: string): {
 function cppNameComponentMatches(query: string, candidate: string): boolean {
     // Explicit template arguments pin the specialization. Without them, retain
     // the existing behavior where a base-name query also finds specializations.
-    return query.includes("<") ? candidate === query : stripCppTemplateArguments(candidate) === query;
+    return query.includes("<")
+        ? candidate === query
+        : stripCppTemplateArguments(candidate) === query;
 }
 
 function isCppExactMatch(
@@ -996,7 +998,7 @@ async function renderSymbolFanOut(
                     const src = await readFile(path, "utf8");
                     const srcLines = src.split(/\r?\n/);
                     const range = sym.location.range;
-                    const sl = range?.start?.line ?? (start?.line ?? 0);
+                    const sl = range?.start?.line ?? start?.line ?? 0;
                     const el = range?.end?.line ?? sl;
                     declText = srcLines.slice(sl, el + 1).join("\n") || sym.name;
                 } catch {
@@ -1027,14 +1029,7 @@ async function renderSymbolFanOut(
         }
         if (wantRefs) {
             const section = start
-                ? await renderFanOutRefsSection(
-                      path,
-                      line1,
-                      col1,
-                      cwd,
-                      clientOf,
-                      listSymbols,
-                  )
+                ? await renderFanOutRefsSection(path, line1, col1, cwd, clientOf, listSymbols)
                 : `(no position)`;
             matchBlocks.push(`--- references ---\n${section}`);
         }

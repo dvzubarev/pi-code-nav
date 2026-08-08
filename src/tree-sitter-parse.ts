@@ -402,13 +402,7 @@ function classifyRole(node: TSNode, lang: TsLang): SymbolRole | null {
  * primary entry points for third-party discovery (the whole reason this tool
  * exists). Callers wanting locals pass `roles` including `var`.
  */
-export const ALL_SYMBOL_ROLES: readonly SymbolRole[] = [
-    "type",
-    "call",
-    "member",
-    "import",
-    "var",
-];
+export const ALL_SYMBOL_ROLES: readonly SymbolRole[] = ["type", "call", "member", "import", "var"];
 
 export const DEFAULT_SYMBOL_ROLES: readonly SymbolRole[] = ["type", "call", "member", "import"];
 
@@ -720,7 +714,11 @@ function containingBody(structure: Node, target: Node): Node | null {
     }
     // Grammar field names vary (notably bash and switch/case grammars). A
     // containing block child is still unambiguous and keeps this best-effort.
-    return structure.namedChildren.find((child) => BLOCK_NODE_TYPES.has(child.type) && containsNode(child, target)) ?? null;
+    return (
+        structure.namedChildren.find(
+            (child) => BLOCK_NODE_TYPES.has(child.type) && containsNode(child, target),
+        ) ?? null
+    );
 }
 
 function completeContainingStatement(syntaxNode: Node): Node {
@@ -750,13 +748,20 @@ function adjacentCommentRange(statement: Node, text: string): { start: number; e
         start = comment.startPosition.row;
     }
     const following = siblings[index + 1];
-    if (following?.type === "comment" && following.startPosition.row === statement.endPosition.row) {
+    if (
+        following?.type === "comment" &&
+        following.startPosition.row === statement.endPosition.row
+    ) {
         end = following.endPosition.row;
     }
     return { start, end };
 }
 
-interface LineSection { start: number; end: number; limit: number }
+interface LineSection {
+    start: number;
+    end: number;
+    limit: number;
+}
 
 function limitedRows(start: number, end: number, limit: number, focus: number): number[] {
     if (end < start) return [];
@@ -770,12 +775,20 @@ function limitedRows(start: number, end: number, limit: number, focus: number): 
     for (let row = start; row < start + edge; row++) rows.add(row);
     for (let row = end - edge + 1; row <= end; row++) rows.add(row);
     const remaining = limit - rows.size;
-    const aroundStart = Math.max(start, Math.min(focus - Math.floor(remaining / 2), end - remaining + 1));
+    const aroundStart = Math.max(
+        start,
+        Math.min(focus - Math.floor(remaining / 2), end - remaining + 1),
+    );
     for (let row = aroundStart; row < aroundStart + remaining; row++) rows.add(row);
     return [...rows].sort((a, b) => a - b);
 }
 
-function renderStructuralSkeleton(structure: Node, syntaxNode: Node, selected: Node, text: string): string {
+function renderStructuralSkeleton(
+    structure: Node,
+    syntaxNode: Node,
+    selected: Node,
+    text: string,
+): string {
     const lines = text.split(/\r?\n/);
     const statement = completeContainingStatement(syntaxNode);
     const comments = adjacentCommentRange(statement, text);
@@ -785,24 +798,49 @@ function renderStructuralSkeleton(structure: Node, syntaxNode: Node, selected: N
     if (body) {
         const delimited = body.type !== "block";
         const headerEnd = body.startPosition.row - (delimited ? 0 : 1);
-        sections.push({ start: structure.startPosition.row, end: headerEnd, limit: MAX_STRUCTURAL_SIGNATURE_LINES });
-        sections.push({ start: comments.start, end: comments.end, limit: MAX_STRUCTURAL_BODY_LINES });
+        sections.push({
+            start: structure.startPosition.row,
+            end: headerEnd,
+            limit: MAX_STRUCTURAL_SIGNATURE_LINES,
+        });
+        sections.push({
+            start: comments.start,
+            end: comments.end,
+            limit: MAX_STRUCTURAL_BODY_LINES,
+        });
         if (delimited) {
-            sections.push({ start: body.endPosition.row, end: structure.endPosition.row, limit: MAX_STRUCTURAL_FOOTER_LINES });
+            sections.push({
+                start: body.endPosition.row,
+                end: structure.endPosition.row,
+                limit: MAX_STRUCTURAL_FOOTER_LINES,
+            });
         }
     } else {
         // A case/branch body or a single unbraced statement may not have a
         // grammar `body` field. The structure's first line is still its useful
         // header; retain the target and a closing line when one exists.
-        sections.push({ start: structure.startPosition.row, end: structure.startPosition.row, limit: MAX_STRUCTURAL_SIGNATURE_LINES });
-        sections.push({ start: comments.start, end: comments.end, limit: MAX_STRUCTURAL_BODY_LINES });
-        sections.push({ start: structure.endPosition.row, end: structure.endPosition.row, limit: MAX_STRUCTURAL_FOOTER_LINES });
+        sections.push({
+            start: structure.startPosition.row,
+            end: structure.startPosition.row,
+            limit: MAX_STRUCTURAL_SIGNATURE_LINES,
+        });
+        sections.push({
+            start: comments.start,
+            end: comments.end,
+            limit: MAX_STRUCTURAL_BODY_LINES,
+        });
+        sections.push({
+            start: structure.endPosition.row,
+            end: structure.endPosition.row,
+            limit: MAX_STRUCTURAL_FOOTER_LINES,
+        });
     }
 
     const focus = selected.startPosition.row;
     const rows = new Set<number>();
     for (const section of sections) {
-        for (const row of limitedRows(section.start, section.end, section.limit, focus)) rows.add(row);
+        for (const row of limitedRows(section.start, section.end, section.limit, focus))
+            rows.add(row);
     }
     const ordered = [...rows].filter((row) => row >= 0 && row < lines.length).sort((a, b) => a - b);
     const rendered: string[] = [];

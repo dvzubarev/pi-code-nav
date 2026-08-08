@@ -49,7 +49,12 @@ const CONTEXT_PAGE_BUDGET_CHARS = 36_000;
 /** Trim one pathological block without ever dropping the referenced line.
  * Structural skeletons can place that line between a signature and footer, so
  * a simple prefix cut would defeat the purpose of `context: "enclosing"`. */
-function truncateContextBlock(block: string, budget: number, focusLine: number, focusColumn: number): string {
+function truncateContextBlock(
+    block: string,
+    budget: number,
+    focusLine: number,
+    focusColumn: number,
+): string {
     if (block.length <= budget) return block;
     const lines = block.split("\n");
     const sourceStart = lines.findIndex((line) => /^\d+ \| /.test(line));
@@ -60,7 +65,8 @@ function truncateContextBlock(block: string, budget: number, focusLine: number, 
 
     const keep = new Set<number>();
     for (let i = 0; i < sourceStart; i++) keep.add(i); // location + metadata
-    for (let i = Math.max(sourceStart, focus - 2); i <= Math.min(lines.length - 1, focus + 2); i++) keep.add(i);
+    for (let i = Math.max(sourceStart, focus - 2); i <= Math.min(lines.length - 1, focus + 2); i++)
+        keep.add(i);
     // Retain enough of the structural signature/footer to explain the sparse
     // middle when budget permits.
     for (let i = sourceStart; i < Math.min(lines.length, sourceStart + 3); i++) keep.add(i);
@@ -70,7 +76,8 @@ function truncateContextBlock(block: string, budget: number, focusLine: number, 
         const indexes = [...keep].sort((a, b) => a - b);
         const out: string[] = [];
         for (let i = 0; i < indexes.length; i++) {
-            if (i > 0 && indexes[i] > indexes[i - 1] + 1) out.push("... | … context truncated for page budget …");
+            if (i > 0 && indexes[i] > indexes[i - 1] + 1)
+                out.push("... | … context truncated for page budget …");
             out.push(lines[indexes[i]]);
         }
         return out.join("\n");
@@ -94,7 +101,10 @@ function truncateContextBlock(block: string, budget: number, focusLine: number, 
         ? lines[focus].slice(focusPrefix.length)
         : lines[focus];
     const available = Math.max(80, budget - fixed.length - focusPrefix.length - 2);
-    const start = Math.max(0, Math.min(focusColumn - Math.floor(available / 2), sourceLine.length - available));
+    const start = Math.max(
+        0,
+        Math.min(focusColumn - Math.floor(available / 2), sourceLine.length - available),
+    );
     const excerpt = sourceLine.slice(start, start + available);
     return `${fixed}${focusPrefix}${start > 0 ? "…" : ""}${excerpt}${start + available < sourceLine.length ? "…" : ""}`;
 }
@@ -226,7 +236,11 @@ export async function references(
                                 sourceText,
                                 ast.source,
                             );
-                            renderedSource = annotateNumberedSource(ast.source, sourceText, entries);
+                            renderedSource = annotateNumberedSource(
+                                ast.source,
+                                sourceText,
+                                entries,
+                            );
                         } catch (e) {
                             renderedSource += `\nsymbols: ERROR ${e}`;
                         }

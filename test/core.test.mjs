@@ -121,7 +121,10 @@ test("renderSymbolTable format is the documented header + rows", async () => {
     // repeated per row (it's in the header).
     assert.match(out, /  import cbor2\s+:1:8/);
     // The full path must NOT appear on the data row (only in the header).
-    assert.ok(!/import cbor2\s+widget\.py:1:8/.test(out), `row should not repeat the path:\n${out}`);
+    assert.ok(
+        !/import cbor2\s+widget\.py:1:8/.test(out),
+        `row should not repeat the path:\n${out}`,
+    );
 });
 
 test("renderSymbolTable empty case", async () => {

@@ -169,9 +169,9 @@ registerBlackjack("code_search_symbol C++ blackjack scenarios", () => {
             language: "cpp",
             include: ["definition"],
         });
-        matches(/--- definition ---[\s\S]*enum class Rank : std::uint16_t \{[\s\S]*ACE = 1,[\s\S]*KING/)(
-            response,
-        );
+        matches(
+            /--- definition ---[\s\S]*enum class Rank : std::uint16_t \{[\s\S]*ACE = 1,[\s\S]*KING/,
+        )(response);
     });
 
     // Reproduce from the repository root:
@@ -186,8 +186,6 @@ registerBlackjack("code_search_symbol C++ blackjack scenarios", () => {
         matches(/--- definition ---[\s\S]*using DealableCard = std::unique_ptr<Card>/)(response);
     });
 });
-
-
 
 // Reproduce from the repository root:
 //   tmp=$(mktemp -d); cp test/fixtures/functor.cpp "$tmp/"; CODE_NAV_ROOT="$tmp" node scripts/nav-cli.mjs symbol MyAddFunctor cpp --kind struct; rm -rf "$tmp"
@@ -267,7 +265,10 @@ cppScenario(
                     "method body comment missing",
                 )(methodBody);
                 matches(/^11 \|         return 22;$/m, "method body statement missing")(methodBody);
-                notMatches(/class body|main\(\)/, "method definition leaked surrounding source")(methodBody);
+                notMatches(
+                    /class body|main\(\)/,
+                    "method definition leaked surrounding source",
+                )(methodBody);
             },
         ],
     },
@@ -325,4 +326,3 @@ cppScenario("code_search_symbol rejects an invalid public name_pattern", {
 
 // Real source: test/fixtures/blackjack.cpp, scraped from:
 // https://gist.github.com/thebashpotato/704c4508cb859448f4233817b5e1249b
-

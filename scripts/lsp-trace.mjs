@@ -138,8 +138,12 @@ const log = (tag, ...rest) => console.log(`[${elapsed()}] ${tag}`, ...rest);
 log("spawn", `${cfg.command} ${cfg.args.join(" ")}`, "in", root);
 
 const proc = spawn(cfg.command, cfg.args, { stdio: ["pipe", "pipe", "pipe"] });
-proc.on("error", (e) => { log("SPAWN-ERR", e.message); });
-proc.on("exit", (c, sig) => { log("EXIT", `code=${c} sig=${sig}`); });
+proc.on("error", (e) => {
+    log("SPAWN-ERR", e.message);
+});
+proc.on("exit", (c, sig) => {
+    log("EXIT", `code=${c} sig=${sig}`);
+});
 proc.stderr.on("data", (d) => {
     // ccls logs info/warn/error to stderr — surface it.
     for (const line of d.toString().split("\n").filter(Boolean)) {
@@ -151,9 +155,9 @@ const reader = new StreamMessageReader(proc.stdout);
 const writer = new StreamMessageWriter(proc.stdin);
 const conn = createMessageConnection(reader, writer, {
     error: (m) => log("RPC-ERR", m),
-    warn:  (m) => log("RPC-WARN", m),
-    info:  () => {},
-    log:   () => {},
+    warn: (m) => log("RPC-WARN", m),
+    info: () => {},
+    log: () => {},
 });
 
 // ---------------------------------------------------------------------------
@@ -171,7 +175,11 @@ await conn.trace(Trace.Verbose, {
             }
         } else if (msg?.isLSPMessage) {
             const method = msg.message?.method ?? msg.message?.id ?? "?";
-            log("TRACE", `${msg.type} ${method}`, compact(msg.message?.params ?? msg.message?.result ?? msg.message?.error, 150));
+            log(
+                "TRACE",
+                `${msg.type} ${method}`,
+                compact(msg.message?.params ?? msg.message?.result ?? msg.message?.error, 150),
+            );
         } else {
             log("TRACE", compact(msg, 150));
         }
@@ -192,7 +200,10 @@ conn.onRequest("window/workDoneProgress/create", (params) => {
 });
 
 conn.onNotification("$/progress", (params) => {
-    log("PROGRESS", `token=${params?.token} kind=${params?.value?.kind} msg=${params?.value?.message ?? ""}`);
+    log(
+        "PROGRESS",
+        `token=${params?.token} kind=${params?.value?.kind} msg=${params?.value?.message ?? ""}`,
+    );
 });
 
 conn.listen();
@@ -217,7 +228,7 @@ try {
             file: resolve(root, f),
         }));
         await import("node:fs/promises").then((fs) =>
-            fs.writeFile(compileDb, JSON.stringify(entries, null, 2), "utf8")
+            fs.writeFile(compileDb, JSON.stringify(entries, null, 2), "utf8"),
         );
         autoCreated = true;
         log("AUTO", `created ${compileDb} (${cppFiles.length} files)`);
@@ -320,7 +331,9 @@ async function doSymbol(query) {
     const list = Array.isArray(syms) ? syms : [];
     log("CMD", `symbol → ${list.length} results`);
     for (const s of list.slice(0, 15)) {
-        const loc = s.location?.uri ? `${shortPath(s.location.uri)}:${(s.location.range?.start?.line ?? 0) + 1}` : "?";
+        const loc = s.location?.uri
+            ? `${shortPath(s.location.uri)}:${(s.location.range?.start?.line ?? 0) + 1}`
+            : "?";
         log("  RESULT", `[kind=${s.kind}] ${s.name} @ ${loc}`);
     }
     if (list.length > 15) log("  RESULT", `… (${list.length - 15} more)`);
@@ -374,7 +387,10 @@ async function doReferences(file, line, col) {
     const locs = Array.isArray(result) ? result : [];
     log("CMD", `references → ${locs.length} locations`);
     for (const l of locs.slice(0, 10)) {
-        log("  REF", `${shortPath(l.uri)}:${(l.range?.start?.line ?? 0) + 1}:${(l.range?.start?.character ?? 0) + 1}`);
+        log(
+            "  REF",
+            `${shortPath(l.uri)}:${(l.range?.start?.line ?? 0) + 1}:${(l.range?.start?.character ?? 0) + 1}`,
+        );
     }
     if (locs.length > 10) log("  REF", `… (${locs.length - 10} more)`);
 }
@@ -397,13 +413,19 @@ async function runCommands() {
             case "symbol":
             case "workspaceSymbol": {
                 const query = positional.shift();
-                if (!query) { console.error("error: symbol <query>"); process.exit(2); }
+                if (!query) {
+                    console.error("error: symbol <query>");
+                    process.exit(2);
+                }
                 await doSymbol(query);
                 break;
             }
             case "open": {
                 const file = positional.shift();
-                if (!file) { console.error("error: open <file>"); process.exit(2); }
+                if (!file) {
+                    console.error("error: open <file>");
+                    process.exit(2);
+                }
                 await doOpen(file);
                 break;
             }
@@ -440,7 +462,11 @@ try {
     process.exitCode = 1;
 } finally {
     log("SHUTDOWN", "sending shutdown + exit");
-    try { await conn.sendRequest("shutdown", null); } catch {}
-    try { await conn.sendNotification("exit", {}); } catch {}
+    try {
+        await conn.sendRequest("shutdown", null);
+    } catch {}
+    try {
+        await conn.sendNotification("exit", {});
+    } catch {}
     setTimeout(() => proc.kill(), 500);
 }

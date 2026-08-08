@@ -35,7 +35,10 @@ test("python: detected via pyproject.toml root marker", async () => {
         const { detectProjectLanguages } = await load("./src/nav.ts");
         const langs = await detectProjectLanguages(root);
         assert.ok(langs.includes("python"), `expected python in ${JSON.stringify(langs)}`);
-        assert.ok(!langs.includes("typescript"), `did not expect typescript in ${JSON.stringify(langs)}`);
+        assert.ok(
+            !langs.includes("typescript"),
+            `did not expect typescript in ${JSON.stringify(langs)}`,
+        );
     } finally {
         await rm(root, { recursive: true, force: true });
     }
@@ -145,7 +148,10 @@ test("result is cached: second call returns without re-scanning", async () => {
         await writeFile(join(root, "tsconfig.json"), "{}\n");
         const second = await detectProjectLanguages(root);
         assert.deepEqual(second, first, "second call should return cached result, not re-scan");
-        assert.ok(!second.includes("typescript"), "cache miss: re-scanned and saw the new tsconfig.json");
+        assert.ok(
+            !second.includes("typescript"),
+            "cache miss: re-scanned and saw the new tsconfig.json",
+        );
     } finally {
         await rm(root, { recursive: true, force: true });
     }

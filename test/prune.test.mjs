@@ -20,7 +20,8 @@ function sym(name, kind, children, extra) {
 }
 
 test("pruneDocSymbolTree: keeps Function(12) at top level", async () => {
-    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } = await load("./src/outline.ts");
+    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } =
+        await load("./src/outline.ts");
     const tree = [sym("foo", 12)];
     const result = pruneDocSymbolTree(tree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS);
     assert.equal(result.length, 1);
@@ -28,20 +29,17 @@ test("pruneDocSymbolTree: keeps Function(12) at top level", async () => {
 });
 
 test("pruneDocSymbolTree: drops Variable(13)", async () => {
-    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } = await load("./src/outline.ts");
+    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } =
+        await load("./src/outline.ts");
     const tree = [sym("MAX_SIZE", 13)];
     const result = pruneDocSymbolTree(tree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS);
     assert.equal(result.length, 0);
 });
 
 test("pruneDocSymbolTree: lifts children from Namespace(3) with :: prefix", async () => {
-    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } = await load("./src/outline.ts");
-    const tree = [
-        sym("diskann", 3, [
-            sym("block_convert", 12),
-            sym("normalize_data_file", 12),
-        ]),
-    ];
+    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } =
+        await load("./src/outline.ts");
+    const tree = [sym("diskann", 3, [sym("block_convert", 12), sym("normalize_data_file", 12)])];
     const result = pruneDocSymbolTree(tree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS);
     assert.equal(result.length, 2);
     assert.equal(result[0].name, "diskann::block_convert");
@@ -49,54 +47,36 @@ test("pruneDocSymbolTree: lifts children from Namespace(3) with :: prefix", asyn
 });
 
 test("pruneDocSymbolTree: lifts Struct(23) from Namespace(3) with :: prefix", async () => {
-    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } = await load("./src/outline.ts");
-    const tree = [
-        sym("diskann", 3, [
-            sym("PivotContainer", 23),
-        ]),
-    ];
+    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } =
+        await load("./src/outline.ts");
+    const tree = [sym("diskann", 3, [sym("PivotContainer", 23)])];
     const result = pruneDocSymbolTree(tree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS);
     assert.equal(result.length, 1);
     assert.equal(result[0].name, "diskann::PivotContainer");
 });
 
 test("pruneDocSymbolTree: lifts children out of nested namespaces (ns1::ns2::fn)", async () => {
-    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } = await load("./src/outline.ts");
-    const tree = [
-        sym("ns1", 3, [
-            sym("ns2", 3, [
-                sym("doStuff", 12),
-            ]),
-        ]),
-    ];
+    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } =
+        await load("./src/outline.ts");
+    const tree = [sym("ns1", 3, [sym("ns2", 3, [sym("doStuff", 12)])])];
     const result = pruneDocSymbolTree(tree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS);
     assert.equal(result.length, 1);
     assert.equal(result[0].name, "ns1::ns2::doStuff");
 });
 
 test("pruneDocSymbolTree: drops Variable(13) inside a Namespace(3)", async () => {
-    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } = await load("./src/outline.ts");
-    const tree = [
-        sym("diskann", 3, [
-            sym("MAX_REQUEST_SIZE", 13),
-            sym("block_convert", 12),
-        ]),
-    ];
+    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } =
+        await load("./src/outline.ts");
+    const tree = [sym("diskann", 3, [sym("MAX_REQUEST_SIZE", 13), sym("block_convert", 12)])];
     const result = pruneDocSymbolTree(tree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS);
     assert.equal(result.length, 1);
     assert.equal(result[0].name, "diskann::block_convert");
 });
 
 test("pruneDocSymbolTree: Class(5) inside Namespace(3) gets prefix, children keep empty prefix", async () => {
-    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } = await load("./src/outline.ts");
-    const tree = [
-        sym("diskann", 3, [
-            sym("Foo", 5, [
-                sym("doStuff", 6),
-                sym("Foo", 9),
-            ]),
-        ]),
-    ];
+    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } =
+        await load("./src/outline.ts");
+    const tree = [sym("diskann", 3, [sym("Foo", 5, [sym("doStuff", 6), sym("Foo", 9)])])];
     const result = pruneDocSymbolTree(tree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS);
     assert.equal(result.length, 1);
     assert.equal(result[0].name, "diskann::Foo");
@@ -110,13 +90,14 @@ test("pruneDocSymbolTree: Class(5) inside Namespace(3) gets prefix, children kee
 });
 
 test("pruneDocSymbolTree: interface, constructor, method all survive lift", async () => {
-    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } = await load("./src/outline.ts");
+    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } =
+        await load("./src/outline.ts");
     const tree = [
         sym("ns", 3, [
-            sym("Iterable", 11),         // Interface
+            sym("Iterable", 11), // Interface
             sym("Foo", 5, [
-                sym("Foo", 9),            // Constructor
-                sym("run", 6),             // Method
+                sym("Foo", 9), // Constructor
+                sym("run", 6), // Method
             ]),
         ]),
     ];
@@ -135,13 +116,9 @@ test("pruneDocSymbolTree: interface, constructor, method all survive lift", asyn
 });
 
 test("pruneDocSymbolTree: keeps top-level Function alongside lifted namespace children", async () => {
-    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } = await load("./src/outline.ts");
-    const tree = [
-        sym("file_exists", 12),
-        sym("diskann", 3, [
-            sym("block_convert", 12),
-        ]),
-    ];
+    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } =
+        await load("./src/outline.ts");
+    const tree = [sym("file_exists", 12), sym("diskann", 3, [sym("block_convert", 12)])];
     const result = pruneDocSymbolTree(tree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS);
     assert.equal(result.length, 2);
     assert.equal(result[0].name, "file_exists");
@@ -149,13 +126,15 @@ test("pruneDocSymbolTree: keeps top-level Function alongside lifted namespace ch
 });
 
 test("pruneDocSymbolTree: empty top-level list returns []", async () => {
-    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } = await load("./src/outline.ts");
+    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } =
+        await load("./src/outline.ts");
     const result = pruneDocSymbolTree([], OUTLINE_KEEP_KINDS, CONTAINER_KINDS);
     assert.deepEqual(result, []);
 });
 
 test("pruneDocSymbolTree: empty container with no children produces nothing", async () => {
-    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } = await load("./src/outline.ts");
+    const { pruneDocSymbolTree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS } =
+        await load("./src/outline.ts");
     const tree = [sym("empty_ns", 3, [])];
     const result = pruneDocSymbolTree(tree, OUTLINE_KEEP_KINDS, CONTAINER_KINDS);
     assert.equal(result.length, 0);

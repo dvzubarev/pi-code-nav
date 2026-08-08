@@ -59,13 +59,7 @@ test("cpp: cursor on out-of-line function definition → hasBody=true, body rang
 
 test("cpp: cursor INSIDE the body (on a statement) → enclosing def still resolved", async () => {
     const { findEnclosingDefWithDoc } = await TS();
-    const src = [
-        `void f() {`,
-        `    int x = 1;`,
-        `    return x;`,
-        `}`,
-        ``,
-    ].join("\n");
+    const src = [`void f() {`, `    int x = 1;`, `    return x;`, `}`, ``].join("\n");
     // Cursor on `x` at line 3 (1-based) col 9 — inside the body, not on the
     // identifier. Walking up should still find the function_definition.
     const r = await findEnclosingDefWithDoc("cpp", src, 3, 9);
@@ -77,13 +71,7 @@ test("cpp: cursor INSIDE the body (on a statement) → enclosing def still resol
 
 test("cpp: cursor on a class/struct definition → hasBody=true", async () => {
     const { findEnclosingDefWithDoc } = await TS();
-    const src = [
-        `class Widget {`,
-        `public:`,
-        `  void foo();`,
-        `};`,
-        ``,
-    ].join("\n");
+    const src = [`class Widget {`, `public:`, `  void foo();`, `};`, ``].join("\n");
     // Cursor on `Widget` at line 1 col 7.
     const r = await findEnclosingDefWithDoc("cpp", src, 1, 7);
     assert.ok(r);
@@ -148,7 +136,11 @@ test("cpp: cursor on method prototype inside a class with `///` doc → doc rang
     assert.equal(r.startLine, 4); // 0-based: the field_declaration line
     assert.equal(r.endLine, 4);
     // Doc range covers the two `///` lines (lines 2..3, 0-based).
-    assert.equal(r.docStartLine, 2, `doc start should be the first /// line:\n${JSON.stringify(r)}`);
+    assert.equal(
+        r.docStartLine,
+        2,
+        `doc start should be the first /// line:\n${JSON.stringify(r)}`,
+    );
     assert.equal(r.docEndLine, 3);
 });
 
@@ -168,7 +160,11 @@ test("cpp: single-line `/** short */` doc above declaration → recognized", asy
     const r = await findEnclosingDefWithDoc("cpp", src, 2, 6);
     assert.ok(r);
     assert.equal(r.hasBody, false);
-    assert.equal(r.docStartLine, 0, `single-line doc block should be recognized:\n${JSON.stringify(r)}`);
+    assert.equal(
+        r.docStartLine,
+        0,
+        `single-line doc block should be recognized:\n${JSON.stringify(r)}`,
+    );
     assert.equal(r.docEndLine, 0);
 });
 
@@ -192,7 +188,11 @@ test("cpp: blank line between doc and declaration → doc NOT associated", async
     const r = await findEnclosingDefWithDoc("cpp", src, 3, 6);
     assert.ok(r);
     assert.equal(r.hasBody, false);
-    assert.equal(r.docStartLine, null, `blank line should break the doc association:\n${JSON.stringify(r)}`);
+    assert.equal(
+        r.docStartLine,
+        null,
+        `blank line should break the doc association:\n${JSON.stringify(r)}`,
+    );
     assert.equal(r.docEndLine, null);
 });
 
@@ -280,9 +280,13 @@ test("cpp: cursor on top-level whitespace / preprocessor → null or non-def", a
 
 test("typescript: cursor on function declaration with `/** */` doc → hasBody=true, doc range", async () => {
     const { findEnclosingDefWithDoc } = await TS();
-    const src = [`/** Doc for foo */`, `function foo(x: number): void {`, `  return;`, `}`, ``].join(
-        "\n",
-    );
+    const src = [
+        `/** Doc for foo */`,
+        `function foo(x: number): void {`,
+        `  return;`,
+        `}`,
+        ``,
+    ].join("\n");
     const r = await findEnclosingDefWithDoc("typescript", src, 2, 10);
     assert.ok(r);
     assert.equal(r.hasBody, true);

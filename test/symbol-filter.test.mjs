@@ -786,9 +786,7 @@ test("cpp fan-out: constructor declarations inside a struct render each construc
             `}`,
             ``,
         ].join("\n");
-        await import("node:fs/promises").then((fs) =>
-            fs.writeFile(cppFile, code, "utf8"),
-        );
+        await import("node:fs/promises").then((fs) => fs.writeFile(cppFile, code, "utf8"));
 
         // workspace/symbol returns three constructor matches (lines 2-4,
         // 1-based). Each is a declaration (no body) inside a struct.
@@ -799,9 +797,24 @@ test("cpp fan-out: constructor declarations inside a struct render each construc
         ];
 
         // DocumentSymbol tree: the struct with constructor children.
-        const ctor1 = docSymbol("extra_opts_t", 9, { line: 1, character: 4 }, { line: 1, character: 23 });
-        const ctor2 = docSymbol("extra_opts_t", 9, { line: 2, character: 4 }, { line: 2, character: 25 });
-        const ctor3 = docSymbol("extra_opts_t", 9, { line: 3, character: 4 }, { line: 3, character: 26 });
+        const ctor1 = docSymbol(
+            "extra_opts_t",
+            9,
+            { line: 1, character: 4 },
+            { line: 1, character: 23 },
+        );
+        const ctor2 = docSymbol(
+            "extra_opts_t",
+            9,
+            { line: 2, character: 4 },
+            { line: 2, character: 25 },
+        );
+        const ctor3 = docSymbol(
+            "extra_opts_t",
+            9,
+            { line: 3, character: 4 },
+            { line: 3, character: 26 },
+        );
         const structSym = {
             name: "extra_opts_t",
             kind: 23,
@@ -891,7 +904,13 @@ test("parseCppSymbolName: `using NAME = TYPE` extracts NAME as bare", async () =
         const canned = [
             sym("using my_type_t = int", 252, `${root}/test.cpp`, 0, 6),
             sym("using MyGadget::inner_type = int", 252, `${root}/test.cpp`, 3, 28),
-            sym("using std::pmr::vector = std::vector<_Tp, polymorphic_allocator<_Tp>>", 252, `/nix/store/vector`, 96, 12),
+            sym(
+                "using std::pmr::vector = std::vector<_Tp, polymorphic_allocator<_Tp>>",
+                252,
+                `/nix/store/vector`,
+                96,
+                12,
+            ),
             sym("typedef int my_typedef_t", 252, `${root}/test.cpp`, 1, 12),
             // Regular function — should still work.
             sym("void my_func()", 12, `${root}/test.cpp`, 5, 6),
@@ -904,10 +923,7 @@ test("parseCppSymbolName: `using NAME = TYPE` extracts NAME as bare", async () =
             mockClientOf(dir, canned),
         );
         const rows = out.split("\n").filter((l) => l.startsWith("[cpp]"));
-        assert.ok(
-            rows.length >= 1,
-            `expected my_type_t hit, got:\n${out}`,
-        );
+        assert.ok(rows.length >= 1, `expected my_type_t hit, got:\n${out}`);
         assert.match(out, /using my_type_t/, `my_type_t should be found:\n${out}`);
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
@@ -919,9 +935,7 @@ test("parseCppSymbolName: `using MyGadget::inner_type` extracts qualifier and ba
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-usingqual-"));
     try {
         const root = dir;
-        const canned = [
-            sym("using MyGadget::inner_type = int", 252, `${root}/gadget.cpp`, 3, 28),
-        ];
+        const canned = [sym("using MyGadget::inner_type = int", 252, `${root}/gadget.cpp`, 3, 28)];
         // Qualified query — the query qualifier `MyGadget` is passed through
         // for cpp (ccls handles native qualified queries). parseCppSymbolName
         // extracts qualifierTokens=["MyGadget"], bare="inner_type".
@@ -968,11 +982,12 @@ test("info fan-out: `using`-alias (kind 252) shows declaration-only note, not ER
         assert.match(out, /^# 1 match for "my_type_t" — info: code\b/m);
         // Code section present with the ccls name inline, NOT an ERROR.
         assert.match(out, /--- code ---/);
-        assert.match(out, /using my_type_t = int/, `expected ccls name in code section, got:\n${out}`);
-        assert.ok(
-            !/ERROR/.test(out),
-            `no ERROR should appear for kind 252 using-alias:\n${out}`,
+        assert.match(
+            out,
+            /using my_type_t = int/,
+            `expected ccls name in code section, got:\n${out}`,
         );
+        assert.ok(!/ERROR/.test(out), `no ERROR should appear for kind 252 using-alias:\n${out}`);
         assert.ok(
             !/declaration-only/.test(out),
             `should NOT say declaration-only (now shows name inline):\n${out}`,
@@ -989,10 +1004,11 @@ test("info fan-out: using-alias (kind 252) with references works and shows decla
         const root = dir;
         const cppFile = resolve(root, "test.cpp");
         await import("node:fs/promises").then((fs) =>
-            fs.writeFile(cppFile, [
-                "using my_type_t = int;",
-                "int x = my_type_t(42);",
-            ].join("\n"), "utf8"),
+            fs.writeFile(
+                cppFile,
+                ["using my_type_t = int;", "int x = my_type_t(42);"].join("\n"),
+                "utf8",
+            ),
         );
         const canned = [sym("using my_type_t = int", 252, cppFile, 0, 6)];
         // Provide a references result — the using-alias is referenced on line 2.
@@ -1002,7 +1018,10 @@ test("info fan-out: using-alias (kind 252) with references works and shows decla
                 [
                     {
                         uri: `file://${cppFile}`,
-                        range: { start: { line: 1, character: 8 }, end: { line: 1, character: 18 } },
+                        range: {
+                            start: { line: 1, character: 8 },
+                            end: { line: 1, character: 18 },
+                        },
                     },
                 ],
             ],
@@ -1054,11 +1073,12 @@ test("info fan-out: typedef (kind 252) shows ccls name inline, not ERROR", async
         );
         assert.match(out, /^# 1 match for "my_typedef_t" — info: code\b/m);
         assert.match(out, /--- code ---/);
-        assert.match(out, /typedef int my_typedef_t/, `expected ccls name in code section, got:\n${out}`);
-        assert.ok(
-            !/ERROR/.test(out),
-            `no ERROR should appear for kind 252 typedef:\n${out}`,
+        assert.match(
+            out,
+            /typedef int my_typedef_t/,
+            `expected ccls name in code section, got:\n${out}`,
         );
+        assert.ok(!/ERROR/.test(out), `no ERROR should appear for kind 252 typedef:\n${out}`);
         assert.ok(
             !/declaration-only/.test(out),
             `should NOT say declaration-only (now shows name inline):\n${out}`,
@@ -1136,7 +1156,10 @@ test("info fan-out: enum member (kind 13) `NAME = VALUE` gets code body, not dro
                         name: "TempEnum",
                         kind: 10, // Enum
                         range: { start: { line: 0, character: 0 }, end: { line: 1, character: 0 } },
-                        selectionRange: { start: { line: 0, character: 5 }, end: { line: 0, character: 13 } },
+                        selectionRange: {
+                            start: { line: 0, character: 5 },
+                            end: { line: 0, character: 13 },
+                        },
                         children: [
                             {
                                 name: "TM_TRAIN_CODEC",
@@ -1144,7 +1167,10 @@ test("info fan-out: enum member (kind 13) `NAME = VALUE` gets code body, not dro
                                 range: { start: selStart, end: { line: 0, character: 27 } },
                                 selectionRange: {
                                     start: selStart,
-                                    end: { line: 0, character: selStart.character + "TM_TRAIN_CODEC".length },
+                                    end: {
+                                        line: 0,
+                                        character: selStart.character + "TM_TRAIN_CODEC".length,
+                                    },
                                 },
                                 children: [],
                             },
@@ -1233,7 +1259,13 @@ test("parseCppSymbolName: ccls struct `NAME {}` strips trailing ` {}` and extrac
         const canned = [
             // ccls returns structs/classes with trailing ` {}`: "struct temp::detail::int_helper {}".
             sym("struct temp::detail::int_helper {}", 23, `${root}/test.cpp`, 4, 11),
-            sym('template<> struct temp::detail::int_helper<int> {}', 23, `${root}/test.cpp`, 9, 11),
+            sym(
+                "template<> struct temp::detail::int_helper<int> {}",
+                23,
+                `${root}/test.cpp`,
+                9,
+                11,
+            ),
             // Regular function — still works.
             sym("void my_func()", 12, `${root}/test.cpp`, 13, 14),
         ];
@@ -1300,16 +1332,20 @@ test("info fan-out: struct with trailing ` {}` (kind 23) is found and gets code 
         const root = dir;
         const cppFile = resolve(root, "test.cpp");
         await import("node:fs/promises").then((fs) =>
-            fs.writeFile(cppFile, [
-                "namespace temp {",
-                "namespace detail {",
-                "    struct int_helper {",
-                "        using type = T;",
-                "    };",
-                "}",
-                "}",
-                "",
-            ].join("\n"), "utf8"),
+            fs.writeFile(
+                cppFile,
+                [
+                    "namespace temp {",
+                    "namespace detail {",
+                    "    struct int_helper {",
+                    "        using type = T;",
+                    "    };",
+                    "}",
+                    "}",
+                    "",
+                ].join("\n"),
+                "utf8",
+            ),
         );
         const canned = [sym("struct temp::detail::int_helper {}", 23, cppFile, 2, 11)];
         // Provide documentSymbols so resolveSymbolSelStart works.
@@ -1322,13 +1358,22 @@ test("info fan-out: struct with trailing ` {}` (kind 23) is found and gets code 
                         name: "temp",
                         kind: 3, // Namespace
                         range: { start: { line: 0, character: 0 }, end: { line: 6, character: 1 } },
-                        selectionRange: { start: { line: 0, character: 10 }, end: { line: 0, character: 14 } },
+                        selectionRange: {
+                            start: { line: 0, character: 10 },
+                            end: { line: 0, character: 14 },
+                        },
                         children: [
                             {
                                 name: "detail",
                                 kind: 3,
-                                range: { start: { line: 1, character: 0 }, end: { line: 5, character: 1 } },
-                                selectionRange: { start: { line: 1, character: 11 }, end: { line: 1, character: 17 } },
+                                range: {
+                                    start: { line: 1, character: 0 },
+                                    end: { line: 5, character: 1 },
+                                },
+                                selectionRange: {
+                                    start: { line: 1, character: 11 },
+                                    end: { line: 1, character: 17 },
+                                },
                                 children: [
                                     {
                                         name: "int_helper",
@@ -1336,7 +1381,10 @@ test("info fan-out: struct with trailing ` {}` (kind 23) is found and gets code 
                                         range: { start: selStart, end: { line: 4, character: 5 } },
                                         selectionRange: {
                                             start: selStart,
-                                            end: { line: 2, character: selStart.character + "int_helper".length },
+                                            end: {
+                                                line: 2,
+                                                character: selStart.character + "int_helper".length,
+                                            },
                                         },
                                         children: [],
                                     },
@@ -1348,7 +1396,13 @@ test("info fan-out: struct with trailing ` {}` (kind 23) is found and gets code 
             ],
         ]);
         const defLocsByPath = new Map([
-            [cppFile, { uri: `file://${cppFile}`, range: { start: selStart, end: { line: 4, character: 5 } } }],
+            [
+                cppFile,
+                {
+                    uri: `file://${cppFile}`,
+                    range: { start: selStart, end: { line: 4, character: 5 } },
+                },
+            ],
         ]);
         const out = await symbol(
             { query: "int_helper", language: "cpp", info: ["code"] },
@@ -1404,7 +1458,11 @@ test("info fan-out: enum (kind 10) with `: TYPE {}` is found and gets code body"
         const root = dir;
         const cppFile = resolve(root, "test.cpp");
         await import("node:fs/promises").then((fs) =>
-            fs.writeFile(cppFile, "enum DiskannBuildWorkMode : uint32_t {\n    WM_NONE = 0,\n    WM_TRAIN_CODEC = 1,\n};\n", "utf8"),
+            fs.writeFile(
+                cppFile,
+                "enum DiskannBuildWorkMode : uint32_t {\n    WM_NONE = 0,\n    WM_TRAIN_CODEC = 1,\n};\n",
+                "utf8",
+            ),
         );
         const canned = [sym("enum DiskannBuildWorkMode : uint32_t {}", 10, cppFile, 0, 5)];
         const selStart = { line: 0, character: 5 };
@@ -1426,7 +1484,13 @@ test("info fan-out: enum (kind 10) with `: TYPE {}` is found and gets code body"
             ],
         ]);
         const defLocsByPath = new Map([
-            [cppFile, { uri: `file://${cppFile}`, range: { start: selStart, end: { line: 3, character: 2 } } }],
+            [
+                cppFile,
+                {
+                    uri: `file://${cppFile}`,
+                    range: { start: selStart, end: { line: 3, character: 2 } },
+                },
+            ],
         ]);
         const out = await symbol(
             { query: "DiskannBuildWorkMode", language: "cpp", info: ["code"] },
@@ -1529,7 +1593,13 @@ test("info fan-out: struct/class with inheritance (kind 23) is found and gets co
             ],
         ]);
         const defLocsByPath = new Map([
-            [cppFile, { uri: `file://${cppFile}`, range: { start: selStart, end: { line: 0, character: 37 } } }],
+            [
+                cppFile,
+                {
+                    uri: `file://${cppFile}`,
+                    range: { start: selStart, end: { line: 0, character: 37 } },
+                },
+            ],
         ]);
         const out = await symbol(
             { query: "Derived", language: "cpp", info: ["code"] },

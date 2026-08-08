@@ -21,8 +21,14 @@ pythonScenario("code_references adds Python roles, source, and enclosing symbols
     then: [
         ({ direct, annotated, included }) => {
             assert.match(direct, /kind: declaration\n\n10 \| class Point\(\)/);
-            assert.match(direct, /kind: type\n\n20 \|     def __init__\(self, a=1, b=3, p:Point =Point\(\)\):/);
-            assert.match(direct, /kind: call\n\n20 \|     def __init__\(self, a=1, b=3, p:Point =Point\(\)\):/);
+            assert.match(
+                direct,
+                /kind: type\n\n20 \|     def __init__\(self, a=1, b=3, p:Point =Point\(\)\):/,
+            );
+            assert.match(
+                direct,
+                /kind: call\n\n20 \|     def __init__\(self, a=1, b=3, p:Point =Point\(\)\):/,
+            );
             assert.match(direct, /enclosing: TempC\.__init__  .*second\.py:20:9/);
             assert.match(direct, /# 3 references$/);
             assert.match(
@@ -31,8 +37,14 @@ pythonScenario("code_references adds Python roles, source, and enclosing symbols
             );
             assert.doesNotMatch(annotated, /Symbols in /);
             assert.match(included, /--- references ---/);
-            assert.match(included, /kind: type\n\n20 \|     def __init__\(self, a=1, b=3, p:Point =Point\(\)\):/);
-            assert.match(included, /kind: call\n\n20 \|     def __init__\(self, a=1, b=3, p:Point =Point\(\)\):/);
+            assert.match(
+                included,
+                /kind: type\n\n20 \|     def __init__\(self, a=1, b=3, p:Point =Point\(\)\):/,
+            );
+            assert.match(
+                included,
+                /kind: call\n\n20 \|     def __init__\(self, a=1, b=3, p:Point =Point\(\)\):/,
+            );
             assert.match(included, /enclosing: TempC\.__init__  .*second\.py:20:9/);
         },
     ],

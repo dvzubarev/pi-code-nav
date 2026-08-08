@@ -77,10 +77,7 @@ test("syntax context keeps the consumer and complete physical lines for nested c
 
     const multiline = await referenceSyntaxContext("cpp", input, 3, 16);
     assert.equal(multiline.kind, "call");
-    assert.equal(
-        multiline.source,
-        "3 |   player.addCard(\n4 |       deck.drawCard());",
-    );
+    assert.equal(multiline.source, "3 |   player.addCard(\n4 |       deck.drawCard());");
 });
 
 test("syntax context keeps a complete multiline control-flow condition", async () => {
@@ -95,10 +92,7 @@ test("syntax context keeps a complete multiline control-flow condition", async (
 
     const condition = await referenceSyntaxContext("cpp", input, 2, 16);
     assert.equal(condition.kind, "call");
-    assert.equal(
-        condition.source,
-        "2 |   if (\n3 |       deck.drawCard().has_value()) {",
-    );
+    assert.equal(condition.source, "2 |   if (\n3 |       deck.drawCard().has_value()) {");
 });
 
 test("syntax context retains declaration attributes and the complete source line", async () => {
@@ -110,10 +104,7 @@ test("syntax context retains declaration attributes and the complete source line
 
     const declaration = await referenceSyntaxContext("cpp", input, 1, 21);
     assert.equal(declaration.kind, "declaration");
-    assert.equal(
-        declaration.source,
-        "2 |   [[nodiscard]] auto drawCard() -> int { return 1; }",
-    );
+    assert.equal(declaration.source, "2 |   [[nodiscard]] auto drawCard() -> int { return 1; }");
 });
 
 test("enclosing context renders the nearest structural skeleton with adjacent comments", async () => {
@@ -133,7 +124,10 @@ test("enclosing context renders the nearest structural skeleton with adjacent co
     assert.equal(context.startLine, 3, "the if, not the function or plain block, is nearest");
     assert.equal(context.endLine, 8);
     assert.match(context.source, /^3 \|   if \(ready\(\)\) \{/);
-    assert.match(context.source, /\.\.\. \| <\.\.\.>\n5 \|     \/\/ This use needs the prepared state\./);
+    assert.match(
+        context.source,
+        /\.\.\. \| <\.\.\.>\n5 \|     \/\/ This use needs the prepared state\./,
+    );
     assert.match(context.source, /6 \|     consume\(payload\);/);
     assert.match(context.source, /\.\.\. \| <\.\.\.>\n8 \|   \}$/);
     assert.doesNotMatch(context.source, /void work|prepare\(\)|finish\(\)/);

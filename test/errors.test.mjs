@@ -358,11 +358,7 @@ test("nav.definition multiple sites: returns one block per site + trailing count
             ],
         });
         const clientOf = async () => makeClient();
-        const out = await definition(
-            { path: "svc.ts", line: 1, column: 7 },
-            dir,
-            clientOf,
-        );
+        const out = await definition({ path: "svc.ts", line: 1, column: 7 }, dir, clientOf);
         const lines = out.split("\n");
         // Two header lines (one per site), grep-style <defPath>:<sl>-<el>.
         const headers = lines.filter((l) => /[/\\](a|b)\.ts:\d+-\d+$/.test(l));

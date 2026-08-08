@@ -182,27 +182,24 @@ test(
             initOptions: {},
         });
         try {
-            await assert.rejects(
-                c.ensureReady(),
-                (err) => {
-                    const msg = String(err?.message ?? err);
-                    // The pre-flight check names the missing command
-                    // (instead of letting spawn() emit a raw ENOENT).
-                    assert.match(
-                        msg,
-                        /command not found on PATH/,
-                        `should surface the missing-command error, not a generic/timeout; got: ${msg}`,
-                    );
-                    // And it must NOT be the request timeout — that would
-                    // mean the 'error' handler didn't reject and we waited
-                    // the full file-wide 300ms for the reader-close path.
-                    assert.ok(
-                        !/timed out/.test(msg),
-                        `should reject via the 'error' handler, not the timeout; got: ${msg}`,
-                    );
-                    return true;
-                },
-            );
+            await assert.rejects(c.ensureReady(), (err) => {
+                const msg = String(err?.message ?? err);
+                // The pre-flight check names the missing command
+                // (instead of letting spawn() emit a raw ENOENT).
+                assert.match(
+                    msg,
+                    /command not found on PATH/,
+                    `should surface the missing-command error, not a generic/timeout; got: ${msg}`,
+                );
+                // And it must NOT be the request timeout — that would
+                // mean the 'error' handler didn't reject and we waited
+                // the full file-wide 300ms for the reader-close path.
+                assert.ok(
+                    !/timed out/.test(msg),
+                    `should reject via the 'error' handler, not the timeout; got: ${msg}`,
+                );
+                return true;
+            });
         } finally {
             try {
                 await c.shutdown();

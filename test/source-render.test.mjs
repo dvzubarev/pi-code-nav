@@ -11,9 +11,7 @@ test("renderNumberedSource keeps source verbatim and adds line-local symbols", a
     ]);
     assert.equal(
         out,
-        "2 |   return build(value);\n" +
-            "  | symbols: build@10 call, value@16 var\n" +
-            "3 | }",
+        "2 |   return build(value);\n" + "  | symbols: build@10 call, value@16 var\n" + "3 | }",
     );
 });
 
