@@ -214,131 +214,189 @@ register("code_search_symbol C++ scenarios", () => {
 
     // ─── kinds filter tests ────────────────────────────────────────────────
 
+    // `kinds` filters symbols matching the query; it does not reinterpret the
+    // matched class as a container and search its descendants.
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol RigidBody cpp --kind class
-    test("code_search_symbol with kinds filter keeps only matching symbol kinds", async () => {
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol RigidBody cpp --kind enum
+    test("code_search_symbol kinds filter does not search inside a matching class", async () => {
         const response = await search({
             query: "RigidBody",
             language: "cpp",
-            kinds: ["class"],
+            kinds: ["enum"],
         });
-        matches(/\[cpp\] Class/, "class should be present")(response);
-        notMatches(/\[cpp\] Enum/, "enum should be filtered out")(response);
+        matches(
+            /^\(no symbols matching "RigidBody"\)$/,
+            "the RigidBody class should be removed by the enum filter",
+        )(response);
+        notMatches(/RigidBody::State/, "the filter should not return nested enum members")(response);
     });
 
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol State cpp --kind enum
-    test("code_search_symbol with enum kinds filter finds nested enum", async () => {
-        const response = await search({
-            query: "State",
-            language: "cpp",
-            kinds: ["enum"],
-        });
-        matches(/\[cpp\] Enum/, "enum should be present")(response);
-        notMatches(/\[cpp\] Class/, "class should be filtered out")(response);
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol State cpp --kind class
+    test("code_search_symbol enum kinds filter accepts enums and rejects them as classes", async () => {
+        const accepted = await search({ query: "State", language: "cpp", kinds: ["enum"] });
+        const rejected = await search({ query: "State", language: "cpp", kinds: ["class"] });
+        matches(/\[cpp\] Enum .*RigidBody::State/, "enum should pass the enum filter")(accepted);
+        matches(/^\(no symbols matching "State"\)$/, "enum should fail the class filter")(
+            rejected,
+        );
     });
 
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'RigidBody::State' cpp --kind enum
-    test("code_search_symbol kinds filter works with qualified name", async () => {
-        const response = await search({
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'RigidBody::State' cpp --kind class
+    test("code_search_symbol kinds filter works with a qualified name", async () => {
+        const accepted = await search({
             query: "RigidBody::State",
             language: "cpp",
             kinds: ["enum"],
         });
-        matches(/\[cpp\] Enum/, "enum should be present with qualified query")(response);
+        const rejected = await search({
+            query: "RigidBody::State",
+            language: "cpp",
+            kinds: ["class"],
+        });
+        matches(/\[cpp\] Enum .*RigidBody::State/, "qualified enum should pass")(accepted);
+        matches(
+            /^\(no symbols matching "RigidBody::State"\)$/,
+            "qualified enum should fail the class filter",
+        )(rejected);
     });
 
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --kind function
-    test("code_search_symbol with function kinds filter keeps only functions", async () => {
-        const response = await search({
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --kind method
+    test("code_search_symbol function kinds filter accepts functions and rejects them as methods", async () => {
+        const accepted = await search({
             query: "toString",
             language: "cpp",
             kinds: ["function"],
         });
-        matches(/\[cpp\] Function/, "function should be present")(response);
-        notMatches(/\[cpp\] Method/, "method should be filtered out")(response);
+        const rejected = await search({
+            query: "toString",
+            language: "cpp",
+            kinds: ["method"],
+        });
+        matches(/\[cpp\] Function .*toString\(int value\)/, "function should pass")(accepted);
+        matches(/^\(no symbols matching "toString"\)$/, "functions should fail the method filter")(
+            rejected,
+        );
     });
 
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp --kind method
-    test("code_search_symbol with method kinds filter finds class methods", async () => {
-        const response = await search({
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp --kind function
+    test("code_search_symbol method kinds filter accepts methods and rejects them as functions", async () => {
+        const accepted = await search({
             query: "getState",
             language: "cpp",
             kinds: ["method"],
         });
-        matches(/\[cpp\] Method/, "method should be present")(response);
+        const rejected = await search({
+            query: "getState",
+            language: "cpp",
+            kinds: ["function"],
+        });
+        matches(/\[cpp\] Method .*RigidBody::getState\(\)/, "method should pass")(accepted);
+        matches(/^\(no symbols matching "getState"\)$/, "method should fail the function filter")(
+            rejected,
+        );
     });
 
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --kind method
-    test("code_search_symbol method kinds filter works with another bare method name", async () => {
-        const response = await search({
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --kind function
+    test("code_search_symbol method kinds filter works with another bare method", async () => {
+        const accepted = await search({
             query: "getPosition",
             language: "cpp",
             kinds: ["method"],
         });
-        matches(/\[cpp\] Method/, "method should be present with direct query")(response);
+        const rejected = await search({
+            query: "getPosition",
+            language: "cpp",
+            kinds: ["function"],
+        });
+        matches(/\[cpp\] Method .*getPosition\(\)/, "method should pass")(accepted);
+        matches(
+            /^\(no symbols matching "getPosition"\)$/,
+            "method should fail the function filter",
+        )(rejected);
     });
 
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Debug cpp --kind enummember
-    test("code_search_symbol with enummember kinds filter finds enum values", async () => {
-        const response = await search({
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Debug cpp --kind enum
+    test("code_search_symbol distinguishes enum members from enums", async () => {
+        const accepted = await search({
             query: "Debug",
             language: "cpp",
             kinds: ["enummember"],
         });
-        matches(/\[cpp\] EnumMember/, "enum member should be present")(response);
+        const rejected = await search({ query: "Debug", language: "cpp", kinds: ["enum"] });
+        matches(/\[cpp\] EnumMember .*LogLevel::Debug/, "enum member should pass")(accepted);
+        matches(/^\(no symbols matching "Debug"\)$/, "enum member should fail the enum filter")(
+            rejected,
+        );
     });
 
     // ─── name_pattern filter tests ─────────────────────────────────────────
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp --regex 'get.*'
-    test("code_search_symbol with name_pattern filters by regex on full signature", async () => {
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --regex 'toString\(int value\)'
+    test("code_search_symbol name_pattern selects one C++ overload by full signature", async () => {
         const response = await search({
-            query: "getState",
+            query: "toString",
             language: "cpp",
-            name_pattern: "get.*",
+            name_pattern: "toString\\(int value\\)",
         });
-        matches(/\[cpp\].*get/, "getter methods should be present")(response);
-        notMatches(/\[cpp\].*set/, "setter methods should be filtered out")(response);
+        matches(/\[cpp\] Function .*toString\(int value\)/, "int overload should remain")(response);
+        notMatches(/toString\(float value\)/, "float overload should be filtered out")(response);
+        notMatches(/toString\(bool value\)/, "bool overload should be filtered out")(response);
+        notMatches(/toString\(const math::Vec3/, "Vec3 overload should be filtered out")(response);
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --regex 'get.*'
-    test("code_search_symbol name_pattern works with another bare method name", async () => {
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol RigidBody cpp --regex 'RigidBody::RigidBody'
+    test("code_search_symbol name_pattern separates a constructor from its class", async () => {
         const response = await search({
-            query: "getPosition",
+            query: "RigidBody",
             language: "cpp",
-            name_pattern: "get.*",
+            name_pattern: "RigidBody::RigidBody",
         });
-        matches(/\[cpp\].*getPosition/, "getPosition should be found")(response);
+        matches(/\[cpp\] Constructor .*RigidBody::RigidBody\(/, "constructor should remain")(
+            response,
+        );
+        notMatches(/\[cpp\] Class class .*RigidBody/, "class should be filtered out")(response);
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'Vec3::operator*' cpp --regex 'operator.*'
-    test("code_search_symbol with name_pattern can match operator overloads", async () => {
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --regex 'math::Vec3'
+    test("code_search_symbol name_pattern selects an overload by parameter type", async () => {
         const response = await search({
-            query: "Vec3::operator*",
+            query: "toString",
             language: "cpp",
-            name_pattern: "operator.*",
+            name_pattern: "math::Vec3",
         });
-        matches(/\[cpp\].*operator/, "operator overloads should be present")(response);
+        matches(/toString\(const math::Vec3 &vec\)/, "Vec3 overload should remain")(response);
+        notMatches(/toString\(int value\)/, "int overload should be filtered out")(response);
+        notMatches(/toString\(float value\)/, "float overload should be filtered out")(response);
+        notMatches(/toString\(bool value\)/, "bool overload should be filtered out")(response);
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'Vec3::operator+' cpp --regex 'operator.*'
-    test("code_search_symbol name_pattern works with another qualified operator", async () => {
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --regex 'toString\(bool value\)'
+    test("code_search_symbol name_pattern selects another overload without leaking siblings", async () => {
         const response = await search({
-            query: "Vec3::operator+",
+            query: "toString",
             language: "cpp",
-            name_pattern: "operator.*",
+            name_pattern: "toString\\(bool value\\)",
         });
-        matches(/\[cpp\].*operator\+/, "operator+ should be found")(response);
+        matches(/toString\(bool value\)/, "bool overload should remain")(response);
+        notMatches(/toString\(int value\)/, "int overload should be filtered out")(response);
+        notMatches(/toString\(float value\)/, "float overload should be filtered out")(response);
+        notMatches(/toString\(const math::Vec3/, "Vec3 overload should be filtered out")(response);
     });
 
     // name_pattern case-insensitivity test using a query that has exact matches
@@ -447,10 +505,22 @@ register("code_search_symbol C++ scenarios", () => {
     // ─── Edge case: Template specialization names ──────────────────────────
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'data::Result<void>' cpp
-    test("code_search_symbol finds template specialization", async () => {
-        const response = await search({ query: "data::Result<void>", language: "cpp" });
-        matches(/\[cpp\].*Result/, "template specialization should be found")(response);
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'data::Result<void>' cpp --info code
+    test("code_search_symbol resolves the exact template specialization for include", async () => {
+        const response = await search({
+            query: "data::Result<void>",
+            language: "cpp",
+            include: ["definition"],
+        });
+        matches(/^# 1 match for "data::Result<void>"/m, "expected one exact specialization")(response);
+        matches(
+            /\[cpp\] Class template<> class engine::data::Result<void>/,
+            "Result<void> specialization should be selected",
+        )(response);
+        notMatches(
+            /\[cpp\].*Result<void>::(?:ok|error|success|errorMessage)/,
+            "specialization members must not be selected as exact matches",
+        )(response);
     });
 
     // ─── Combined filters ──────────────────────────────────────────────────

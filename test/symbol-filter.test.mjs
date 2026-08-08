@@ -43,12 +43,15 @@ import { load } from "./helpers.mjs";
  * workspace-root classification (`homeFolderOf(s.uri, folders) ===
  * client.rootPath`) treats them as workspace hits.
  */
-function mockClientOf(rootPath, cannedSyms) {
+function mockClientOf(rootPath, cannedSyms, onQuery) {
     const client = {
         rootPath,
         supports: () => true,
         ensureProjectLoaded: async () => true,
-        workspaceSymbol: async () => cannedSyms,
+        workspaceSymbol: async (query) => {
+            onQuery?.(query);
+            return cannedSyms;
+        },
         workspaceFolderPaths: () => [rootPath],
         documentSymbols: async () => [],
         openDocument: async () => {},
@@ -1220,6 +1223,45 @@ test("parseCppSymbolName: ccls struct `NAME {}` strips trailing ` {}` and extrac
         // The display row still shows `{}` (the original ccls name is rendered),
         // but the matching works (both structs are found). Verify the count.
         assert.ok(rows.length >= 2, `expected at least 2 rows for int_helper:\n${out}`);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("cpp template specialization include queries ccls by base name and keeps only the exact specialization", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-template-specialization-"));
+    try {
+        const cppFile = resolve(dir, "test.cpp");
+        await import("node:fs/promises").then((fs) =>
+            fs.writeFile(
+                cppFile,
+                [
+                    "template<class T> class Result {};",
+                    "template<> class Result<void> {};",
+                    "bool Result<void>::ok() const { return true; }",
+                    "",
+                ].join("\n"),
+                "utf8",
+            ),
+        );
+        const canned = [
+            sym("class engine::data::Result {}", 5, cppFile, 0, 24),
+            sym("template<> class engine::data::Result<void> {}", 5, cppFile, 1, 17),
+            sym("bool engine::data::Result<void>::ok() const", 6, cppFile, 2, 19),
+        ];
+        const serverQueries = [];
+        const out = await symbol(
+            { query: "data::Result<void>", language: "cpp", include: ["definition"] },
+            dir,
+            mockClientOf(dir, canned, (query) => serverQueries.push(query)),
+        );
+
+        assert.deepEqual(serverQueries, ["data::Result"]);
+        assert.match(out, /^# 1 match for "data::Result<void>"/m);
+        assert.match(out, /template<> class engine::data::Result<void>/);
+        assert.doesNotMatch(out, /engine::data::Result \{\}/);
+        assert.doesNotMatch(out, /Result<void>::ok/);
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }

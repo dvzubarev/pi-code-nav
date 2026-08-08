@@ -88,15 +88,54 @@ const SYMBOL_FANOUT_REFS_CAP = 25;
  * `std::vector::push_back` -> `(qualifier="std::vector", bare="push_back")`.
  * For bash (no separator) the whole query is the bare name.
  */
+function lastCppScopeSeparator(query: string): number {
+    let angleDepth = 0;
+    let last = -1;
+    for (let i = 0; i + 1 < query.length; i++) {
+        if (query[i] === "<") angleDepth++;
+        else if (query[i] === ">" && angleDepth > 0) angleDepth--;
+        else if (angleDepth === 0 && query[i] === ":" && query[i + 1] === ":") {
+            last = i;
+            i++;
+        }
+    }
+    return last;
+}
+
 function parseSymbolQuery(query: string, lang: Lang): { qualifier: string | null; bare: string } {
     const sep = QUALIFIED_SEP[lang];
     if (!sep) return { qualifier: null, bare: query };
-    const idx = query.lastIndexOf(sep);
+    // A C++ template argument may itself be qualified (`Result<std::string>`),
+    // so only split on a top-level `::` rather than blindly taking the last one.
+    const idx = lang === "cpp" ? lastCppScopeSeparator(query) : query.lastIndexOf(sep);
     if (idx < 0) return { qualifier: null, bare: query };
     return {
         qualifier: query.slice(0, idx),
         bare: query.slice(idx + sep.length),
     };
+}
+
+/** Remove balanced C++ template-argument groups for ccls's fuzzy query. ccls
+ * does not return a specialization declaration for `Result<void>`, but does
+ * return it for `Result`; exact post-filtering restores the requested args. */
+function stripCppTemplateArguments(query: string): string {
+    // `<`, `<<`, and `<=>` are operator names, not template argument lists.
+    if (query.includes("operator<")) return query;
+    let depth = 0;
+    let out = "";
+    for (const ch of query) {
+        if (ch === "<") {
+            depth++;
+            continue;
+        }
+        if (ch === ">" && depth > 0) {
+            depth--;
+            continue;
+        }
+        if (depth === 0) out += ch;
+    }
+    // An unmatched `<` is more likely an operator name than a template-id.
+    return depth === 0 ? out : query;
 }
 
 /**
@@ -252,9 +291,10 @@ const clientsWithRoots = new WeakSet<LspClient>();
  * the last qualified identifier). For all other forms we strip the parameter
  * list (everything from the first `(`), take the last whitespace-separated
  * token (the qualified declarator, after stripping leading `&`/`*` ref/pointer
- * qualifiers), drop one `<...>` template-arg group, then split on `::`. The
- * last `::`-separated component is the bare identifier; the rest is the
- * qualifier chain.
+ * qualifiers), then split on top-level `::`. Template arguments are retained
+ * so an explicit specialization query can distinguish `Result<void>` from
+ * the primary `Result`; matching ignores candidate arguments only when the
+ * corresponding query component has none.
  *
  * Examples:
  *   `void diskann::Index::occlude_list(...)`
@@ -278,7 +318,7 @@ const clientsWithRoots = new WeakSet<LspClient>();
  *   `struct temp::detail::int_helper {}` (ccls struct with trailing ` {}`)
  *     → qual=["temp","detail"], bare="int_helper"
  *   `template<> struct temp::detail::int_helper<int> {}`
- *     → qual=["temp","detail"], bare="int_helper" (after dropping `<int>` template args) */
+ *     → qual=["temp","detail"], bare="int_helper<int>" */
 function parseCppSymbolName(name: string): {
     qualifierTokens: string[];
     bare: string;
@@ -386,14 +426,21 @@ function parseCppSymbolName(name: string): {
     const tokens = s.split(/\s+/).filter(Boolean);
     let last = tokens.length > 0 ? tokens[tokens.length - 1] : "";
     last = last.replace(/^[&*]+\s*/, "");
-    // Drop ONE template-arg group `<...>` from the declarator token (e.g.
-    // `foo<int>` → `foo`; `vector<uint32_t>::iterator` → `vector::iterator`).
-    const ltIdx = last.indexOf("<");
-    if (ltIdx >= 0) {
-        const gtIdx = last.lastIndexOf(">");
-        if (gtIdx > ltIdx) last = last.slice(0, ltIdx) + last.slice(gtIdx + 1);
+    const parts: string[] = [];
+    let componentStart = 0;
+    let angleDepth = 0;
+    for (let i = 0; i + 1 < last.length; i++) {
+        if (last[i] === "<") angleDepth++;
+        else if (last[i] === ">" && angleDepth > 0) angleDepth--;
+        else if (angleDepth === 0 && last[i] === ":" && last[i + 1] === ":") {
+            const component = last.slice(componentStart, i);
+            if (component) parts.push(component);
+            componentStart = i + 2;
+            i++;
+        }
     }
-    const parts = last.split("::").filter((p) => p.length > 0);
+    const finalComponent = last.slice(componentStart);
+    if (finalComponent) parts.push(finalComponent);
     if (parts.length === 0) return { qualifierTokens: [], bare: "" };
     return { qualifierTokens: parts.slice(0, -1), bare: parts[parts.length - 1] };
 }
@@ -410,18 +457,26 @@ function parseCppSymbolName(name: string): {
  * `std::my_vector::push_back` as exact for `vector::push_back`. See
  * docs/code_search_symbol.md. */
 
+function cppNameComponentMatches(query: string, candidate: string): boolean {
+    // Explicit template arguments pin the specialization. Without them, retain
+    // the existing behavior where a base-name query also finds specializations.
+    return query.includes("<") ? candidate === query : stripCppTemplateArguments(candidate) === query;
+}
+
 function isCppExactMatch(
     queryQualifierTokens: string[],
     queryBare: string,
     candidateName: string,
 ): boolean {
     const { qualifierTokens, bare } = parseCppSymbolName(candidateName);
-    if (bare !== queryBare) return false;
+    if (!cppNameComponentMatches(queryBare, bare)) return false;
     if (queryQualifierTokens.length === 0) return true; // bare query
     if (qualifierTokens.length < queryQualifierTokens.length) return false;
     const offset = qualifierTokens.length - queryQualifierTokens.length;
     for (let i = 0; i < queryQualifierTokens.length; i++) {
-        if (qualifierTokens[offset + i] !== queryQualifierTokens[i]) return false;
+        if (!cppNameComponentMatches(queryQualifierTokens[i], qualifierTokens[offset + i])) {
+            return false;
+        }
     }
     return true;
 }
@@ -546,7 +601,7 @@ export async function symbol(
         // matches bare names, so we query with the bare tail and filter
         // results by module path against the qualifier.
         const { qualifier, bare } = parseSymbolQuery(params.query, lang);
-        const queryForServer = lang === "cpp" ? params.query : bare;
+        const queryForServer = lang === "cpp" ? stripCppTemplateArguments(params.query) : bare;
         let syms: SymbolInformation[];
         try {
             syms = await client.workspaceSymbol(queryForServer);
@@ -703,7 +758,22 @@ export async function symbol(
             // Query qualifier tokenized on `::` for the cpp token-suffix rule.
             // Empty for a bare cpp query (qualifier === null).
             const queryQualifierTokens: string[] =
-                qualifier !== null && lang === "cpp" ? qualifier.split("::").filter(Boolean) : [];
+                qualifier !== null && lang === "cpp"
+                    ? (() => {
+                          const tokens: string[] = [];
+                          let rest = qualifier;
+                          while (rest) {
+                              const idx = lastCppScopeSeparator(rest);
+                              if (idx < 0) {
+                                  tokens.unshift(rest);
+                                  break;
+                              }
+                              tokens.unshift(rest.slice(idx + 2));
+                              rest = rest.slice(0, idx);
+                          }
+                          return tokens;
+                      })()
+                    : [];
             // Loose substring match — the name contains the bare query as a
             // substring. Used to filter out the ccls/ty fuzzy tail that
             // doesn't even share a substring with the query. Without this

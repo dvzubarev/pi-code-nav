@@ -98,8 +98,10 @@ ty's `workspace/symbol` is case-insensitive FUZZY — a bare `cast` returns
   `tempc`, `load_package_tests` for `load`, `occlude_list_v2` for
   `occlude_list`).
 
-For qualified queries the tiered Q1/Q2/Q3 filter above applies; fuzzy/
-partial-name matches are always dropped.
+For qualified Python/TypeScript queries the tiered Q1/Q2/Q3 filter above
+applies; fuzzy/partial-name matches are always dropped. Qualified C++ list
+mode may retain a T3 fuzzy tail because ccls searches full signatures. C++
+`include` mode keeps exact matches only.
 
 ### cpp exact-match = token-level (bare equality + qualifier suffix)
 
@@ -111,15 +113,23 @@ identifier, so the "exact name" check is a TOKEN-LEVEL rule
   1. Parse the candidate `name` into `(qualifierTokens, bare)` via
      `parseCppSymbolName`: strip the parameter list (everything from the
      first `(`), take the last whitespace-separated token (the qualified
-     declarator, after stripping leading `&`/`*`), drop one `<...>` template-arg
-     group, then split on `::`. The last component is the bare identifier;
-     the rest is the qualifier-token chain.
-  2. The candidate is **exact** iff its `bare` equals the query's bare name
-     AND, for a qualified query, the query's qualifier-token chain is a
-     SUFFIX of the candidate's qualifier-token chain (token-level, so
+     declarator, after stripping leading `&`/`*`), then split on top-level
+     `::`. The last component is the bare identifier; the rest is the
+     qualifier-token chain. Template arguments are retained.
+  2. The candidate is **exact** iff its bare component matches the query's
+     bare component AND, for a qualified query, the query's qualifier-token
+     chain is a SUFFIX of the candidate's qualifier-token chain (token-level, so
      `vector` matches `std::vector` and `mystd::vector` but NOT
      `std::my_vector` — the `_` token boundary is honored). For a bare query
-     (empty qualifier tokens), only bare equality is required.
+     (empty qualifier tokens), only the bare component is required. A query
+     component with explicit template arguments must equal the candidate
+     component exactly; a component without arguments also matches candidate
+     specializations (`Result` matches `Result<void>`).
+
+For a template-id query, code-nav strips balanced template arguments from the
+query sent to ccls, then restores precision through this exact post-filter.
+This is necessary because ccls returns the `Result<void>` declaration for a
+`Result` workspace query but returns only its members for `Result<void>`.
 
 Examples:
   - `vector::push_back` (qual=[vector], bare=push_back):
@@ -135,6 +145,12 @@ Examples:
     - `std::vector::push_back(int)` → bare=push_back → **exact**.
     - `std::vector::push_back_int(int)` → bare=push_back_int != push_back
       → **not exact** → T3 fuzzy → dropped when T1 non-empty.
+  - `data::Result<void>`:
+    - `template<> class engine::data::Result<void> {}` → **exact**.
+    - `class engine::data::Result {}` → **not exact** (explicit arguments pin
+      the specialization).
+    - `bool engine::data::Result<void>::ok() const` → **not exact** (its bare
+      component is `ok`).
 
 This replaces the OLD substring check (`name.includes("::" + bare)`), which
 ranked `std::my_vector::push_back` as exact for `vector::push_back` (the
