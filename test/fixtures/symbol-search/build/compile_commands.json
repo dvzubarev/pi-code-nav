@@ -1,0 +1,7 @@
+[
+    {
+        "directory": ".",
+        "command": "clang++ -std=c++17 -I. symbol_search.cpp",
+        "file": "symbol_search.cpp"
+    }
+]

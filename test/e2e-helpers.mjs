@@ -48,18 +48,21 @@ process.on("unhandledRejection", (err) => {
  *
  * @param {string[]} fixtureNames - filenames under test/fixtures/ to copy in
  *   (relative paths are preserved; subdirs created as needed).
+ * @param {string} workspaceRoot - optional copied subdirectory to use as the
+ *   language-server root (useful for fixtures with their own build database).
  */
-export async function withWorkspace(fixtureNames = []) {
-    const root = await mkdtemp(resolve(tmpdir(), "code-nav-e2e-"));
+export async function withWorkspace(fixtureNames = [], workspaceRoot = ".") {
+    const tempRoot = await mkdtemp(resolve(tmpdir(), "code-nav-e2e-"));
+    const root = resolve(tempRoot, workspaceRoot);
     const toShutdown = [];
     const clients = new Map();
 
     // Copy fixtures into the temp root.
     for (const name of fixtureNames) {
         const src = resolve(FIXTURES_DIR, name);
-        const dst = resolve(root, name);
+        const dst = resolve(tempRoot, name);
         const { dirname: d } = await import("node:path");
-        await mkdir(resolve(root, d(name)), { recursive: true });
+        await mkdir(resolve(tempRoot, d(name)), { recursive: true });
         const { readFile } = await import("node:fs/promises");
         await writeFile(dst, await readFile(src, "utf8"), "utf8");
     }
@@ -81,9 +84,34 @@ export async function withWorkspace(fixtureNames = []) {
         async cleanup() {
             await Promise.allSettled(toShutdown.map((c) => c.shutdown()));
             clients.clear();
-            await rm(root, { recursive: true, force: true });
+            await rm(tempRoot, { recursive: true, force: true });
         },
     };
+}
+
+// Like `withWorkspace`, but designed to be called ONCE in a `before()` hook
+// and shared across all tests in a `describe()` block. The fixture files are
+// copied once and the LspClient (and its language server) is reused for every
+// test — the server keeps its index in memory, so subsequent calls skip the
+// expensive cold-index parse.
+//
+// Usage:
+//   describe("my suite", () => {
+//     let ws;
+//     before(async () => { ws = await withSharedWorkspace(["foo.cpp"]); });
+//     after(() => ws.cleanup());
+//     test("t1", async () => { /* use ws.root, ws.clientOf */ });
+//   });
+export async function withSharedWorkspace(fixtureNames = [], workspaceRoot = ".") {
+    const ws = await withWorkspace(fixtureNames, workspaceRoot);
+    // Start the cpp server once. The first tool query waits for ccls's index;
+    // later tests reuse the ready in-memory index.
+    try {
+        await ws.clientOf("cpp");
+    } catch {
+        // server might not be available — tests will skip themselves
+    }
+    return ws;
 }
 
 /**
