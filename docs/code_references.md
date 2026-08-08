@@ -17,7 +17,7 @@
 ```
 
 - `none` returns compact `path:line:column` rows.
-- `syntax` returns the smallest useful AST construct: a complete call, member expression, import, type expression, or assignment/declaration occurrence. A plain read expands to its nearest complete expression (and, when needed, its containing statement), so an argument reference renders `write(value)` rather than only `value`; multiline expressions retain all of their source lines.
+- `syntax` returns the smallest useful complete expression or statement. Calls and members expand through containing expressions so a nested reference renders its consumer (`player.addCard(deck.drawCard());`, not merely `deck.drawCard()`). Plain reads similarly expand to their nearest complete expression (and, when needed, their containing statement). Every selected range renders complete physical source lines, retaining indentation, attributes, control-flow keywords, and terminators; multiline expressions retain all of their lines.
 - `enclosing` finds the nearest meaningful structural ancestor: a loop, branch, switch/case, function/method, class, namespace, or `with`. Plain compound blocks and `try` are skipped. It renders a sparse, tree-aware skeleton rather than dumping the ancestor's contiguous range: the structural header/signature, `<...>` gaps, comments directly adjacent to the containing statement, the complete statement/expression, and a closing delimiter when the language has one. Thus a reference directly in a function body gets function context, while one inside a loop gets the nearer loop.
 
 Every contextual result includes a best-effort role (`call`, `type`, `member`, `import`, `write`, `override`, `declaration`, or `read`) and enclosing function/class/namespace metadata when available:

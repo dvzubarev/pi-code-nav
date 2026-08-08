@@ -37,8 +37,8 @@ test("references defaults to syntax context with role and enclosing metadata", a
         );
         assert.match(out, /kind: call/);
         assert.match(out, /enclosing: Worker\.run\s+.*sample\.ts:2:3/);
-        assert.match(out, /3 \| dispatch<string>\(/);
-        assert.match(out, /5 \|\s+"second"\)/);
+        assert.match(out, /3 \|\s+return dispatch<string>\(/);
+        assert.match(out, /5 \|\s+"second"\);/);
         assert.match(out, /# 2 references$/);
     } finally {
         await rm(dir, { recursive: true });
@@ -59,7 +59,61 @@ consume(
 
     const read = await referenceSyntaxContext("typescript", input, 2, 2);
     assert.equal(read.kind, "read");
-    assert.equal(read.source, "2 | consume(\n3 |   payload\n4 | )");
+    assert.equal(read.source, "2 | consume(\n3 |   payload\n4 | );");
+});
+
+test("syntax context keeps the consumer and complete physical lines for nested calls", async () => {
+    const { referenceSyntaxContext } = await load("./src/tree-sitter-parse.ts");
+    const input = `void deal() {
+  player.addCard(deck.drawCard());
+  player.addCard(
+      deck.drawCard());
+}
+`;
+
+    const singleLine = await referenceSyntaxContext("cpp", input, 1, 27);
+    assert.equal(singleLine.kind, "call");
+    assert.equal(singleLine.source, "2 |   player.addCard(deck.drawCard());");
+
+    const multiline = await referenceSyntaxContext("cpp", input, 3, 16);
+    assert.equal(multiline.kind, "call");
+    assert.equal(
+        multiline.source,
+        "3 |   player.addCard(\n4 |       deck.drawCard());",
+    );
+});
+
+test("syntax context keeps a complete multiline control-flow condition", async () => {
+    const { referenceSyntaxContext } = await load("./src/tree-sitter-parse.ts");
+    const input = `void deal() {
+  if (
+      deck.drawCard().has_value()) {
+    play();
+  }
+}
+`;
+
+    const condition = await referenceSyntaxContext("cpp", input, 2, 16);
+    assert.equal(condition.kind, "call");
+    assert.equal(
+        condition.source,
+        "2 |   if (\n3 |       deck.drawCard().has_value()) {",
+    );
+});
+
+test("syntax context retains declaration attributes and the complete source line", async () => {
+    const { referenceSyntaxContext } = await load("./src/tree-sitter-parse.ts");
+    const input = `class Deck {
+  [[nodiscard]] auto drawCard() -> int { return 1; }
+};
+`;
+
+    const declaration = await referenceSyntaxContext("cpp", input, 1, 21);
+    assert.equal(declaration.kind, "declaration");
+    assert.equal(
+        declaration.source,
+        "2 |   [[nodiscard]] auto drawCard() -> int { return 1; }",
+    );
 });
 
 test("enclosing context renders the nearest structural skeleton with adjacent comments", async () => {

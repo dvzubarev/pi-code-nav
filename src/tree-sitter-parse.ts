@@ -483,6 +483,9 @@ const EXPRESSION_NODE_TYPES = new Set([
     "await_expression",
     "cast_expression",
     "parenthesized_expression",
+    // C++ wraps control-flow conditions separately from the expression. Keep
+    // the complete header when its condition spans physical lines.
+    "condition_clause",
 ]);
 const STATEMENT_NODE_TYPES = new Set([
     "expression_statement",
@@ -550,6 +553,20 @@ function assignmentContainingLeft(nodes: Node[], selected: Node): Node | undefin
 
 function expressionContaining(nodes: Node[]): Node | undefined {
     return nearest(nodes, EXPRESSION_NODE_TYPES);
+}
+
+/** Select the outermost complete expression around an occurrence. This keeps
+ * the consumer of a nested call/member visible (`use(make())`, not merely
+ * `make()`) without crossing into a containing control-flow body or
+ * definition. */
+function outermostExpressionContaining(nodes: Node[], fallback: Node): Node {
+    let expression = fallback;
+    for (const node of nodes) {
+        if (COMPLETE_STATEMENT_NODE_TYPES.has(node.type)) break;
+        if (STRUCTURAL_NODE_TYPES.has(node.type) || BLOCK_NODE_TYPES.has(node.type)) break;
+        if (EXPRESSION_NODE_TYPES.has(node.type)) expression = node;
+    }
+    return expression;
 }
 
 function definitionName(node: Node): Node | null {
@@ -795,14 +812,11 @@ function renderNodeSource(node: Node, text: string): string {
     const lines = text.split(/\r?\n/);
     const start = node.startPosition;
     const end = node.endPosition;
+    // Render complete physical lines. AST-column slicing often removes the
+    // consumer that makes a reference understandable, as well as indentation,
+    // terminators, attributes, and control-flow keywords on boundary lines.
     let selected = lines.slice(start.row, end.row + 1);
     if (selected.length === 0) return "";
-    const firstCol = byteToStringColumn(selected[0], start.column);
-    selected[0] = selected[0].slice(firstCol);
-    const lastSource = lines[end.row] ?? "";
-    const lastCol = byteToStringColumn(lastSource, end.column);
-    if (selected.length === 1) selected[0] = selected[0].slice(0, Math.max(0, lastCol - firstCol));
-    else selected[selected.length - 1] = selected[selected.length - 1].slice(0, lastCol);
 
     let omitted = 0;
     if (selected.length > MAX_CONTEXT_LINES) {
@@ -870,7 +884,7 @@ export async function referenceSyntaxContext(
         let syntaxNode = selected;
         if (call) {
             kind = "call";
-            syntaxNode = call;
+            syntaxNode = outermostExpressionContaining(chain, call);
         } else if (imported) {
             kind = "import";
             syntaxNode = imported;
@@ -897,7 +911,7 @@ export async function referenceSyntaxContext(
             syntaxNode = typed;
         } else if (member) {
             kind = "member";
-            syntaxNode = member;
+            syntaxNode = outermostExpressionContaining(chain, member);
         } else {
             // An identifier by itself is usually less useful than grep output.
             // Select the nearest complete expression (including a containing

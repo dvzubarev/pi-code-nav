@@ -10,10 +10,13 @@ cppScenario("code_references renders a complete multiline C++ call", {
     when: ({ root, clientOf }) =>
         nav.references({ path: "refs.cpp", line: 1, column: 5 }, root, clientOf),
     then: [
-        matches(/kind: declaration\n\n1 \| compute/),
+        matches(/kind: declaration\n\n1 \| int compute/),
         matches(/enclosing: compute  .*refs\.cpp:1:5/),
         matches(/enclosing: main  .*refs\.cpp:5:5/),
-        matches(/kind: call\n\n6 \| compute\(\n7 \|       21\n8 \|   \)/, "multiline call missing"),
+        matches(
+            /kind: call\n\n6 \|   int result = compute\(\n7 \|       21\n8 \|   \);/,
+            "complete multiline containing expression missing",
+        ),
         matches(/# 2 references$/, "reference count missing"),
     ],
 });
@@ -57,12 +60,12 @@ cppScenario("code_references supports syntax context with explicit pagination", 
             clientOf,
         ),
     then: [
-        matches(/kind: write\n\n44 \| dataOut\[i\]\[j\] = i \* NY \+ j/),
+        matches(/kind: write\n\n44 \|\s+dataOut\[i\]\[j\] = i \* NY \+ j;/),
         matches(
-            /kind: read\n\n69 \| data\.putVar\(dataOut\)/,
+            /kind: read\n\n69 \|\s+data\.putVar\(dataOut\);/,
             "read should include its complete containing expression",
         ),
-        matches(/kind: declaration\n\n38 \| int dataOut\[NX\]\[NY\];/),
+        matches(/kind: declaration\n\n38 \|\s+int dataOut\[NX\]\[NY\];/),
         matches(/# 3 references$/, "explicit limit should include the full page"),
     ],
 });
