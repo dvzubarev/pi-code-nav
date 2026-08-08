@@ -32,12 +32,15 @@ order but must land together.
    that tsserver-class servers distinguish via `didOpen`'s `languageId`
    (e.g. `.ts`→`typescript`, `.tsx`→`typescriptreact`).
 
-4. **`ensureProjectLoaded` — only if the server loads projects lazily.**
-   Most servers index eagerly on `initialize` and hit the fast `return true`
-   path. Add a real pre-load step only if the server throws "No Project"-style
-   errors on `workspace/symbol` before any file is opened (tsserver does;
-   ccls/pyright/ty/bash-language-server do not). `findFirstSourceFile` +
-   `SOURCE_EXTS` are the scanning helpers.
+4. **Project readiness — only when the server can answer before project work
+   is complete.** Standard work-done servers use `WorkDoneProgress` in
+   `project-progress.ts`. Add a language-specific `ProjectProgress`
+   implementation when completion is nonstandard (Bash log messages, ccls
+   `$ccls/info`). A server may also need a trigger in its tracker/readiness path:
+   tsserver needs a bootstrap `didOpen`; ty needs `workspace/diagnostic` in
+   workspace mode. `findFirstSourceFile` + `SOURCE_EXTS` are the bootstrap
+   scanning helpers. Document whether the barrier applies to workspace-only
+   queries or every per-file action via `awaitReadyForQuery`.
 
 5. **Verify the server is stdio-only.** All supported servers are stdio-only
    (no `--listen`/`--socket`); the extension owns the child process. Do not

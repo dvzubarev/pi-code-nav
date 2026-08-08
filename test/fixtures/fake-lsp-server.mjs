@@ -21,6 +21,8 @@
 //   bash-index-log     — emits Bash LS BackgroundAnalysis start/completion
 //                        window/logMessage notifications and returns no symbols
 //                        until completion. Exercises the Bash indexing barrier.
+//   ty-workspace-progress — workspace/diagnostic emits work-done begin/end and
+//                        intentionally long-polls; symbols appear after end.
 //
 // Framing: Content-Length header + JSON body, one message per write. We do
 // NOT use vscode-jsonrpc on the server side — hand-rolled framing keeps this
@@ -30,6 +32,7 @@
 
 const mode = process.argv[2] ?? "ok";
 let bashIndexed = false;
+let tyWorkspaceChecked = false;
 
 let buf = "";
 process.stdin.setEncoding("utf8");
@@ -109,8 +112,27 @@ function handle(msg) {
         }
         return; // notification, no reply
     }
+    if (msg.method === "workspace/diagnostic" && mode === "ty-workspace-progress") {
+        const token = msg.params?.workDoneToken;
+        write({
+            jsonrpc: "2.0",
+            method: "$/progress",
+            params: { token, value: { kind: "begin", title: "Checking" } },
+        });
+        setTimeout(() => {
+            tyWorkspaceChecked = true;
+            write({
+                jsonrpc: "2.0",
+                method: "$/progress",
+                params: { token, value: { kind: "end", message: "Checked workspace" } },
+            });
+        }, 100);
+        // Deliberately no response: ty long-polls an unchanged diagnostic request.
+        return;
+    }
     if (msg.method === "workspace/symbol") {
-        if (mode === "bash-index-log" && !bashIndexed) {
+        if ((mode === "bash-index-log" && !bashIndexed) ||
+            (mode === "ty-workspace-progress" && !tyWorkspaceChecked)) {
             write({ jsonrpc: "2.0", id: msg.id, result: [] });
             return;
         }

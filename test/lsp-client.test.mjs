@@ -28,14 +28,14 @@ import assert from "node:assert/strict";
 import { createJiti } from "/home/denin/.npm-local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
 const EXT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = resolve(EXT_DIR, "test/fixtures/fake-lsp-server.mjs");
 
 const jiti = createJiti(EXT_DIR, { cache: false, interopDefault: true });
-const { LspClient } = await jiti.import("./src/lsp-client.ts");
+const { LspClient, resolveConfig } = await jiti.import("./src/lsp-client.ts");
 
 /** A ServerConfig pointing at our fake server in `mode`. */
 function fakeConfig(mode) {
@@ -143,6 +143,32 @@ test(
         }
     }),
 );
+
+test("ty defaults to workspace diagnostics so it can report whole-project progress", () => {
+    const config = resolveConfig("python");
+    if (config.command === "ty") assert.equal(config.initOptions.diagnosticMode, "workspace");
+});
+
+test("Python project loading waits for ty workspace-diagnostic progress", async () => {
+    const root = await mkdtemp(resolve(tmpdir(), "code-nav-fake-"));
+    const tyCommand = resolve(root, "ty");
+    await symlink(process.execPath, tyCommand);
+    const c = new LspClient("python", root, {
+        command: tyCommand,
+        args: [FIXTURE, "ty-workspace-progress"],
+        initOptions: { diagnosticMode: "workspace" },
+    });
+    try {
+        await c.ensureProjectLoaded();
+        const syms = await c.workspaceSymbol("raw_resp_line_iter");
+        assert.equal(syms.length, 1, "workspace/symbol ran before ty finished checking the project");
+    } finally {
+        try {
+            await c.shutdown();
+        } catch {}
+        await rm(root, { recursive: true, force: true });
+    }
+});
 
 test("Bash project loading waits for BackgroundAnalysis completion log", async () => {
     const root = await mkdtemp(resolve(tmpdir(), "code-nav-fake-"));

@@ -11,7 +11,7 @@
  *                            language can't silently miss one).
  *   - `UnknownLanguageError` — hard failure for single-file tools.
  *   - `validatePosition` — runtime validation for CLI and direct nav callers.
- *   - `awaitReadyForQuery` — openDocument + (cpp) ccls indexing wait before a
+ *   - `awaitReadyForQuery` — openDocument + project-readiness wait before a
  *                            per-file LSP query, deduplicated across tools.
  *
  * Per-tool implementations live in their own files; `nav.ts` is the barrel that
@@ -38,24 +38,15 @@ export const ALL_LANGS = ["cpp", "python", "bash", "typescript"] as const satisf
 // ---------------------------------------------------------------------------
 
 /**
- * Open `abs` on its server and, for cpp, wait for ccls to finish indexing
- * this translation unit before per-file LSP queries. On a cold ccls cache,
- * queries issued before indexing finishes return stale/incomplete results
- * — e.g. `code_outline` on a freshly-opened .cpp shows only the namespace
- * with `{0:0}` ranges, `textDocument/definition` bounces to the declaration,
- * `documentSymbol` returns placeholder ranges. The wait has a bounded
- * deadline; timeout is surfaced instead of returning a plausible but stale
- * result.
+ * Open `abs` and establish the language-specific project barrier before a
+ * per-file query. ccls waits for its indexing pipeline; ty performs one
+ * whole-workspace diagnostic check and waits for standard work-done progress.
+ * This avoids plausible but stale/incomplete navigation results on cold,
+ * large projects.
  *
- * Idempotent: `openDocument` dedupes by URI, and `waitForIndexingComplete`
- * is a no-op once ccls's `indexState === "ended"` (warm cache). So on a warm
- * cache this is essentially free — `openDocument` is a single dedup'd didOpen
- * (or no-op) and the indexing wait returns immediately. No behavior change
- * on a warm cache; the cold-cache path becomes reliable.
- *
- * `definition()` and `diagnostics()` did this inline; the helper deduplicates
- * and applies the same wait to `outline`/`tree`/`hover`/`references`/`rename`,
- * which previously queried on a not-yet-indexed TU.
+ * The operation is idempotent: document opens are deduplicated, ccls caches
+ * its established idle state, and ty memoizes its first workspace check for
+ * the server lifetime. Timeouts are surfaced rather than returning stale data.
  */
 export async function awaitReadyForQuery(
     lang: Lang,
@@ -64,7 +55,7 @@ export async function awaitReadyForQuery(
     text: string,
 ): Promise<void> {
     await client.openDocument(abs, text);
-    if (lang === "cpp") await client.waitForIndexingComplete();
+    if (lang === "cpp" || lang === "python") await client.ensureProjectLoaded();
 }
 
 // ---------------------------------------------------------------------------

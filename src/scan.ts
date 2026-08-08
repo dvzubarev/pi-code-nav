@@ -8,7 +8,7 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { ClientProvider, UnknownLanguageError } from "./nav-core";
+import { awaitReadyForQuery, ClientProvider, UnknownLanguageError } from "./nav-core";
 import { hoverText, toAbs } from "./render";
 import {
     hoverFirstLine,
@@ -109,6 +109,7 @@ export async function scan(
             docsNote = `\n# WARNING: could not enrich with docs (${lang}: server unavailable: ${e})`;
             return renderSymbolTable(params.path, startLine, endLine, entries) + docsNote;
         }
+        await awaitReadyForQuery(lang, client, abs, text);
         docs = new Map();
         for (const e of entries) {
             const key = `${e.name}|${e.role}`;

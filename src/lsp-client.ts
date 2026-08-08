@@ -11,6 +11,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { readdir, readFile, unlink } from "node:fs/promises";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { resolve, join } from "node:path";
+import { createProjectProgress, type ProjectProgress } from "./project-progress";
 import {
     createMessageConnection,
     StreamMessageReader,
@@ -75,7 +76,10 @@ const PYRIGHT_CONFIG: ServerConfig = {
 const TY_CONFIG: ServerConfig = {
     command: "ty",
     args: ["server"],
-    initOptions: {},
+    // ty reports whole-workspace checking progress from workspace/diagnostic
+    // only in workspace diagnostic mode. LspClient uses that request as the
+    // cold-project readiness barrier before the first Python query.
+    initOptions: { diagnosticMode: "workspace" },
 };
 
 const BASH_CONFIG: ServerConfig = {
@@ -404,38 +408,8 @@ export class LspClient {
      * `resetPushState()`.
      */
     private diagnosticWaiters = new Map<string, Set<(diags: Diagnostic[] | undefined) => void>>();
-    /**
-     * ccls project-wide indexing state. $/progress is observed but is not an
-     * authoritative completion signal: ccls emits no begin/end pair when a
-     * batch contains only one translation unit, and an old end can race with
-     * newly opened work. Readiness is established only by polling `$ccls/info`
-     * until its pipeline has
-     * been stably idle (completed === enqueued) twice; see
-     * waitForIndexingComplete().
-     */
-    private indexState: "idle" | "in_progress" | "ended" = "idle";
-    /**
-     * Generic LSP work-done-progress tracking. Unlike ccls's `indexState`
-     * (whose completion is verified through `$ccls/info`), this tracks the
-     * actual lifetime of server-created progress tokens. TypeScript uses a
-     * fresh UUID token around tsserver's projectLoadingStart/projectLoadingFinish
-     * events, which gives ensureProjectLoaded an authoritative cold-project
-     * barrier before its first workspace/symbol request.
-     */
-    private workDoneRegistered = new Set<string>();
-    private workDoneActive = new Set<string>();
-    private workDoneRevision = 0;
-    private workDoneWaiters = new Set<() => void>();
-    /**
-     * bash-language-server starts workspace-wide BackgroundAnalysis from its
-     * `initialized` handler, but does not expose that lifetime through LSP
-     * work-done progress. It does emit stable info-level window/logMessage
-     * start/completion lines, which provide the only server-originated barrier
-     * before the first workspace/symbol request.
-     */
-    private bashIndexState: "idle" | "in_progress" | "ended" = "idle";
-    private bashIndexRevision = 0;
-    private bashIndexWaiters = new Set<() => void>();
+    /** Project-readiness policy and notification state; see project-progress.ts. */
+    private readonly projectProgress: ProjectProgress;
 
     constructor(lang: Lang, rootPath: string, cfg: ServerConfig, logDir?: string) {
         this.lang = lang;
@@ -443,6 +417,24 @@ export class LspClient {
         this.rootUri = pathToFileURL(rootPath).href;
         this.cfg = cfg;
         this.logDir = logDir;
+        this.projectProgress = createProjectProgress(
+            lang,
+            async (method, params, timeoutMs) => {
+                const conn = this.conn;
+                if (!conn) throw new Error("LSP server is not connected");
+                const timeout = Math.min(
+                    resolveRequestTimeoutMs(),
+                    timeoutMs ?? resolveRequestTimeoutMs(),
+                );
+                return requestWithTimeout(conn, method, params, timeout);
+            },
+            (method, params) => {
+                const conn = this.conn;
+                if (!conn) return Promise.reject(new Error("LSP server is not connected"));
+                return conn.sendRequest(method, params);
+            },
+            lang === "python" && /(^|[\\/])ty$/.test(cfg.command),
+        );
     }
 
     private cfg: ServerConfig;
@@ -675,26 +667,23 @@ export class LspClient {
                 }
             },
         );
-        // Work-done progress is used by both ccls and typescript-language-server:
-        // ccls uses the stable "index" token, while TypeScript creates a UUID
-        // token for each tsserver project-loading interval. Track the generic
-        // token lifecycle for TypeScript's cold-project barrier, and separately
-        // retain ccls's specialized state (whose authoritative completion comes
-        // from `$ccls/info`, not from progress). Register BEFORE initialize so
+        // Work-done progress is used by ccls, typescript-language-server, and
+        // ty. The generic tracker handles token lifetimes for TypeScript and
+        // ty; CppProjectProgress observes ccls progress but verifies completion
+        // through `$ccls/info`. Register BEFORE initialize so
         // no early server-created token is missed. String method names per the
         // protocol-package compatibility rule in docs/lsp.md.
         conn.onRequest(
             "window/workDoneProgress/create",
             (params: { token?: string | number }) => {
-                this.handleWorkDoneCreate(params?.token);
+                this.projectProgress.handleWorkDoneCreate(params?.token);
                 return null;
             },
         );
         conn.onNotification(
             "$/progress",
             (params: { token?: string | number; value?: { kind?: string } }) => {
-                this.handleWorkDoneProgress(params);
-                this.handleIndexProgress(params);
+                this.projectProgress.handleProgress(params);
             },
         );
         // bash-language-server does not use work-done progress for its eager
@@ -704,7 +693,7 @@ export class LspClient {
         // and cannot miss a fast Bash scan.
         conn.onNotification(
             "window/logMessage",
-            (params: { message?: string }) => this.handleBashIndexLog(params?.message),
+            (params: { message?: string }) => this.projectProgress.handleLogMessage(params?.message),
         );
         // If the transport closes without the process exiting (reader hits
         // EOF / writer error), vscode-jsonrpc fires onClose. dispose() there
@@ -787,10 +776,9 @@ export class LspClient {
                 workspace: {
                     symbol: {},
                 },
-                // Opt into work-done progress. ccls reports indexing batches;
-                // typescript-language-server reports tsserver project loading.
-                // See handleWorkDoneProgress / waitForWorkDoneSince and the
-                // ccls-specific handleIndexProgress / waitForIndexingComplete.
+                // Opt into work-done progress. TypeScript reports project
+                // loading, ty reports workspace checking, and ccls reports
+                // indexing batches. Policy lives in project-progress.ts.
                 window: {
                     workDoneProgress: true,
                 },
@@ -885,10 +873,9 @@ export class LspClient {
                 textDocument: { uri, version },
                 contentChanges: [{ text }],
             });
-            // ccls may enqueue fresh indexing work for the changed document.
-            // Invalidate readiness after the write so an older progress "end"
-            // racing with didChange cannot make the new work look complete.
-            if (this.lang === "cpp") this.indexState = "idle";
+            // Language-specific trackers may need to re-establish readiness
+            // after a document change (notably ccls's indexing pipeline).
+            this.projectProgress.invalidate();
             this.openDocs.set(uri, { version, text });
             return;
         }
@@ -910,11 +897,8 @@ export class LspClient {
         await notifyWithTimeout(this.conn!, "textDocument/didOpen", {
             textDocument: doc,
         });
-        // didOpen can enqueue a TU even after the initial project batch ended.
-        // Force the next readiness check through `$ccls/info`; unchanged
-        // documents remain cheap because the early return above preserves the
-        // established "ended" state.
-        if (this.lang === "cpp") this.indexState = "idle";
+        // didOpen can enqueue fresh language-specific project work.
+        this.projectProgress.invalidate();
         this.openDocs.set(uri, { version, text });
     }
 
@@ -929,7 +913,7 @@ export class LspClient {
 
     /**
      * Ensure the language server has loaded a project (index) before a request
-     * that requires one. Three servers need a readiness barrier:
+     * that requires one. Every non-pyright default server has a readiness policy:
      *   - tsserver loads its project lazily on the first didOpen of a file in
      *     that project; `workspace/symbol` (navto) throws "No Project." before
      *     then and can return a partial project while loading. The standard
@@ -943,312 +927,62 @@ export class LspClient {
      *   - bash-language-server starts BackgroundAnalysis asynchronously from
      *     `initialized`; workspace/symbol can otherwise race it and return [].
      *     It reports completion only through window/logMessage.
-     * pyright/ty index eagerly during initialization and need no warm-up.
+     *   - ty checks the entire workspace only when workspace/diagnostic is
+     *     requested and reports that check through standard work-done progress.
+     * pyright and unknown user-selected Python servers need no warm-up.
      *
      * Implementation: if no document has been opened yet, find one source file
      * of this server's language under the workspace root and open it (the file
      * stays open for the session — matching the no-close-until-shutdown
-     * policy); then wait for TypeScript's work-done interval or ccls's
-     * authoritative pipeline counters so workspace/symbol sees the WHOLE
-     * project. Returns true if a project is
+     * policy); then delegate to the standard or language-specific tracker.
+     * ty instead triggers one workspace-diagnostic check. Returns true if a project is
      * known to be loaded; false if no matching source file could be found.
      */
     async ensureProjectLoaded(): Promise<boolean> {
         await this.ensureReady();
+
+        if (this.lang === "python") {
+            await this.projectProgress.waitUntilReady();
+            return true;
+        }
         if (this.lang === "bash") {
-            await this.waitForBashIndexing();
+            await this.projectProgress.waitUntilReady();
             return true;
         }
         if (this.lang !== "typescript" && this.lang !== "cpp") return true;
+
         let progressBeforeOpen: number | undefined;
         if (this.openDocs.size === 0) {
             try {
                 const file = await findFirstSourceFile(this.rootUri, this.lang);
                 if (!file) return false;
                 const text = await readFile(file, "utf8");
-                if (this.lang === "typescript") progressBeforeOpen = this.workDoneRevision;
+                if (this.lang === "typescript") progressBeforeOpen = this.projectProgress.revision();
                 await this.openDocument(file, text);
             } catch {
                 return false;
             }
         }
-        // typescript-language-server turns tsserver's projectLoadingStart /
-        // projectLoadingFinish events into an LSP work-done progress interval.
-        // didOpen is only a notification and can return before that interval
-        // even starts; wait for the interval generated by the bootstrap open
-        // before issuing workspace/symbol. Without this barrier a cold navto
-        // sees only the opened file (or no symbols) while tsconfig loading is
-        // still in flight. If another tool opened the document, only wait when
-        // a progress token is currently registered/active; completed loading
-        // needs no additional grace period.
         if (this.lang === "typescript") {
             if (progressBeforeOpen !== undefined) {
-                await this.waitForWorkDoneSince(progressBeforeOpen);
-            } else if (this.workDoneRegistered.size > 0 || this.workDoneActive.size > 0) {
-                await this.waitForWorkDoneSince(this.workDoneRevision);
+                await this.projectProgress.waitForWorkDoneSince(progressBeforeOpen);
+            } else if (this.projectProgress.hasPendingWork()) {
+                await this.projectProgress.waitUntilReady();
             }
+        } else {
+            await this.projectProgress.waitUntilReady();
         }
-        // Opening a document is not evidence that ccls's background index is
-        // complete. This must run even when another tool already opened a file;
-        // after readiness is established it is immediate for the session.
-        // Index timeout/protocol errors propagate rather than masquerading as
-        // an empty symbol result.
-        if (this.lang === "cpp") await this.waitForIndexingComplete();
         return true;
     }
 
-    private signalBashIndexChange(): void {
-        this.bashIndexRevision++;
-        const waiters = [...this.bashIndexWaiters];
-        this.bashIndexWaiters.clear();
-        for (const resolve of waiters) resolve();
+    /** Compatibility wrapper used by the shared per-file query path. */
+    async waitForIndexingComplete(endMs = 60_000): Promise<void> {
+        await this.projectProgress.waitUntilReady(endMs);
     }
 
-    private handleBashIndexLog(message: string | undefined): void {
-        if (this.lang !== "bash" || !message) return;
-        if (message.includes("BackgroundAnalysis: resolving glob")) {
-            this.bashIndexState = "in_progress";
-            this.signalBashIndexChange();
-        } else if (
-            message.includes("BackgroundAnalysis: Completed") ||
-            message.includes("BackgroundAnalysis: skipping") ||
-            message.includes("BackgroundAnalysis: failed resolved glob")
-        ) {
-            // "skipping" and glob failure are terminal too: there is no index
-            // work left to wait for, even though the resulting index is empty.
-            this.bashIndexState = "ended";
-            this.signalBashIndexChange();
-        }
-    }
-
-    private async waitForBashIndexChange(revision: number, timeoutMs: number): Promise<void> {
-        if (this.bashIndexRevision !== revision || timeoutMs <= 0) return;
-        await new Promise<void>((resolve) => {
-            let settled = false;
-            const finish = () => {
-                if (settled) return;
-                settled = true;
-                clearTimeout(timer);
-                this.bashIndexWaiters.delete(finish);
-                resolve();
-            };
-            const timer = setTimeout(finish, timeoutMs);
-            this.bashIndexWaiters.add(finish);
-            if (this.bashIndexRevision !== revision) finish();
-        });
-    }
-
-    /** Wait for bash-language-server's asynchronous BackgroundAnalysis scan. */
-    private async waitForBashIndexing(startMs = 1000, endMs = 60000): Promise<void> {
-        if (this.bashIndexState === "ended") return;
-        const resolvedStartMs = process.env.CODE_NAV_PROJECT_LOAD_START_TIMEOUT_MS
-            ? parseInt(process.env.CODE_NAV_PROJECT_LOAD_START_TIMEOUT_MS, 10)
-            : startMs;
-        const resolvedEndMs = process.env.CODE_NAV_PROJECT_LOAD_END_TIMEOUT_MS
-            ? parseInt(process.env.CODE_NAV_PROJECT_LOAD_END_TIMEOUT_MS, 10)
-            : endMs;
-
-        if (this.bashIndexState === "idle") {
-            const before = this.bashIndexRevision;
-            await this.waitForBashIndexChange(before, resolvedStartMs);
-            // A non-default server log level can suppress info messages. Use a
-            // bounded fallback instead of making every Bash query hang forever.
-            if (this.bashIndexState === "idle") return;
-        }
-
-        const deadline = Date.now() + resolvedEndMs;
-        while (this.bashIndexState === "in_progress") {
-            const remaining = deadline - Date.now();
-            if (remaining <= 0) {
-                throw new Error(`Bash workspace indexing timed out after ${resolvedEndMs}ms`);
-            }
-            const before = this.bashIndexRevision;
-            await this.waitForBashIndexChange(before, remaining);
-        }
-    }
-
-    private workDoneKey(token: string | number): string {
-        return `${typeof token}:${token}`;
-    }
-
-    private signalWorkDoneChange(): void {
-        this.workDoneRevision++;
-        const waiters = [...this.workDoneWaiters];
-        this.workDoneWaiters.clear();
-        for (const resolve of waiters) resolve();
-    }
-
-    private handleWorkDoneCreate(token: string | number | undefined): void {
-        if (token === undefined) return;
-        this.workDoneRegistered.add(this.workDoneKey(token));
-        this.signalWorkDoneChange();
-    }
-
-    private handleWorkDoneProgress(params: {
-        token?: string | number;
-        value?: { kind?: string };
-    }): void {
-        if (params.token === undefined) return;
-        const key = this.workDoneKey(params.token);
-        const kind = params.value?.kind;
-        if (kind === "begin") {
-            // Be tolerant of servers that skip window/workDoneProgress/create.
-            this.workDoneRegistered.add(key);
-            this.workDoneActive.add(key);
-            this.signalWorkDoneChange();
-        } else if (kind === "end") {
-            this.workDoneActive.delete(key);
-            this.workDoneRegistered.delete(key);
-            this.signalWorkDoneChange();
-        }
-        // report does not change token lifetime.
-    }
-
-    private async waitForWorkDoneChange(revision: number, timeoutMs: number): Promise<void> {
-        if (this.workDoneRevision !== revision || timeoutMs <= 0) return;
-        await new Promise<void>((resolve) => {
-            let settled = false;
-            const finish = () => {
-                if (settled) return;
-                settled = true;
-                clearTimeout(timer);
-                this.workDoneWaiters.delete(finish);
-                resolve();
-            };
-            const timer = setTimeout(finish, timeoutMs);
-            this.workDoneWaiters.add(finish);
-            // Close the check→registration race with a second revision check.
-            if (this.workDoneRevision !== revision) finish();
-        });
-    }
-
-    /**
-     * Wait for a server-created work-done interval occurring after `revision`.
-     * A short start window is necessary because didOpen is a notification and
-     * TypeScript creates its progress token asynchronously. Once activity is
-     * observed, failure to receive the matching end is a hard timeout rather
-     * than an empty/partial workspace-symbol result.
-     */
-    private async waitForWorkDoneSince(revision: number, startMs = 1000, endMs = 60000): Promise<void> {
-        const resolvedStartMs = process.env.CODE_NAV_PROJECT_LOAD_START_TIMEOUT_MS
-            ? parseInt(process.env.CODE_NAV_PROJECT_LOAD_START_TIMEOUT_MS, 10)
-            : startMs;
-        const resolvedEndMs = process.env.CODE_NAV_PROJECT_LOAD_END_TIMEOUT_MS
-            ? parseInt(process.env.CODE_NAV_PROJECT_LOAD_END_TIMEOUT_MS, 10)
-            : endMs;
-
-        const startDeadline = Date.now() + resolvedStartMs;
-        while (
-            this.workDoneRevision === revision &&
-            this.workDoneRegistered.size === 0 &&
-            this.workDoneActive.size === 0
-        ) {
-            const remaining = startDeadline - Date.now();
-            if (remaining <= 0) return; // Server did not report project loading.
-            await this.waitForWorkDoneChange(revision, remaining);
-        }
-
-        const endDeadline = Date.now() + resolvedEndMs;
-        while (this.workDoneRegistered.size > 0 || this.workDoneActive.size > 0) {
-            const remaining = endDeadline - Date.now();
-            if (remaining <= 0) {
-                throw new Error(`TypeScript project loading timed out after ${resolvedEndMs}ms`);
-            }
-            const before = this.workDoneRevision;
-            await this.waitForWorkDoneChange(before, remaining);
-        }
-    }
-
-    /**
-     * Drive the ccls indexing state machine from a $/progress notification
-     * on the "index" token. begin → in_progress; end → idle (completion still
-     * requires `$ccls/info`). report is ignored.
-     * Notifications on any other token are ignored (only ccls's "index" token
-     * is meaningful to us). Safe to call for any language — only ccls emits
-     * this, and the token gate makes it inert otherwise.
-     */
-    private handleIndexProgress(params: {
-        token?: string | number;
-        value?: { kind?: string };
-    }): void {
-        if (params?.token !== "index") return;
-        const kind = params?.value?.kind;
-        if (kind === "begin") {
-            this.indexState = "in_progress";
-        } else if (kind === "end") {
-            // Do not mark this authoritative: didOpen/didChange may already be
-            // in flight with work that was not part of this progress batch.
-            this.indexState = "idle";
-        }
-        // "report" carries a percentage but we don't render it — ignore.
-    }
-
-    /**
-     * Block until ccls's indexing pipeline is stably idle.
-     *
-     * `$ccls/info` exposes the server's authoritative `completed` and
-     * `enqueued` counters. This is more reliable than work-done progress:
-     * ccls only sends a begin notification after one task completes while
-     * another remains, so a single expensive TU produces no begin/end pair.
-     *
-     * Two equal samples are required because an indexer increments completed
-     * just after queueing its final database update. The short gap gives the
-     * ccls main loop a chance to apply that update before a query is issued.
-     * Warm caches and tiny projects therefore cost only one 25ms confirmation,
-     * while cold projects wait exactly as long as their indexing takes.
-     */
-    async waitForIndexingComplete(endMs = 60000): Promise<void> {
-        const resolvedEndMs = process.env.CODE_NAV_INDEX_END_TIMEOUT_MS
-            ? parseInt(process.env.CODE_NAV_INDEX_END_TIMEOUT_MS, 10)
-            : endMs;
-        if (this.indexState === "ended") return;
-        const conn = this.conn;
-        if (!conn) throw new Error("LSP server is not connected");
-
-        const deadline = Date.now() + resolvedEndMs;
-        let idleEnqueued: number | undefined;
-        while (Date.now() < deadline) {
-            const remaining = Math.max(1, deadline - Date.now());
-            const raw = (await requestWithTimeout(
-                conn,
-                "$ccls/info",
-                undefined,
-                Math.min(resolveRequestTimeoutMs(), remaining),
-            )) as {
-                pipeline?: { completed?: number; enqueued?: number };
-            };
-            const completed = raw?.pipeline?.completed;
-            const enqueued = raw?.pipeline?.enqueued;
-            if (typeof completed !== "number" || typeof enqueued !== "number") {
-                throw new Error("ccls returned invalid $ccls/info pipeline statistics");
-            }
-
-            if (completed === enqueued) {
-                if (idleEnqueued === enqueued) {
-                    this.indexState = "ended";
-                    return;
-                }
-                idleEnqueued = enqueued;
-            } else {
-                this.indexState = "in_progress";
-                idleEnqueued = undefined;
-            }
-
-            await new Promise<void>((resolve) =>
-                setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))),
-            );
-        }
-        throw new Error(`ccls indexing timed out after ${resolvedEndMs}ms`);
-    }
-
-    /** Drop any progress-tracking state (used on shutdown/exit/spawn-fail). */
+    /** Drop project-progress state on shutdown, exit, or spawn failure. */
     private resetIndexingState(): void {
-        this.indexState = "idle";
-        this.workDoneRegistered.clear();
-        this.workDoneActive.clear();
-        this.signalWorkDoneChange();
-        this.bashIndexState = "idle";
-        this.signalBashIndexChange();
+        this.projectProgress.reset();
     }
 
     /**

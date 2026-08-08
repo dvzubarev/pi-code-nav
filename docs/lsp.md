@@ -93,6 +93,13 @@ leading empty string. Verified against ty's raw output: `greet`=`kind:12`,
   fixed at pool construction, set to `ctx.cwd`).
 - `LspClient.ensureReady()` is idempotent — it stores the ready promise and
   returns it on repeat calls. `start()` is only ever run once per client.
+- Project-readiness tracking lives in `src/project-progress.ts`, behind the
+  `ProjectProgress` interface. `WorkDoneProgress` is the standard `$/progress`
+  implementation; TypeScript uses it directly and `TyProjectProgress` extends
+  it with ty's workspace-diagnostic trigger. `BashProjectProgress` interprets
+  BackgroundAnalysis log messages, and `CppProjectProgress` polls ccls's
+  authoritative `$ccls/info` counters.
+  `LspClient` owns protocol wiring and delegates notification state/policy.
 - On server process exit (the `proc.on("exit")` handler), the client resets
   `ready = null` so a subsequent tool call will re-spawn. This matters: ccls
   can crash on malformed `compile_commands.json`, and the extension should
@@ -144,6 +151,23 @@ also uses the legacy `changes` field in `WorkspaceEdit` (not `documentChanges`)
 for rename — `applyWorkspaceEdit` (see `code_rename.md`) handles both, so the
 rename tool works with ty unchanged. If you add a server that uses neither
 field, you'll need a third path.
+
+**ty project readiness.** ty is incremental rather than an eager, standalone
+indexer. Its whole-project operation is the standard `workspace/diagnostic`
+request when `diagnosticMode: "workspace"`; while checking every project file,
+ty reports standard work-done `$/progress` (`begin`, periodic `report`, `end`)
+on the request's `workDoneToken`. The default ty config enables workspace
+mode. Before the first Python action, `TyProjectProgress` sends one
+`workspace/diagnostic` request and waits for either its work-done `end` or a
+normal response. This populates ty's Salsa query cache before navigation.
+
+A no-change `workspace/diagnostic` request may deliberately remain open as a
+long poll after checking finishes. Therefore the response itself is not the
+only completion barrier: the progress `end` is authoritative, and the pending
+request is retained with a rejection handler until ty completes it on a later
+change or shutdown. This warm-up is ty-only (recognized from the configured
+server command); pyright and user-selected Python servers keep their previous
+behavior.
 
 ### TypeScript server (typescript-language-server wrapping tsserver)
 
@@ -204,8 +228,9 @@ and `ensureProjectLoaded()` waits for that completion before Bash
 `workspace/symbol`. The start wait is bounded because a user-selected server
 log level can suppress info messages; once the start message is observed, a
 missing completion is a hard project-load timeout. This state and handler are
-Bash-only and do not alter TypeScript's work-done barrier or ccls's pipeline
-polling.
+encapsulated by `BashProjectProgress`; they do not alter the generic
+TypeScript/ty work-done barrier or `CppProjectProgress`'s
+pipeline polling.
 
 **Tree-sitter for `.tsx`/`.jsx` uses the `tsx` grammar, not `typescript`.**
 See `code_scan.md`. `tsLangForFile` maps `.tsx`/`.jsx` → `tsx` and

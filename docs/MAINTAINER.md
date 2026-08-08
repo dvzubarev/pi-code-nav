@@ -38,8 +38,14 @@
   `index.ts` and the tests/CLI import the tools via `./src/nav` so they don't
   need to know about the per-tool file split.
 - `src/nav-core.ts` — shared core for every tool: `ClientProvider`, `ALL_LANGS`,
-  `UnknownLanguageError`, and `awaitReadyForQuery` (openDocument + ccls
-  indexing wait, deduplicated across tools).
+  `UnknownLanguageError`, and `awaitReadyForQuery` (openDocument + project
+  readiness wait, deduplicated across tools).
+- `src/project-progress.ts` — project-readiness abstraction. `ProjectProgress`
+  is the transport-facing API; `WorkDoneProgress` handles standard
+  `$/progress`, while `BashProjectProgress` and `CppProjectProgress` implement
+  the servers' nonstandard completion policies. `TyProjectProgress` triggers
+  ty's workspace-diagnostic check. `lsp-client.ts` only wires protocol events
+  and request callbacks into the selected implementation.
 - `src/detect.ts` — project language detection (`detectProjectLanguages`,
   memoized per root; `clearDetectedLanguagesCache`) used by `code_search_symbol`
   so the per-language workspace/symbol loop only spawns servers that can find
