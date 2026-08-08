@@ -167,7 +167,7 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol PoolAllocator cpp --info code
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol PoolAllocator cpp --include definition
     test("code_search_symbol includes a template with non-type parameters", async () => {
         const response = await search({
             query: "PoolAllocator",
@@ -181,7 +181,7 @@ register("code_search_symbol C++ scenarios", () => {
     // ─── Include parameter tests ───────────────────────────────────────────
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Vec3 cpp --info code
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Vec3 cpp --include definition
     test("code_search_symbol with include=definition returns source code", async () => {
         const response = await search({
             query: "Vec3",
@@ -261,7 +261,7 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Vec3 cpp --info hover
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Vec3 cpp --include hover
     test("code_search_symbol with include=hover returns signature and docs", async () => {
         const response = await search({
             query: "Vec3",
@@ -285,7 +285,7 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Vec3 cpp --info references
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Vec3 cpp --include references
     test("code_search_symbol with include=references returns usages", async () => {
         const response = await search({
             query: "Vec3",
@@ -305,7 +305,7 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Vec3 cpp --info code,hover,references
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Vec3 cpp --include definition,hover,references
     test("code_search_symbol with multiple include options returns all sections", async () => {
         const response = await search({
             query: "Vec3",
@@ -333,7 +333,7 @@ register("code_search_symbol C++ scenarios", () => {
     // ─── list_symbols parameter tests ──────────────────────────────────────
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Vec3 cpp --info code --list-symbols
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Vec3 cpp --include definition --list-symbols
     test("code_search_symbol list_symbols controls definition metadata", async () => {
         const withSymbols = await search({
             query: "Vec3",
@@ -378,7 +378,7 @@ register("code_search_symbol C++ scenarios", () => {
     // `kinds` filters symbols matching the query; it does not reinterpret the
     // matched class as a container and search its descendants.
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol RigidBody cpp --kind enum
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol RigidBody cpp --kinds enum
     test("code_search_symbol kinds filter does not search inside a matching class", async () => {
         const response = await search({
             query: "RigidBody",
@@ -396,8 +396,8 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol State cpp --kind enum
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol State cpp --kind class
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol State cpp --kinds enum
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol State cpp --kinds class
     test("code_search_symbol enum kinds filter accepts enums and rejects them as classes", async () => {
         const accepted = await search({ query: "State", language: "cpp", kinds: ["enum"] });
         const rejected = await search({ query: "State", language: "cpp", kinds: ["class"] });
@@ -406,8 +406,8 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'RigidBody::State' cpp --kind enum
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'RigidBody::State' cpp --kind class
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'RigidBody::State' cpp --kinds enum
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'RigidBody::State' cpp --kinds class
     test("code_search_symbol kinds filter works with a qualified name", async () => {
         const accepted = await search({
             query: "RigidBody::State",
@@ -428,8 +428,8 @@ register("code_search_symbol C++ scenarios", () => {
 
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp --kind method
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp --kind function
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp --kinds method
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp --kinds function
     test("code_search_symbol kind filter rejects a real competing kind", async () => {
         const unfiltered = await search({ query: "getState", language: "cpp" });
         const methods = await search({ query: "getState", language: "cpp", kinds: ["method"] });
@@ -461,8 +461,8 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --kind method
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --kind function
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --kinds method
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --kinds function
     test("code_search_symbol method kinds filter works with another bare method", async () => {
         const unfiltered = await search({ query: "getPosition", language: "cpp" });
         const accepted = await search({
@@ -493,8 +493,8 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Debug cpp --kind enummember
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Debug cpp --kind enum
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Debug cpp --kinds enummember
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Debug cpp --kinds enum
     test("code_search_symbol distinguishes enum members from enums", async () => {
         const accepted = await search({
             query: "Debug",
@@ -512,7 +512,7 @@ register("code_search_symbol C++ scenarios", () => {
     // ─── name_pattern filter tests ─────────────────────────────────────────
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --regex 'toString\(int value\)'
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --name-pattern 'toString\(int value\)'
     test("code_search_symbol name_pattern selects one C++ overload by full signature", async () => {
         const unfiltered = await search({ query: "toString", language: "cpp" });
         const response = await search({
@@ -532,7 +532,7 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol RigidBody cpp --regex 'RigidBody::RigidBody'
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol RigidBody cpp --name-pattern 'RigidBody::RigidBody'
     test("code_search_symbol name_pattern separates a constructor from its class", async () => {
         const response = await search({
             query: "RigidBody",
@@ -547,7 +547,7 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --regex 'math::Vec3'
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --name-pattern 'math::Vec3'
     test("code_search_symbol name_pattern selects an overload by parameter type", async () => {
         const response = await search({
             query: "toString",
@@ -561,7 +561,7 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --regex 'toString\(bool value\)'
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --name-pattern 'toString\(bool value\)'
     test("code_search_symbol name_pattern selects another overload without leaking siblings", async () => {
         const response = await search({
             query: "toString",
@@ -576,7 +576,7 @@ register("code_search_symbol C++ scenarios", () => {
 
     // name_pattern case-insensitivity test using a query that has exact matches
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --regex 'GETPOSITION'
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --name-pattern 'GETPOSITION'
     test("code_search_symbol with name_pattern is case-insensitive", async () => {
         const response = await search({
             query: "getPosition",
@@ -590,7 +590,7 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol RigidBody cpp --regex '['
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol RigidBody cpp --name-pattern '['
     test("code_search_symbol rejects an invalid name_pattern regex", async () => {
         await search({
             query: "RigidBody",
@@ -689,7 +689,7 @@ register("code_search_symbol C++ scenarios", () => {
 
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol cross cpp
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol cross cpp --regex 'engine::math::cross'
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol cross cpp --name-pattern 'engine::math::cross'
     test("code_search_symbol name_pattern narrows similarly named functions by namespace", async () => {
         const unfiltered = await search({ query: "cross", language: "cpp" });
         const filtered = await search({
@@ -758,7 +758,7 @@ register("code_search_symbol C++ scenarios", () => {
     // ─── Edge case: Template specialization names ──────────────────────────
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'data::Result<void>' cpp --info code
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'data::Result<void>' cpp --include definition
     test("code_search_symbol resolves the exact template specialization for include", async () => {
         const response = await search({
             query: "data::Result<void>",
@@ -782,7 +782,7 @@ register("code_search_symbol C++ scenarios", () => {
     // ─── Combined filters ──────────────────────────────────────────────────
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp --kind method --regex 'get.*'
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp --kinds method --name-pattern 'get.*'
     test("code_search_symbol combines kinds and name_pattern filters", async () => {
         const unfiltered = await search({ query: "getState", language: "cpp" });
         const response = await search({
@@ -802,7 +802,7 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --kind method --regex 'get.*'
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --kinds method --name-pattern 'get.*'
     test("code_search_symbol combined filters work with another direct method name", async () => {
         const response = await search({
             query: "getPosition",
@@ -814,7 +814,7 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --kind method --regex 'get.*' --info code,hover
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --kinds method --name-pattern 'get.*' --include definition,hover
     test("code_search_symbol combines all parameters for precise search", async () => {
         const response = await search({
             query: "getPosition",
@@ -869,7 +869,7 @@ register("code_search_symbol C++ scenarios", () => {
     // This is the correct pattern for getting detailed info on specific nested symbols.
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'RigidBody::State' cpp --kind enum --info code,hover
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'RigidBody::State' cpp --kinds enum --include definition,hover
     test("code_search_symbol include with qualified name and kinds filter works correctly", async () => {
         const response = await search({
             query: "RigidBody::State",

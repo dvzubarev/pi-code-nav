@@ -51,9 +51,8 @@ typescriptScenario("code_search_symbol resolves a qualified TypeScript module sy
 });
 
 // Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-typescript" node scripts/nav-cli.mjs symbol calculateInvoiceTotal typescript --info code,hover,references
-// Public include=["definition", "hover", "references"] is equivalent to
-// the legacy --info spelling used by the CLI. list_symbols has no CLI alias.
+//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-typescript" node scripts/nav-cli.mjs symbol calculateInvoiceTotal typescript --include definition,hover,references
+// The CLI uses the same public include names; list_symbols has no CLI alias.
 typescriptScenario("code_search_symbol includes definition, hover, and references", {
     // TODO: re-enable when symbol search resolves the declaration rather than
     // an import binding before include fan-out.
@@ -83,7 +82,7 @@ typescriptScenario("code_search_symbol includes definition, hover, and reference
 });
 
 // Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-typescript" node scripts/nav-cli.mjs symbol serialize typescript --kind method
+//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-typescript" node scripts/nav-cli.mjs symbol serialize typescript --kinds method
 // The public kinds parameter must distinguish class methods from the
 // same-named module-level serializer functions.
 typescriptScenario("code_search_symbol kinds selects TypeScript methods", {
@@ -107,7 +106,7 @@ typescriptScenario("code_search_symbol kinds selects TypeScript methods", {
 });
 
 // Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-typescript" node scripts/nav-cli.mjs symbol serialize typescript --regex '^SERIALIZE$'
+//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-typescript" node scripts/nav-cli.mjs symbol serialize typescript --name-pattern '^SERIALIZE$'
 // name_pattern is applied case-insensitively to the rendered TypeScript name.
 typescriptScenario("code_search_symbol name_pattern matches TypeScript names case-insensitively", {
     given: { fixtures, workspaceRoot: "symbol-search-typescript" },
@@ -130,7 +129,7 @@ typescriptScenario("code_search_symbol name_pattern matches TypeScript names cas
 });
 
 // Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-typescript" node scripts/nav-cli.mjs symbol serialize typescript --kind method --regex '^SERIALIZE$' --info code
+//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-typescript" node scripts/nav-cli.mjs symbol serialize typescript --kinds method --name-pattern '^SERIALIZE$' --include definition
 // Filters run before include fan-out, so only the two exact methods receive
 // definition sections and the functions do not leak into the response.
 typescriptScenario("code_search_symbol combines kinds, name_pattern, and include", {
@@ -161,7 +160,7 @@ typescriptScenario("code_search_symbol combines kinds, name_pattern, and include
 });
 
 // Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-typescript" node scripts/nav-cli.mjs symbol serialize typescript --regex '['
+//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-typescript" node scripts/nav-cli.mjs symbol serialize typescript --name-pattern '['
 // Invalid public name_pattern values are hard errors rather than empty search
 // results, matching the tool contract.
 typescriptScenario("code_search_symbol rejects an invalid TypeScript name_pattern", {

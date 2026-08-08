@@ -43,7 +43,7 @@ pythonScenario("code_search_symbol resolves a qualified workspace module symbol"
 });
 
 // Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-python" node scripts/nav-cli.mjs symbol calculate_invoice python --info code,hover,references
+//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-python" node scripts/nav-cli.mjs symbol calculate_invoice python --include definition,hover,references
 pythonScenario("code_search_symbol includes all detail sections and symbol metadata", {
     given: { fixtures },
     when: ({ root, clientOf }) =>
@@ -69,7 +69,7 @@ pythonScenario("code_search_symbol includes all detail sections and symbol metad
 });
 
 // Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-python" node scripts/nav-cli.mjs symbol serialize python --kind method
+//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-python" node scripts/nav-cli.mjs symbol serialize python --kinds method
 pythonScenario("code_search_symbol kinds selects a method from competing Python symbols", {
     given: { fixtures },
     when: ({ root, clientOf }) =>
@@ -81,7 +81,7 @@ pythonScenario("code_search_symbol kinds selects a method from competing Python 
 });
 
 // Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-python" node scripts/nav-cli.mjs symbol serialize python --regex '^SERIALIZE$'
+//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-python" node scripts/nav-cli.mjs symbol serialize python --name-pattern '^SERIALIZE$'
 pythonScenario("code_search_symbol name_pattern is case-insensitive over Python names", {
     given: { fixtures },
     when: ({ root, clientOf }) =>
@@ -101,7 +101,7 @@ pythonScenario("code_search_symbol name_pattern is case-insensitive over Python 
 });
 
 // Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-python" node scripts/nav-cli.mjs symbol serialize python --kind method --regex '^SERIALIZE$' --info code
+//   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-python" node scripts/nav-cli.mjs symbol serialize python --kinds method --name-pattern '^SERIALIZE$' --include definition
 pythonScenario("code_search_symbol applies kinds and name_pattern before include fan-out", {
     given: { fixtures },
     when: ({ root, clientOf }) =>

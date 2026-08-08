@@ -22,7 +22,7 @@
 //   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [--list-symbols]
 //   node nav-cli.mjs references <file> <line:1-based> <col:1-based> [--context none|syntax|enclosing] [--offset N] [--limit N] [--list-symbols]
 //   node nav-cli.mjs rename <file> <line:1-based> <col:1-based> <newName>
-//   node nav-cli.mjs symbol <query> [python|cpp|bash|typescript]
+//   node nav-cli.mjs symbol <query> [python|cpp|bash|typescript] [--include definition,hover,references] [--kinds function,method] [--name-pattern <regexp>]
 //   node nav-cli.mjs scan <file> [<startLine:1-based> <endLine:1-based>] [--pattern <regexp>] [--docs] [--roles type,call,member,import,var]
 //   node nav-cli.mjs diagnostics <file>
 //
@@ -40,8 +40,8 @@
 //   node nav-cli.mjs references temp.py 5 5
 //   node nav-cli.mjs rename temp.py 5 5 new_name
 //   node nav-cli.mjs symbol "parse" python
-//   node nav-cli.mjs symbol "push_back" cpp --info code,references
-//   node nav-cli.mjs symbol "foo" --kind function --regex "^foo$"
+//   node nav-cli.mjs symbol "push_back" cpp --include definition,references
+//   node nav-cli.mjs symbol "foo" --kinds function --name-pattern "^foo$"
 //   node nav-cli.mjs diagnostics temp.py
 
 import { createJiti } from "/home/denin/.npm-local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs";
@@ -68,7 +68,7 @@ function usage() {
   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [--list-symbols]
   node nav-cli.mjs references <file> <line:1-based> <col:1-based> [--context none|syntax|enclosing] [--offset N] [--limit N] [--list-symbols]
   node nav-cli.mjs rename <file> <line:1-based> <col:1-based> <newName>
-  node nav-cli.mjs symbol <query> [python|cpp|bash|typescript]
+  node nav-cli.mjs symbol <query> [python|cpp|bash|typescript] [--include definition,hover,references] [--kinds function,method] [--name-pattern <regexp>]
   node nav-cli.mjs scan <file> [<startLine:1-based> <endLine:1-based>] [--pattern <regexp>] [--docs] [--roles type,call,member,import,var]
   node nav-cli.mjs diagnostics <file>
 
@@ -176,44 +176,50 @@ async function main() {
             column = parseInt(colStr, 10);
         console.log(await nav.rename({ path, line, column, newName }, ROOT, clientOf));
     } else if (cmd === "symbol") {
-        // symbol <query> [python|cpp|bash|typescript] [--info code,hover,references] [--kind function,method] [--regex <re>]
+        // symbol <query> [python|cpp|bash|typescript] [--include definition,hover,references] [--kinds function,method] [--name-pattern <regexp>]
         const langArg = rest.find(
             (a) =>
-                /^[a-z]+$/.test(a) && a !== rest[0] && !["--info", "--kind", "--regex"].includes(a),
+                /^[a-z]+$/.test(a) &&
+                a !== rest[0] &&
+                !["--include", "--kinds", "--name-pattern"].includes(a),
         );
         const query = rest[0];
         if (!query) usage();
         const params = { query };
-        // Optional --info <comma list of code|hover|references>
-        const infoIdx = rest.indexOf("--info");
-        if (infoIdx >= 0) {
-            const val = rest[infoIdx + 1] ?? "";
+        // Optional --include <comma list of definition|hover|references>
+        const includeIdx = rest.indexOf("--include");
+        if (includeIdx >= 0) {
+            const val = rest[includeIdx + 1] ?? "";
             const list = val
                 .split(",")
                 .map((s) => s.trim())
                 .filter(Boolean);
-            const valid = ["code", "hover", "references"];
-            const info = list.filter((s) => valid.includes(s));
-            if (info.length > 0) params.info = info;
+            const valid = ["definition", "hover", "references"];
+            const include = list.filter((s) => valid.includes(s));
+            if (include.length > 0) params.include = include;
         }
-        // Optional --kind <comma list of friendly kind names>
-        const kindIdx = rest.indexOf("--kind");
-        if (kindIdx >= 0) {
-            const val = rest[kindIdx + 1] ?? "";
-            params.filter_by_kind = val
+        // Optional --kinds <comma list of friendly kind names>
+        const kindsIdx = rest.indexOf("--kinds");
+        if (kindsIdx >= 0) {
+            const val = rest[kindsIdx + 1] ?? "";
+            params.kinds = val
                 .split(",")
                 .map((s) => s.trim())
                 .filter(Boolean);
         }
-        // Optional --regex <regexp>
-        const regexIdx = rest.indexOf("--regex");
-        if (regexIdx >= 0) {
-            params.filter_by_regex = rest[regexIdx + 1];
-            if (!params.filter_by_regex) throw new Error("--regex requires a regexp argument");
+        // Optional --name-pattern <regexp>
+        const namePatternIdx = rest.indexOf("--name-pattern");
+        if (namePatternIdx >= 0) {
+            params.name_pattern = rest[namePatternIdx + 1];
+            if (!params.name_pattern) throw new Error("--name-pattern requires a regexp argument");
         }
         // Optional language (positional after query, not a flag).
-        const flags = new Set(["--info", "--kind", "--regex"]);
-        const flagVals = new Set([rest[infoIdx + 1], rest[kindIdx + 1], rest[regexIdx + 1]]);
+        const flags = new Set(["--include", "--kinds", "--name-pattern"]);
+        const flagVals = new Set([
+            rest[includeIdx + 1],
+            rest[kindsIdx + 1],
+            rest[namePatternIdx + 1],
+        ]);
         const langCandidate = rest
             .slice(1)
             .find(

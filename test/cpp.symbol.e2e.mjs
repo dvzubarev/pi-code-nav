@@ -69,7 +69,7 @@ cppScenario("code_search_symbol warms up fresh ccls without a compile database",
 // Real source: test/fixtures/functor.cpp, scraped from:
 // https://mayankj08.github.io/2017/07/02/Functors-In-C++/
 // Reproduce from the repository root:
-//   tmp=$(mktemp -d); cp test/fixtures/functor.cpp "$tmp/"; CODE_NAV_ROOT="$tmp" node scripts/nav-cli.mjs symbol 'MyAddFunctor::operator()' cpp --info code; rm -rf "$tmp"
+//   tmp=$(mktemp -d); cp test/fixtures/functor.cpp "$tmp/"; CODE_NAV_ROOT="$tmp" node scripts/nav-cli.mjs symbol 'MyAddFunctor::operator()' cpp --include definition; rm -rf "$tmp"
 cppScenario("code_search_symbol expands a qualified C++ call operator", {
     given: {
         fixtures: ["functor.cpp"],
@@ -144,7 +144,7 @@ registerBlackjack("code_search_symbol C++ blackjack scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol 'blackjack::Deck::drawCard' cpp --info code,hover,references
+    //   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol 'blackjack::Deck::drawCard' cpp --include definition,hover,references
     test("code_search_symbol includes definition, hover, and references for a C++ method", async () => {
         await search({ query: "blackjack::Deck", language: "cpp" });
         const response = await search({
@@ -161,7 +161,7 @@ registerBlackjack("code_search_symbol C++ blackjack scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol blackjack::Rank cpp --info code
+    //   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol blackjack::Rank cpp --include definition
     test("code_search_symbol returns the source declaration for a C++ enum", async () => {
         await search({ query: "blackjack::Rank", language: "cpp" });
         const response = await search({
@@ -175,7 +175,7 @@ registerBlackjack("code_search_symbol C++ blackjack scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol blackjack::Deck::DealableCard cpp --info code
+    //   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol blackjack::Deck::DealableCard cpp --include definition
     test("code_search_symbol returns the source declaration for a C++ using alias", async () => {
         await search({ query: "blackjack::Deck", language: "cpp" });
         const response = await search({
@@ -188,7 +188,7 @@ registerBlackjack("code_search_symbol C++ blackjack scenarios", () => {
 });
 
 // Reproduce from the repository root:
-//   tmp=$(mktemp -d); cp test/fixtures/functor.cpp "$tmp/"; CODE_NAV_ROOT="$tmp" node scripts/nav-cli.mjs symbol MyAddFunctor cpp --kind struct; rm -rf "$tmp"
+//   tmp=$(mktemp -d); cp test/fixtures/functor.cpp "$tmp/"; CODE_NAV_ROOT="$tmp" node scripts/nav-cli.mjs symbol MyAddFunctor cpp --kinds struct; rm -rf "$tmp"
 cppScenario(
     "code_search_symbol include=definition keeps comments before C++ class and method bodies",
     {
@@ -285,7 +285,7 @@ cppScenario("code_search_symbol applies the public kinds filter to C++ classes a
 });
 
 // Reproduce from the repository root:
-//   tmp=$(mktemp -d); cp test/fixtures/functor.cpp "$tmp/"; CODE_NAV_ROOT="$tmp" node scripts/nav-cli.mjs symbol MyAddFunctor cpp --regex 'MYADDFUNCTOR::MYADDFUNCTOR'; rm -rf "$tmp"
+//   tmp=$(mktemp -d); cp test/fixtures/functor.cpp "$tmp/"; CODE_NAV_ROOT="$tmp" node scripts/nav-cli.mjs symbol MyAddFunctor cpp --name-pattern 'MYADDFUNCTOR::MYADDFUNCTOR'; rm -rf "$tmp"
 cppScenario("code_search_symbol applies a case-insensitive C++ name_pattern to full signatures", {
     given: { fixtures: ["functor.cpp"] },
     when: ({ root, clientOf }) =>
@@ -316,7 +316,7 @@ cppScenario("code_search_symbol detects C++ when language is omitted", {
 });
 
 // Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol MyAddFunctor cpp --regex '['
+//   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol MyAddFunctor cpp --name-pattern '['
 cppScenario("code_search_symbol rejects an invalid public name_pattern", {
     given: { fixtures: ["functor.cpp"] },
     when: ({ root, clientOf }) =>

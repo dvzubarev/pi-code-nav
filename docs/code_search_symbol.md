@@ -196,8 +196,8 @@ would inflate the match count past the cap. Only exact matches fan out.
 
 ### Sections
 
-- `--- definition ---` (public interface; `--- code ---` for the legacy CLI
-  alias) — the verbatim source body via `nav.definition`,
+- `--- definition ---` — the public section name for the verbatim source body
+  returned via `nav.definition`,
   head-snippeted to `floor(SYMBOL_FANOUT_CODE_BUDGET_LINES / N)` lines per
   match (2000 split evenly across N matches). The header
   `<defPath>:<sl>-<el>` shows the FULL body range (not the snippet range) so

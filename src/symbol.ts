@@ -3,8 +3,8 @@
  * third-party/stdlib trees. The omni entry point for code navigation.
  *
  * Given a `query` (bare or qualified), returns a ranked list of matching
- * symbols. With public `include` (or legacy CLI `info`) non-empty, fans out per
- * exact match (≤ cap) with definition / hover / references sections. See
+ * symbols. With public `include` non-empty, fans out per exact match (≤ cap)
+ * with definition / hover / references sections. See
  * docs/code_search_symbol.md.
  */
 
@@ -499,7 +499,7 @@ export async function symbol(
             `Unknown language "${params.language}" — must be one of: ${ALL_LANGS.join(", ")}`,
         );
     }
-    // Validate + compile the public name_pattern (or legacy CLI alias).
+    // Validate + compile the public name_pattern (or internal compatibility alias).
     const usesPublicPattern = params.name_pattern !== undefined;
     const namePattern = params.name_pattern ?? params.filter_by_regex;
     let regexFilter: RegExp | undefined;

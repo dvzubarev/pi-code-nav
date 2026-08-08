@@ -149,7 +149,7 @@ the per-tool output contracts are documented in `IMPL.md`. CLI subcommands
   definition <file> <line:1> <col:1> [--list-symbols]
   references <file> <line:1> <col:1> [--context none|syntax|enclosing] [--offset N] [--limit N] [--list-symbols]
   rename <file> <line:1> <col:1> <newName>
-  symbol <query> [python|cpp|bash]
+  symbol <query> [python|cpp|bash|typescript] [--include definition,hover,references] [--kinds function,method] [--name-pattern <regexp>]
   scan <file> [<startLine:1> <endLine:1>] [--pattern <re>] [--docs] [--roles ...]
   diagnostics <file>
 ```
