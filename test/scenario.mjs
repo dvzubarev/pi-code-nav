@@ -31,15 +31,16 @@ export function notMatches(pattern, message = "response matched unexpectedly") {
  *
  * `given.files` maps workspace-relative paths to source text (or an async
  * function receiving the workspace, for generated files such as a compile DB).
- * `given.setup`, when present, runs after those files are written. `when` receives
- * the same workspace bundle as the older tests, and returns the tool response.
+ * `given.setup`, when present, runs after those files are written. `workspaceRoot`
+ * optionally selects a copied subdirectory as the language-server root. `when`
+ * receives the same workspace bundle as the older tests, and returns the tool response.
  * `then` contains response assertions, keeping fixture, request, and contract
  * adjacent in the test body. For hard-error contracts, use `error` instead.
  */
 export function scenario(name, { skip = false, given = {}, when, then = [], error }) {
     const register = skip ? test.skip : test;
     register(name, async () => {
-        const ws = await withWorkspace(given.fixtures ?? []);
+        const ws = await withWorkspace(given.fixtures ?? [], given.workspaceRoot ?? ".");
         try {
             for (const [path, text] of Object.entries(given.files ?? {})) {
                 const destination = resolve(ws.root, path);

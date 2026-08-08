@@ -1,0 +1,7 @@
+{
+  "name": "acme-checkout",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}
