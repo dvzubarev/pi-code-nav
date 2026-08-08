@@ -562,7 +562,12 @@ test("include fan-out: single match with [definition, hover] retains both reques
         assert.match(out, /--- hover ---/, `missing requested hover section:\n${out}`);
         // The body and chainable symbol metadata appear in the definition section.
         assert.match(out, /function foo\(x: number\): number/, `code body missing:\n${out}`);
-        assert.match(out, /symbols: helper@10 call/, `symbol metadata missing:\n${out}`);
+        assert.match(out, /symbols: .*x@14 var/, `parameter metadata missing:\n${out}`);
+        assert.match(
+            out,
+            /symbols: helper@10 call, x@17 var/,
+            `call-line symbol metadata missing:\n${out}`,
+        );
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }
@@ -720,7 +725,11 @@ test("include fan-out forwards list_symbols to references", async () => {
             mockClientOfRich(dir, { cannedSyms: canned, docSymsByPath, refsByPath }),
         );
         assert.match(out, /--- references ---/);
-        assert.match(out, /symbols: foo@11 call/, `reference symbol metadata missing:\n${out}`);
+        assert.match(
+            out,
+            /symbols: y@7 var, foo@11 call/,
+            `reference symbol metadata missing:\n${out}`,
+        );
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }

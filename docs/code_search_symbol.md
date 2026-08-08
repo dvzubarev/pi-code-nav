@@ -198,9 +198,9 @@ would inflate the match count past the cap. Only exact matches fan out.
   agent to `code_references` when more results remain.
 
 When `list_symbols: true`, included definitions and references both add compact
-line-local `name@column role` metadata. These positions can be passed directly
-to follow-up navigation tools. The option has no effect on hover sections or
-plain row-list results.
+line-local `name@column role` metadata for every occurrence, including `var`.
+Each rendered line is independently navigable through follow-up tools. The
+option has no effect on hover sections or plain row-list results.
 
 ### Explicit hover requests are retained
 

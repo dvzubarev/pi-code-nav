@@ -1,7 +1,7 @@
 // Core behavior of parseSymbols + helpers, language-agnostic.
 //
-// Covers: tsLangForFile, default role set, role filtering, dedup (first
-// occurrence wins), absolute-position math (1-based conversion), empty
+// Covers: tsLangForFile, default role set, role filtering, occurrence
+// preservation, absolute-position math (1-based conversion), empty
 // ranges, the renderSymbolTable format, and hoverFirstLine.
 //
 // IMPORTANT: parseSymbols(lang, opts) takes the text INSIDE opts (opts.text),
@@ -62,17 +62,15 @@ test("roles narrows the emitted set", async () => {
     assert.deepEqual(onlyImport, ["import\tcbor2\t1:8"]);
 });
 
-test("dedup keeps the FIRST occurrence position per (name, role)", async () => {
-    // Three `load` calls; dedup collapses to one — the first occurrence.
+test("every symbol occurrence is preserved", async () => {
     // Pad blank lines so the content genuinely sits at lines 10-12.
     const text = "\n".repeat(9) + "load(x)\nload(y)\nload(z)\n";
-    const m = await parseMap("python", text, {
+    const entries = await parseList("python", text, {
         startLine: 10,
         endLine: 12,
         roles: ["call"],
     });
-    assertEntry(m, "call", "load", 10, 1);
-    assert.equal(m.size, 1, `expected 1 call entry, got ${m.size}: ${[...m.keys()]}`);
+    assert.deepEqual(entries, ["call\tload\t10:1", "call\tload\t11:1", "call\tload\t12:1"]);
 });
 
 test("absolute position math: startLine offsets row, column is 1-based", async () => {
@@ -161,15 +159,16 @@ test("tree-sitter parses raw function-body fragments without wrapping", async ()
     // the attribute access → var (the import role only attaches at an import
     // statement, not at a usage site).
     const body = "    result = cbor2.load(data)\n    return result\n";
-    const m = await parseMap("python", body, {
+    const entries = await parseList("python", body, {
         startLine: 1,
         endLine: 2,
         roles: ["member", "var"],
     });
-    assertEntry(m, "var", "result", 1, 5);
-    assertEntry(m, "var", "cbor2", 1, 14);
-    assertEntry(m, "member", "load", 1, 20);
-    assertEntry(m, "var", "data", 1, 25);
+    assert.ok(entries.includes("var\tresult\t1:5"));
+    assert.ok(entries.includes("var\tresult\t2:12"));
+    assert.ok(entries.includes("var\tcbor2\t1:14"));
+    assert.ok(entries.includes("member\tload\t1:20"));
+    assert.ok(entries.includes("var\tdata\t1:25"));
 });
 
 test("comment and string noise is excluded (the regex-killer case)", async () => {

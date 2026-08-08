@@ -20,7 +20,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseMap, assertEntry, assertNoEntry } from "./helpers.mjs";
+import { parseMap, parseList, assertEntry, assertNoEntry } from "./helpers.mjs";
 
 test("tsLangForFile maps .ts/.tsx/.js/.jsx and module variants", async () => {
     const { tsLangForFile } = await (await import("./helpers.mjs")).loadParse();
@@ -198,15 +198,16 @@ test("tsx grammar parses JSX attributes as member", async () => {
 
 test("tsx JSX element name is var (not type), includable via roles", async () => {
     const text = `const el = <Card>{value}</Card>;\n`;
-    const withVar = await parseMap("tsx", text, {
+    const entries = await parseList("tsx", text, {
         startLine: 1,
         endLine: 1,
         roles: ["type", "call", "member", "import", "var"],
     });
-    assertEntry(withVar, "var", "Card", 1, 13);
-    assertEntry(withVar, "var", "value", 1, 19);
+    assert.ok(entries.includes("var\tCard\t1:13"));
+    assert.ok(entries.includes("var\tvalue\t1:19"));
+    assert.ok(entries.includes("var\tCard\t1:27"));
     // And it is never a type.
-    assertNoEntry(withVar, "type", "Card");
+    assert.ok(!entries.some((entry) => entry.startsWith("type\tCard\t")));
 });
 
 test("typescript grammar is NOT used for .tsx (would misclassify JSX)", async () => {

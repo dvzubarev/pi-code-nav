@@ -203,7 +203,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             list_symbols: Type.Optional(
                 Type.Boolean({
                     description:
-                        "If true, add compact `name@column role` navigation metadata below each relevant source line (default: false). Source text is not modified.",
+                        "If true, add every `type|call|member|import|var` occurrence as compact `name@column role` metadata below its source line (default: false). Source text is not modified.",
                 }),
             ),
         }),
@@ -261,7 +261,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             list_symbols: Type.Optional(
                 Type.Boolean({
                     description:
-                        "If true, add compact `name@column role` navigation metadata below each contextual source line (default: false). Not valid with context='none'.",
+                        "If true, add every `type|call|member|import|var` occurrence as compact `name@column role` metadata below its contextual source line (default: false). Not valid with context='none'.",
                 }),
             ),
         }),
@@ -307,7 +307,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             list_symbols: Type.Optional(
                 Type.Boolean({
                     description:
-                        "If true, add line-local symbol metadata to included definitions and references so their positions can be used in follow-up code navigation calls.",
+                        "If true, add every `type|call|member|import|var` occurrence as line-local metadata in included definitions and references for follow-up navigation calls.",
                 }),
             ),
             kinds: Type.Optional(

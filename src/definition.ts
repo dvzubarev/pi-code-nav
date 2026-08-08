@@ -35,6 +35,7 @@ import {
     uriToPath,
 } from "./render";
 import {
+    ALL_SYMBOL_ROLES,
     findEnclosingDefWithDoc,
     parseSymbols,
     renderNumberedSource,
@@ -306,6 +307,7 @@ async function renderSnippetBlock(
                         text: src,
                         startLine: renderSl + 1,
                         endLine: el + 1,
+                        roles: ALL_SYMBOL_ROLES,
                     })) ?? [];
             } catch (e) {
                 throw new Error(

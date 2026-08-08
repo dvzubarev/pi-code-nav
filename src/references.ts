@@ -17,6 +17,7 @@ import {
 } from "./nav-core";
 import { langForFile, renderLocation, toAbs, uriToPath } from "./render";
 import {
+    ALL_SYMBOL_ROLES,
     annotateNumberedSource,
     parseSymbols,
     referenceSyntaxContext,
@@ -136,18 +137,16 @@ async function symbolsForRenderedSource(
     const discovered = (
         await Promise.all(
             ranges.map((range) =>
-                parseSymbols(lang, { text, startLine: range.start, endLine: range.end }),
+                parseSymbols(lang, {
+                    text,
+                    startLine: range.start,
+                    endLine: range.end,
+                    roles: ALL_SYMBOL_ROLES,
+                }),
             ),
         )
     ).flatMap((entries) => entries ?? []);
-    // Match parseSymbols' stable first-occurrence dedup across sparse ranges.
-    const seen = new Set<string>();
-    return discovered.filter((entry) => {
-        const key = `${entry.name}|${entry.role}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-    });
+    return discovered;
 }
 
 export async function references(

@@ -44,9 +44,9 @@ export function loadParse() {
 
 /**
  * Run `parseSymbols` and return a map keyed by `${role}:${name}` → the entry.
- * Tests assert on specific roles/names without depending on row order, since
- * dedup keeps the *first* occurrence's position (order within a role is
- * significant only for the kept position, not for which rows exist).
+ * Tests assert on specific roles/names without depending on row order. Use
+ * parseList when testing repeated occurrences because this map keeps the last
+ * entry for a repeated role/name key.
  */
 export async function parseMap(lang, text, opts = {}) {
     const { parseSymbols } = await loadParse();

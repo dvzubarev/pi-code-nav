@@ -55,7 +55,7 @@
   implementations via `src/nav.ts`; `scan` is exercised only by the CLI/tests
   and the definition/reference `list_symbols=true` paths, not registered as an agent tool.
 - `src/tree-sitter-parse.ts` — `parseSymbols()` parses a line range with WASM
-  tree-sitter, returns a deduplicated symbol table. No pi or LSP dependency.
+  tree-sitter and returns every symbol occurrence. No pi or LSP dependency.
   See `code_scan.md`.
 - `test/` — unit tests for `src/tree-sitter-parse.ts` (pure tree-sitter, no
   servers, `*.test.mjs`) + end-to-end tests for the nav tools (real language
@@ -68,7 +68,7 @@
 
 - **Unit tests** (`npm test`, `test/*.test.mjs`): pure tree-sitter,
   no servers, no pi. Pin `classifyRole` per language, the default role set,
-  dedup, position math, and the `renderSymbolTable` / `hoverFirstLine`
+  occurrence preservation, position math, and the `renderSymbolTable` / `hoverFirstLine`
   formats. Load `tree-sitter-parse.ts` through jiti.
 - **End-to-end tests** (`npm run test:e2e`, `test/*.e2e.mjs`): real language
   servers. Call the `nav.*` tool implementations through real `LspClient`s

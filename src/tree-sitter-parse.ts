@@ -53,8 +53,8 @@ import { readFile } from "node:fs/promises";
  *   imported symbol). Separated from `var` so that "drop the noisy locals"
  *   does not also drop the third-party entry points imports represent.
  * - `var`    — a local variable, parameter, or assignment target. Hoverable
- *   but rarely what the agent wants to learn about; noisy by nature (loop
- *   vars, temps, counters), so excluded from the default role set.
+ *   but noisy in broad scans, so excluded from the scan default and included
+ *   by the explicitly requested `list_symbols` integrations.
  */
 export type SymbolRole = "type" | "call" | "member" | "import" | "var";
 
@@ -402,6 +402,14 @@ function classifyRole(node: TSNode, lang: TsLang): SymbolRole | null {
  * primary entry points for third-party discovery (the whole reason this tool
  * exists). Callers wanting locals pass `roles` including `var`.
  */
+export const ALL_SYMBOL_ROLES: readonly SymbolRole[] = [
+    "type",
+    "call",
+    "member",
+    "import",
+    "var",
+];
+
 export const DEFAULT_SYMBOL_ROLES: readonly SymbolRole[] = ["type", "call", "member", "import"];
 
 // ---------------------------------------------------------------------------
@@ -967,8 +975,8 @@ export interface ParseSymbolsOptions {
 }
 
 /**
- * Parse a line range of `text` with tree-sitter and return a deduplicated
- * table of identifier-class symbols with absolute 1-based positions and roles.
+ * Parse a line range of `text` with tree-sitter and return every
+ * identifier-class occurrence with absolute 1-based positions and roles.
  *
  * Steps (mirrors code_scan.md "What it solves"):
  *   1. Slice lines [startLine, endLine] (1-based, inclusive) from the full text.
@@ -977,8 +985,8 @@ export interface ParseSymbolsOptions {
  *   3. Walk the tree, classify each identifier-class node into a role.
  *   4. Filter to `opts.roles` (default: all except `var`).
  *   5. Map (row, col) → absolute 1-based (startLine + row, col + 1).
- *   6. Dedupe by (name, role); keep the FIRST occurrence's position. If the
- *      agent wants a later occurrence it passes a tighter startLine/endLine.
+ *   6. Preserve every occurrence so line-local annotations are complete and
+ *      each rendered source line is independently navigable.
  *
  * Returns null if the language has no tree-sitter grammar. Throws if
  * tree-sitter or a grammar fails to load (the caller surfaces the error).
@@ -1005,24 +1013,18 @@ export async function parseSymbols(
     if (!tree) return []; // parser without a language returns null; setLanguage threw otherwise
     try {
         const entries: SymbolEntry[] = [];
-        const seen = new Set<string>();
         const walk = (node: TSNode): void => {
             const role = classifyRole(node, lang);
             if (role && allow.has(role)) {
-                const name = node.text;
-                const key = `${name}|${role}`;
-                if (!seen.has(key)) {
-                    seen.add(key);
-                    const sp = node.startPosition;
-                    // Tree row is 0-based relative to the slice; startLine is 1-based.
-                    // absolute 1-based line = startLine + row. Column is 0-based → +1.
-                    entries.push({
-                        role,
-                        name,
-                        line: startLine + sp.row,
-                        column: sp.column + 1,
-                    });
-                }
+                const sp = node.startPosition;
+                // Tree row is 0-based relative to the slice; startLine is 1-based.
+                // absolute 1-based line = startLine + row. Column is 0-based → +1.
+                entries.push({
+                    role,
+                    name: node.text,
+                    line: startLine + sp.row,
+                    column: sp.column + 1,
+                });
             }
             for (const child of node.children) walk(child);
         };

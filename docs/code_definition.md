@@ -18,7 +18,7 @@ The gutter is metadata; source text after `| ` retains its original formatting. 
    | symbols: run@12 call
 ```
 
-Each `@column` is 1-based and combines with the path and source-line number for direct use with `code_hover`, `code_definition`, or `code_references`. Roles follow the `code_scan` taxonomy. As in `code_scan`, noisy local `var` symbols are excluded by default. Multiple definition sites are blank-line-separated and followed by a count.
+Each `@column` is 1-based and combines with the path and source-line number for direct use with `code_hover`, `code_definition`, or `code_references`. All `type|call|member|import|var` roles are included, and every occurrence is retained so each source line is independently navigable. Multiple definition sites are blank-line-separated and followed by a count.
 
 ## ccls bounce + cold-cache race
 

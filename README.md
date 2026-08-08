@@ -34,10 +34,10 @@ uses the same contextual format.
 
 `code_definition`, `code_references`, and `code_search_symbol` also accept an
 optional `list_symbols` boolean (default `false`). For symbol search it applies
-to included definitions and references. When true, compact line-local symbol
-metadata is added to source, so the agent can pass identifier coordinates to
-`code_hover`/`code_definition`/`code_references` without a separate discovery
-call.
+to included definitions and references. When true, compact line-local metadata
+includes every `type|call|member|import|var` occurrence, so each source line has
+identifier coordinates ready for `code_hover`/`code_definition`/
+`code_references`.
 
 All tool inputs and outputs use **1-based** positions. Discovery results print
 the identifier position—not merely the enclosing range—so a printed
@@ -346,8 +346,8 @@ dependencies relative to the extension dir, and it can't honor the tsconfig
 present (transitively, via pi) — no new install is needed.
 
 The tests pin the documented role classification per language (python, cpp,
-bash), the default role set (drops `var`), dedup (first occurrence wins),
-absolute 1-based position math, the `renderSymbolTable` / `hoverFirstLine`
+bash), the broad-scan default role set (drops `var`), preservation of every
+occurrence, absolute 1-based position math, the `renderSymbolTable` / `hoverFirstLine`
 output formats, and the load-bearing guarantees: snippet fragments parse
 without wrapping, and comment/string noise is excluded. See `test/core.test.mjs`
 for cross-cutting behavior and `test/{python,cpp,bash}.test.mjs` for per-language

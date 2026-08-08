@@ -70,17 +70,17 @@ header also carries the role legend.
 | `call` | function/method being called | hover → full signature; definition → callee body (incl. third-party/stdlib) |
 | `member` | field/attribute access (`.push_back`, `.encode`, `.begin`) | the third-party API surface the agent most wants |
 | `import` | name brought into scope by an import | **primary entry point for third-party discovery** — `cbor2`, `CBOREncoder`, `Callable`, `os` |
-| `var` | locals, parameters, assignment targets | the snippet's own locals — noisy; rarely worth learning about |
+| `var` | locals, parameters, assignment targets | semantic anchors for hover, references, and rename |
 
-**Default role set is `type, call, member, import` — all except `var`.** A
-typical function body has 5–10 locals per interesting external symbol;
-emitting them by default drowns the useful rows. The agent passes `roles`
-to override (include `"var"` to see locals, or `["import"]` to see only
-imports). `import` was split from `var` specifically so "drop the noisy
-locals" does not drop the third-party entry points imports represent.
+The standalone scan default is `type, call, member, import` — all except
+`var`. Broad symbol-table scans can contain many locals, so callers use `roles`
+to include `"var"` or narrow further. `import` remains separate so compact
+scans retain third-party entry points.
 
-The same default applies to definition/reference `list_symbols` integration
-(snippet symbol tables also omit `var`), so the two stay consistent.
+Definition/reference `list_symbols` is different: it is an explicit request
+for line-local navigation metadata, so it includes all five roles, including
+`var`. Every occurrence is preserved rather than deduplicated; each rendered
+source line therefore carries positions for the symbols visible on that line.
 
 ## `include_docs` — opt-in hover enrichment
 
@@ -148,12 +148,11 @@ the tool on bash polish.
 ## Definition/reference integration — `list_symbols`
 
 `code_definition` and `code_references` expose optional `list_symbols?: boolean`
-(default `false`). They run the same `parseSymbols` over rendered source and
-place compact `name@column role` metadata directly below each relevant numbered
-source line. Source remains unchanged, while its gutter line plus `@column`
-forms a reusable code_* position. This removes the agent's need to hold the
-snippet's path and line range across a turn (the driving scenario was
-`code_definition` → see a third-party symbol → want its API).
+(default `false`). They run the same `parseSymbols` over rendered source with
+all roles enabled and place compact `name@column role` metadata directly below
+each relevant numbered source line. Every occurrence is retained, so each line
+is independently navigable. Source remains unchanged, while its gutter line
+plus `@column` forms a reusable code_* position.
 
 `code_references` annotates only source rows retained by syntax/enclosing
 context rendering; it rejects `list_symbols` with `context: "none"`. Both tools
@@ -247,8 +246,8 @@ loader pi uses). `Parser.init()` must be called once before constructing a
 ## Testing
 
 - **Unit tests** (`npm test`, `test/*.test.mjs`): pure tree-sitter, no
-  servers. Pin `classifyRole` per language, the default role set, dedup,
-  position math, and the `renderSymbolTable`/`hoverFirstLine` formats. They
+  servers. Pin `classifyRole` per language, the default role set, occurrence
+  preservation, position math, and the `renderSymbolTable`/`hoverFirstLine` formats. They
   load `tree-sitter-parse.ts` through jiti (same loader as production).
   When you change `classifyRole`, `renderSymbolTable`, or `hoverFirstLine`,
   update or add tests there.
