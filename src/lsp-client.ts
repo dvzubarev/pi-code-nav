@@ -426,6 +426,16 @@ export class LspClient {
     private workDoneActive = new Set<string>();
     private workDoneRevision = 0;
     private workDoneWaiters = new Set<() => void>();
+    /**
+     * bash-language-server starts workspace-wide BackgroundAnalysis from its
+     * `initialized` handler, but does not expose that lifetime through LSP
+     * work-done progress. It does emit stable info-level window/logMessage
+     * start/completion lines, which provide the only server-originated barrier
+     * before the first workspace/symbol request.
+     */
+    private bashIndexState: "idle" | "in_progress" | "ended" = "idle";
+    private bashIndexRevision = 0;
+    private bashIndexWaiters = new Set<() => void>();
 
     constructor(lang: Lang, rootPath: string, cfg: ServerConfig, logDir?: string) {
         this.lang = lang;
@@ -687,6 +697,15 @@ export class LspClient {
                 this.handleIndexProgress(params);
             },
         );
+        // bash-language-server does not use work-done progress for its eager
+        // workspace scan. Its only completion signal is an info-level standard
+        // window/logMessage notification. The handler is language-gated and
+        // registered before initialize, so it is inert for every other server
+        // and cannot miss a fast Bash scan.
+        conn.onNotification(
+            "window/logMessage",
+            (params: { message?: string }) => this.handleBashIndexLog(params?.message),
+        );
         // If the transport closes without the process exiting (reader hits
         // EOF / writer error), vscode-jsonrpc fires onClose. dispose() there
         // too for the same reason as the exit handler above — reject in-flight
@@ -910,7 +929,7 @@ export class LspClient {
 
     /**
      * Ensure the language server has loaded a project (index) before a request
-     * that requires one. Two servers need a warm-up:
+     * that requires one. Three servers need a readiness barrier:
      *   - tsserver loads its project lazily on the first didOpen of a file in
      *     that project; `workspace/symbol` (navto) throws "No Project." before
      *     then and can return a partial project while loading. The standard
@@ -921,7 +940,10 @@ export class LspClient {
      *     symbols from only a subset of TUs. waitForIndexingComplete polls
      *     ccls's own pipeline counters, so warm caches return immediately and
      *     cold caches wait for all queued work regardless of project size.
-     * pyright/ty/bash index eagerly on `initialize` and need no warm-up.
+     *   - bash-language-server starts BackgroundAnalysis asynchronously from
+     *     `initialized`; workspace/symbol can otherwise race it and return [].
+     *     It reports completion only through window/logMessage.
+     * pyright/ty index eagerly during initialization and need no warm-up.
      *
      * Implementation: if no document has been opened yet, find one source file
      * of this server's language under the workspace root and open it (the file
@@ -933,6 +955,10 @@ export class LspClient {
      */
     async ensureProjectLoaded(): Promise<boolean> {
         await this.ensureReady();
+        if (this.lang === "bash") {
+            await this.waitForBashIndexing();
+            return true;
+        }
         if (this.lang !== "typescript" && this.lang !== "cpp") return true;
         let progressBeforeOpen: number | undefined;
         if (this.openDocs.size === 0) {
@@ -969,6 +995,76 @@ export class LspClient {
         // an empty symbol result.
         if (this.lang === "cpp") await this.waitForIndexingComplete();
         return true;
+    }
+
+    private signalBashIndexChange(): void {
+        this.bashIndexRevision++;
+        const waiters = [...this.bashIndexWaiters];
+        this.bashIndexWaiters.clear();
+        for (const resolve of waiters) resolve();
+    }
+
+    private handleBashIndexLog(message: string | undefined): void {
+        if (this.lang !== "bash" || !message) return;
+        if (message.includes("BackgroundAnalysis: resolving glob")) {
+            this.bashIndexState = "in_progress";
+            this.signalBashIndexChange();
+        } else if (
+            message.includes("BackgroundAnalysis: Completed") ||
+            message.includes("BackgroundAnalysis: skipping") ||
+            message.includes("BackgroundAnalysis: failed resolved glob")
+        ) {
+            // "skipping" and glob failure are terminal too: there is no index
+            // work left to wait for, even though the resulting index is empty.
+            this.bashIndexState = "ended";
+            this.signalBashIndexChange();
+        }
+    }
+
+    private async waitForBashIndexChange(revision: number, timeoutMs: number): Promise<void> {
+        if (this.bashIndexRevision !== revision || timeoutMs <= 0) return;
+        await new Promise<void>((resolve) => {
+            let settled = false;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                this.bashIndexWaiters.delete(finish);
+                resolve();
+            };
+            const timer = setTimeout(finish, timeoutMs);
+            this.bashIndexWaiters.add(finish);
+            if (this.bashIndexRevision !== revision) finish();
+        });
+    }
+
+    /** Wait for bash-language-server's asynchronous BackgroundAnalysis scan. */
+    private async waitForBashIndexing(startMs = 1000, endMs = 60000): Promise<void> {
+        if (this.bashIndexState === "ended") return;
+        const resolvedStartMs = process.env.CODE_NAV_PROJECT_LOAD_START_TIMEOUT_MS
+            ? parseInt(process.env.CODE_NAV_PROJECT_LOAD_START_TIMEOUT_MS, 10)
+            : startMs;
+        const resolvedEndMs = process.env.CODE_NAV_PROJECT_LOAD_END_TIMEOUT_MS
+            ? parseInt(process.env.CODE_NAV_PROJECT_LOAD_END_TIMEOUT_MS, 10)
+            : endMs;
+
+        if (this.bashIndexState === "idle") {
+            const before = this.bashIndexRevision;
+            await this.waitForBashIndexChange(before, resolvedStartMs);
+            // A non-default server log level can suppress info messages. Use a
+            // bounded fallback instead of making every Bash query hang forever.
+            if (this.bashIndexState === "idle") return;
+        }
+
+        const deadline = Date.now() + resolvedEndMs;
+        while (this.bashIndexState === "in_progress") {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) {
+                throw new Error(`Bash workspace indexing timed out after ${resolvedEndMs}ms`);
+            }
+            const before = this.bashIndexRevision;
+            await this.waitForBashIndexChange(before, remaining);
+        }
     }
 
     private workDoneKey(token: string | number): string {
@@ -1151,6 +1247,8 @@ export class LspClient {
         this.workDoneRegistered.clear();
         this.workDoneActive.clear();
         this.signalWorkDoneChange();
+        this.bashIndexState = "idle";
+        this.signalBashIndexChange();
     }
 
     /**

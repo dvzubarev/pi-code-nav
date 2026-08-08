@@ -188,6 +188,25 @@ cold workspace-search barrier.
 implement the LSP 3.17 `textDocument/diagnostic` pull model — see
 `code_diagnostics.md`.
 
+### Bash server background analysis
+
+bash-language-server implements `workspace/symbol` and eagerly scans workspace
+files after the client's `initialized` notification (default glob
+`**/*@(.sh|.inc|.bash|.command)`, default cap 500). That scan is asynchronous:
+the initialize handshake can complete before any project symbols have entered
+the analyzer, so an immediate workspace query can incorrectly return `[]`.
+It does not expose the scan through work-done progress. Its only
+server-originated completion signal is the standard `window/logMessage`
+notification whose message contains `BackgroundAnalysis: Completed`.
+
+`LspClient` registers a language-gated log-message handler before initialize
+and `ensureProjectLoaded()` waits for that completion before Bash
+`workspace/symbol`. The start wait is bounded because a user-selected server
+log level can suppress info messages; once the start message is observed, a
+missing completion is a hard project-load timeout. This state and handler are
+Bash-only and do not alter TypeScript's work-done barrier or ccls's pipeline
+polling.
+
 **Tree-sitter for `.tsx`/`.jsx` uses the `tsx` grammar, not `typescript`.**
 See `code_scan.md`. `tsLangForFile` maps `.tsx`/`.jsx` → `tsx` and
 `.ts`/`.js`/`.mts`/`.mjs`/`.cts`/`.cjs` → `typescript`. Because `tsx` is in

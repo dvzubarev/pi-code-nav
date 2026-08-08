@@ -18,6 +18,9 @@
 //   ok                 — replies to initialize + initialized, then answers
 //                        workspace/symbol with a canned SymbolInformation[].
 //                        Used as a control: the happy path must still work.
+//   bash-index-log     — emits Bash LS BackgroundAnalysis start/completion
+//                        window/logMessage notifications and returns no symbols
+//                        until completion. Exercises the Bash indexing barrier.
 //
 // Framing: Content-Length header + JSON body, one message per write. We do
 // NOT use vscode-jsonrpc on the server side — hand-rolled framing keeps this
@@ -26,6 +29,7 @@
 // Not run directly by `npm test`; spawned by test/lsp-client.test.mjs.
 
 const mode = process.argv[2] ?? "ok";
+let bashIndexed = false;
 
 let buf = "";
 process.stdin.setEncoding("utf8");
@@ -82,9 +86,34 @@ function handle(msg) {
         return;
     }
     if (msg.method === "initialized") {
+        if (mode === "bash-index-log") {
+            write({
+                jsonrpc: "2.0",
+                method: "window/logMessage",
+                params: {
+                    type: 3,
+                    message: 'INFO BackgroundAnalysis: resolving glob "**/*.sh" inside workspace...',
+                },
+            });
+            setTimeout(() => {
+                bashIndexed = true;
+                write({
+                    jsonrpc: "2.0",
+                    method: "window/logMessage",
+                    params: {
+                        type: 3,
+                        message: "INFO BackgroundAnalysis: Completed after 0.1 seconds.",
+                    },
+                });
+            }, 100);
+        }
         return; // notification, no reply
     }
     if (msg.method === "workspace/symbol") {
+        if (mode === "bash-index-log" && !bashIndexed) {
+            write({ jsonrpc: "2.0", id: msg.id, result: [] });
+            return;
+        }
         if (mode === "exit-mid-request") {
             // Crash immediately, leaving the request unanswered. The client's
             // exit handler must dispose the connection and reject this promise.

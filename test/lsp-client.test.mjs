@@ -144,6 +144,25 @@ test(
     }),
 );
 
+test("Bash project loading waits for BackgroundAnalysis completion log", async () => {
+    const root = await mkdtemp(resolve(tmpdir(), "code-nav-fake-"));
+    const c = new LspClient("bash", root, fakeConfig("bash-index-log"));
+    try {
+        await c.ensureProjectLoaded();
+        const syms = await c.workspaceSymbol("raw_resp_line_iter");
+        assert.equal(
+            syms.length,
+            1,
+            "workspace/symbol ran before Bash BackgroundAnalysis completed",
+        );
+    } finally {
+        try {
+            await c.shutdown();
+        } catch {}
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test("control: workspaceSymbol succeeds against the ok fake server", async () => {
     const root = await mkdtemp(resolve(tmpdir(), "code-nav-fake-"));
     const c = new LspClient("python", root, fakeConfig("ok"));
