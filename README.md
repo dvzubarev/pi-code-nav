@@ -32,11 +32,12 @@ location-only output, or `context: "enclosing"` for the containing statement.
 Use `offset` and `limit` to paginate. `code_search_symbol(include=["references"])`
 uses the same contextual format.
 
-`code_definition` also accepts an optional `list_symbols` boolean (default
-`false`). When true, a tree-sitter symbol table is appended to the returned
-body, so the agent can discover third-party/stdlib symbols used inside the
-definition body and pass their coordinates to `code_hover`/
-`code_definition`/`code_references` without a separate call.
+`code_definition`, `code_references`, and `code_search_symbol` also accept an
+optional `list_symbols` boolean (default `false`). For symbol search it applies
+to included definitions and references. When true, compact line-local symbol
+metadata is added to source, so the agent can pass identifier coordinates to
+`code_hover`/`code_definition`/`code_references` without a separate discovery
+call.
 
 All tool inputs and outputs use **1-based** positions. Discovery results print
 the identifier position—not merely the enclosing range—so a printed
@@ -102,7 +103,8 @@ Use `include` to expand up to five exact matches in the same call:
 ```text
 code_search_symbol(query="cbor2.loads", include=["definition", "hover"])
 code_search_symbol(query="vector::push_back", kinds=["method"],
-                   name_pattern="int", include=["definition", "references"])
+                   name_pattern="int", include=["definition", "references"],
+                   list_symbols=true)
 ```
 
 ### Internal `code_scan` implementation

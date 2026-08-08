@@ -197,6 +197,11 @@ would inflate the match count past the cap. Only exact matches fan out.
   standalone tool. See `code_references.md`. A compatibility note directs the
   agent to `code_references` when more results remain.
 
+When `list_symbols: true`, included definitions and references both add compact
+line-local `name@column role` metadata. These positions can be passed directly
+to follow-up navigation tools. The option has no effect on hover sections or
+plain row-list results.
+
 ### Explicit hover requests are retained
 
 Definition source often duplicates hover information, but hover can contain

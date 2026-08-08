@@ -516,7 +516,11 @@ test("include fan-out: single match with [definition, hover] retains both reques
         // cursor → returns the body directly (snippetHasBody true for `{`).
         const tsFile = resolve(root, "mod.ts");
         await import("node:fs/promises").then((fs) =>
-            fs.writeFile(tsFile, "function foo(x: number): number {\n  return x;\n}\n", "utf8"),
+            fs.writeFile(
+                tsFile,
+                "function foo(x: number): number {\n  return helper(x);\n}\n",
+                "utf8",
+            ),
         );
         const selStart = { line: 0, character: 9 }; // `foo` identifier span start (0-based)
         const rangeEnd = { line: 2, character: 1 };
@@ -534,7 +538,12 @@ test("include fan-out: single match with [definition, hover] retains both reques
             ],
         ]);
         const out = await symbol(
-            { query: "foo", language: "typescript", include: ["definition", "hover"] },
+            {
+                query: "foo",
+                language: "typescript",
+                include: ["definition", "hover"],
+                list_symbols: true,
+            },
             dir,
             mockClientOfRich(dir, { cannedSyms: canned, docSymsByPath, hoverTextByPath }),
         );
@@ -551,8 +560,9 @@ test("include fan-out: single match with [definition, hover] retains both reques
         // Hover remains present because it can carry inferred type information
         // that is not written in the source definition.
         assert.match(out, /--- hover ---/, `missing requested hover section:\n${out}`);
-        // The body appears in the code section.
+        // The body and chainable symbol metadata appear in the definition section.
         assert.match(out, /function foo\(x: number\): number/, `code body missing:\n${out}`);
+        assert.match(out, /symbols: helper@10 call/, `symbol metadata missing:\n${out}`);
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }
@@ -665,6 +675,52 @@ test("info fan-out: references capped at 25 with a (N of M, use code_references)
         assert.equal(refLines.length, 25, `expected 25 capped reference rows, got:\n${out}`);
         // The cap note.
         assert.match(out, /\(25 of 30, use code_references for all\)/);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("include fan-out forwards list_symbols to references", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-ref-symbols-"));
+    try {
+        const tsFile = resolve(dir, "mod.ts");
+        const callerFile = resolve(dir, "caller.ts");
+        await import("node:fs/promises").then(async (fs) => {
+            await fs.writeFile(tsFile, "function foo(): number { return 1; }\n", "utf8");
+            await fs.writeFile(callerFile, "const y = foo();\n", "utf8");
+        });
+        const selStart = { line: 0, character: 9 };
+        const canned = [sym("foo", 12, tsFile, 0, 9)];
+        const docSymsByPath = new Map([
+            [tsFile, [docSymbol("foo", 12, selStart, { line: 0, character: 36 })]],
+        ]);
+        const refsByPath = new Map([
+            [
+                tsFile,
+                [
+                    {
+                        uri: `file://${callerFile}`,
+                        range: {
+                            start: { line: 0, character: 10 },
+                            end: { line: 0, character: 13 },
+                        },
+                    },
+                ],
+            ],
+        ]);
+        const out = await symbol(
+            {
+                query: "foo",
+                language: "typescript",
+                include: ["references"],
+                list_symbols: true,
+            },
+            dir,
+            mockClientOfRich(dir, { cannedSyms: canned, docSymsByPath, refsByPath }),
+        );
+        assert.match(out, /--- references ---/);
+        assert.match(out, /symbols: foo@11 call/, `reference symbol metadata missing:\n${out}`);
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }

@@ -304,6 +304,12 @@ function registerTools(pi: ExtensionAPI, state: State): void {
                     }),
                 ),
             ),
+            list_symbols: Type.Optional(
+                Type.Boolean({
+                    description:
+                        "If true, add line-local symbol metadata to included definitions and references so their positions can be used in follow-up code navigation calls.",
+                }),
+            ),
             kinds: Type.Optional(
                 Type.Array(
                     StringEnum(
@@ -584,7 +590,8 @@ directly to a position-based tool.
 
 DISCOVERY TOOLS (produce positions):
 - code_search_symbol — search workspace and indexed third-party symbols by bare
-  or qualified name; use include to retrieve details in the same call
+  or qualified name; use include to retrieve details in the same call;
+  list_symbols adds chainable identifier positions to definitions/references
 - code_outline — show a file's classes/functions/methods with signatures,
   documentation summaries, identifier positions, and body ranges
 
@@ -599,7 +606,8 @@ FILE-ANALYSIS TOOL:
 - code_diagnostics — current errors, warnings, and hints for a source file
 
 code_search_symbol examples:
-  code_search_symbol(query="parse", include=["definition","references"])
+  code_search_symbol(query="parse", include=["definition","references"],
+                     list_symbols=true)
   code_search_symbol(query="cbor2.loads", include=["definition","hover"])
   code_search_symbol(query="vector::push_back", kinds=["method"],
                      name_pattern="int", include=["definition"])

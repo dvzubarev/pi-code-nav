@@ -24,6 +24,8 @@ export interface SymbolParams {
     language?: string;
     /** Public agent interface: details to retrieve for each exact match. */
     include?: ("definition" | "hover" | "references")[];
+    /** Add line-local symbol metadata to included definitions and references. */
+    list_symbols?: boolean;
     /** Public agent interface: LSP symbol kinds to retain. */
     kinds?: string[];
     /** Public agent interface: case-insensitive regexp over rendered names. */
@@ -821,6 +823,7 @@ export async function symbol(
                 params.query,
                 cwd,
                 clientOf,
+                params.list_symbols ?? false,
                 publicInclude,
             );
         }
@@ -877,20 +880,20 @@ interface FanOutMatch {
  * code is also requested because hover may contain inferred types. Blocks are
  * blank-line-separated.
  *
- * The `code` section is SKIPPED for symbol kinds whose definition IS the
- * declaration — there is no multi-line body to show, and `code_definition`
- * just echoes the line already in the row. This includes ccls extended kind
- * 252 (using-aliases, typedefs) and any standard LSP kind where the body
- * would be the declaration line itself (TypeParameter 26, etc. — singletons,
- * not methods/functions/classes/enums; an enum's enumerator list IS a body).
- * The agent can always call `code_definition` directly if it needs the raw
- * line. */
+ * The `code` section is normally simplified for symbol kinds whose definition
+ * IS the declaration — there is no multi-line body to show. With
+ * `list_symbols`, these kinds use the normal definition path as well so their
+ * declaration receives chainable symbol metadata. Declaration-only kinds
+ * include ccls extended kind 252 (using-aliases, typedefs) and standard LSP
+ * kinds such as TypeParameter 26; enums are not declaration-only because their
+ * enumerator list is a useful body. */
 async function renderSymbolFanOut(
     matches: FanOutMatch[],
     info: ("code" | "hover" | "references")[],
     query: string,
     cwd: string,
     clientOf: ClientProvider,
+    listSymbols: boolean,
     publicInclude?: ("definition" | "hover" | "references")[],
 ): Promise<string> {
     const n = matches.length;
@@ -914,14 +917,11 @@ async function renderSymbolFanOut(
         const line1 = start ? start.line + 1 : 1;
         const col1 = start ? start.character + 1 : 1;
         if (wantCode) {
-            // Skip `code` for declaration-only symbol kinds where the
-            // definition IS the declaration line (already shown in the row):
-            // ccls extended kind 252 (using-aliases, typedefs) and standard
-            // LSP kinds whose body adds nothing (TypeParameter, Module,
-            // Namespace, etc.). Enums are NOT declaration-only — their
-            // enumerator list IS a body code_definition surfaces.
-            // The agent can still call code_definition directly.
-            if (isDeclarationOnlyKind(sym.kind ?? 0)) {
+            // Without symbol metadata, render declaration-only kinds directly:
+            // their source declaration is all the definition can add. With
+            // listSymbols, use the normal definition path below so identifiers
+            // in the declaration receive reusable positions.
+            if (isDeclarationOnlyKind(sym.kind ?? 0) && !listSymbols) {
                 // For declaration-only kinds, show the verbatim source line
                 // from the file (not ccls's fully-qualified `name`, which
                 // differs from what the user wrote — e.g. ccls renders
@@ -942,7 +942,15 @@ async function renderSymbolFanOut(
                 matchBlocks.push(`--- ${heading} ---\n${declText}`);
             } else {
                 const section = start
-                    ? await renderFanOutCodeSection(path, line1, col1, codeBudget, cwd, clientOf)
+                    ? await renderFanOutCodeSection(
+                          path,
+                          line1,
+                          col1,
+                          codeBudget,
+                          cwd,
+                          clientOf,
+                          listSymbols,
+                      )
                     : `(no position to resolve definition)`;
                 const heading = publicInclude ? "definition" : "code";
                 matchBlocks.push(`--- ${heading} ---\n${section}`);
@@ -956,7 +964,14 @@ async function renderSymbolFanOut(
         }
         if (wantRefs) {
             const section = start
-                ? await renderFanOutRefsSection(path, line1, col1, cwd, clientOf)
+                ? await renderFanOutRefsSection(
+                      path,
+                      line1,
+                      col1,
+                      cwd,
+                      clientOf,
+                      listSymbols,
+                  )
                 : `(no position)`;
             matchBlocks.push(`--- references ---\n${section}`);
         }
@@ -1002,9 +1017,14 @@ async function renderFanOutCodeSection(
     budget: number,
     cwd: string,
     clientOf: ClientProvider,
+    listSymbols: boolean,
 ): Promise<string> {
     try {
-        const out = await definition({ path, line, column }, cwd, clientOf);
+        const out = await definition(
+            { path, line, column, list_symbols: listSymbols },
+            cwd,
+            clientOf,
+        );
         // `nav.definition` returns `<defPath>:<sl>-<el>\n<body>[\n\n<sym table>]`
         // (single site) or multi-site blocks separated by blank lines + a
         // trailing `# N definitions` count. We head-snippet the WHOLE output
@@ -1052,10 +1072,19 @@ async function renderFanOutRefsSection(
     column: number,
     cwd: string,
     clientOf: ClientProvider,
+    listSymbols: boolean,
 ): Promise<string> {
     try {
         const out = await references(
-            { path, line, column, context: "syntax", offset: 1, limit: SYMBOL_FANOUT_REFS_CAP },
+            {
+                path,
+                line,
+                column,
+                context: "syntax",
+                offset: 1,
+                limit: SYMBOL_FANOUT_REFS_CAP,
+                list_symbols: listSymbols,
+            },
             cwd,
             clientOf,
         );

@@ -41,7 +41,7 @@ Syntax contexts are capped at 80 lines and 12,000 characters. Enclosing skeleton
 
 Only the requested page is contextualized. A complete page ends with `# N references`; a partial page ends with `# showing references A-B of N`. An offset beyond the result set returns a clean parenthesized note. Empty semantic results remain successful, not errors.
 
-`code_search_symbol(include=["references"])` calls this same path with `context: "syntax"`, `offset: 1`, and `limit: 25`, so fan-out references have identical semantic context and cannot be cut in the middle by line-based trimming.
+`code_search_symbol(include=["references"])` calls this same path with `context: "syntax"`, `offset: 1`, and `limit: 25`, forwarding its `list_symbols` option, so fan-out references have identical semantic context and cannot be cut in the middle by line-based trimming.
 
 ## Position details
 
