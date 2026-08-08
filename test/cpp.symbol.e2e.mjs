@@ -1,8 +1,15 @@
 // Fresh-ccls indexing scenarios for code_search_symbol.
 
+import { describe, before, after, test } from "node:test";
 import { resolve } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
 import { compileCommands, nav, cppScenario } from "./cpp-helpers.mjs";
+import { serverAvailable, SHOULD_RUN_E2E, withWorkspace } from "./e2e-helpers.mjs";
 import { matches, notMatches } from "./scenario.mjs";
+
+const skip = !SHOULD_RUN_E2E;
+const cppOk = SHOULD_RUN_E2E ? await serverAvailable("cpp") : false;
+const unavailable = skip || !cppOk;
 
 cppScenario("code_search_symbol waits for a fresh ccls whole-project index", {
     given: {
@@ -90,48 +97,97 @@ cppScenario("code_search_symbol expands a qualified C++ call operator", {
     ],
 });
 
-// Real source: test/fixtures/blackjack.cpp, scraped from:
-// https://gist.github.com/thebashpotato/704c4508cb859448f4233817b5e1249b
-// Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol 'blackjack::Deck::drawCard' cpp
-cppScenario("code_search_symbol finds a symbol in the cold index of a real C++ example", {
-    given: {
-        fixtures: ["blackjack.cpp"],
-        files: { "build/compile_commands.json": compileCommands("blackjack.cpp") },
-    },
-    when: ({ root, clientOf }) =>
-        nav.symbol({ query: "blackjack::Deck::drawCard", language: "cpp" }, root, clientOf),
-    then: [matches(/\[cpp\].*blackjack::Deck::drawCard/, "cold-index method missing")],
-});
+// Shared blackjack workspace: ccls is started once and reused for all blackjack
+// tests, avoiding repeated stdlib indexing.
+const registerBlackjack = unavailable ? describe.skip : describe;
+registerBlackjack("code_search_symbol C++ blackjack scenarios", () => {
+    let ws;
 
-// Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol 'blackjack::Deck::drawCard' cpp --info code,hover,references
-cppScenario("code_search_symbol includes definition, hover, and references for a C++ method", {
-    given: {
-        fixtures: ["blackjack.cpp"],
-        files: { "build/compile_commands.json": compileCommands("blackjack.cpp") },
-    },
-    when: async ({ root, clientOf }) => {
-        await nav.symbol({ query: "blackjack::Deck", language: "cpp" }, root, clientOf);
-        return nav.symbol(
-            {
-                query: "blackjack::Deck::drawCard",
-                language: "cpp",
-                include: ["definition", "hover", "references"],
-            },
-            root,
-            clientOf,
+    before(async () => {
+        ws = await withWorkspace(["blackjack.cpp"]);
+        // Write compile_commands.json with the fixture's relative path.
+        const buildDir = resolve(ws.root, "build");
+        await mkdir(buildDir, { recursive: true });
+        await writeFile(
+            resolve(buildDir, "compile_commands.json"),
+            JSON.stringify(
+                [
+                    {
+                        directory: ".",
+                        command: "clang++ -std=c++17 -I. blackjack.cpp",
+                        file: "blackjack.cpp",
+                    },
+                ],
+                null,
+                2,
+            ),
+            "utf8",
         );
-    },
-    then: [
+        // Start ccls once; the first query waits for its index.
+        await ws.clientOf("cpp");
+    });
+
+    after(async () => {
+        await ws?.cleanup();
+    });
+
+    // Helper: run a symbol search against the shared blackjack workspace.
+    const search = (params) => nav.symbol(params, ws.root, ws.clientOf);
+
+    // Real source: test/fixtures/blackjack.cpp, scraped from:
+    // https://gist.github.com/thebashpotato/704c4508cb859448f4233817b5e1249b
+    // Reproduce from the repository root:
+    //   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol 'blackjack::Deck::drawCard' cpp
+    test("code_search_symbol finds a symbol in the cold index of a real C++ example", async () => {
+        const response = await search({ query: "blackjack::Deck::drawCard", language: "cpp" });
+        matches(/\[cpp\].*blackjack::Deck::drawCard/, "cold-index method missing")(response);
+    });
+
+    // Reproduce from the repository root:
+    //   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol 'blackjack::Deck::drawCard' cpp --info code,hover,references
+    test("code_search_symbol includes definition, hover, and references for a C++ method", async () => {
+        await search({ query: "blackjack::Deck", language: "cpp" });
+        const response = await search({
+            query: "blackjack::Deck::drawCard",
+            language: "cpp",
+            include: ["definition", "hover", "references"],
+        });
         matches(
             /^# 1 match for "blackjack::Deck::drawCard" — include: definition, hover, references/m,
-        ),
-        matches(/--- definition ---[\s\S]*return std::nullopt;/),
-        matches(/--- hover ---[\s\S]*signature: auto blackjack::Deck::drawCard\(\)/),
-        matches(/--- references ---[\s\S]*kind: call[\s\S]*deck\.drawCard\(\)/),
-    ],
+        )(response);
+        matches(/--- definition ---[\s\S]*return std::nullopt;/)(response);
+        matches(/--- hover ---[\s\S]*signature: auto blackjack::Deck::drawCard\(\)/)(response);
+        matches(/--- references ---[\s\S]*kind: call[\s\S]*deck\.drawCard\(\)/)(response);
+    });
+
+    // Reproduce from the repository root:
+    //   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol blackjack::Rank cpp --info code
+    test("code_search_symbol returns the source declaration for a C++ enum", async () => {
+        await search({ query: "blackjack::Rank", language: "cpp" });
+        const response = await search({
+            query: "blackjack::Rank",
+            language: "cpp",
+            include: ["definition"],
+        });
+        matches(/--- definition ---[\s\S]*enum class Rank : std::uint16_t \{[\s\S]*ACE = 1,[\s\S]*KING/)(
+            response,
+        );
+    });
+
+    // Reproduce from the repository root:
+    //   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol blackjack::Deck::DealableCard cpp --info code
+    test("code_search_symbol returns the source declaration for a C++ using alias", async () => {
+        await search({ query: "blackjack::Deck", language: "cpp" });
+        const response = await search({
+            query: "blackjack::Deck::DealableCard",
+            language: "cpp",
+            include: ["definition"],
+        });
+        matches(/--- definition ---[\s\S]*using DealableCard = std::unique_ptr<Card>/)(response);
+    });
 });
+
+
 
 // Reproduce from the repository root:
 //   tmp=$(mktemp -d); cp test/fixtures/functor.cpp "$tmp/"; CODE_NAV_ROOT="$tmp" node scripts/nav-cli.mjs symbol MyAddFunctor cpp --kind struct; rm -rf "$tmp"
@@ -187,44 +243,4 @@ cppScenario("code_search_symbol rejects an invalid public name_pattern", {
 
 // Real source: test/fixtures/blackjack.cpp, scraped from:
 // https://gist.github.com/thebashpotato/704c4508cb859448f4233817b5e1249b
-// Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol blackjack::Rank cpp --info code
-cppScenario("code_search_symbol returns the source declaration for a C++ enum", {
-    given: {
-        fixtures: ["blackjack.cpp"],
-        files: { "build/compile_commands.json": compileCommands("blackjack.cpp") },
-    },
-    when: async ({ root, clientOf }) => {
-        await nav.symbol({ query: "blackjack::Rank", language: "cpp" }, root, clientOf);
-        return nav.symbol(
-            { query: "blackjack::Rank", language: "cpp", include: ["definition"] },
-            root,
-            clientOf,
-        );
-    },
-    then: [
-        matches(/--- definition ---[\s\S]*enum class Rank : std::uint16_t \{[\s\S]*ACE = 1,[\s\S]*KING/),
-    ],
-});
 
-// Reproduce from the repository root:
-//   CODE_NAV_ROOT="$PWD/test/fixtures" node scripts/nav-cli.mjs symbol blackjack::Deck::DealableCard cpp --info code
-cppScenario("code_search_symbol returns the source declaration for a C++ using alias", {
-    given: {
-        fixtures: ["blackjack.cpp"],
-        files: { "build/compile_commands.json": compileCommands("blackjack.cpp") },
-    },
-    when: async ({ root, clientOf }) => {
-        await nav.symbol({ query: "blackjack::Deck", language: "cpp" }, root, clientOf);
-        return nav.symbol(
-            {
-                query: "blackjack::Deck::DealableCard",
-                language: "cpp",
-                include: ["definition"],
-            },
-            root,
-            clientOf,
-        );
-    },
-    then: [matches(/--- definition ---[\s\S]*using DealableCard = std::unique_ptr<Card>/)],
-});
