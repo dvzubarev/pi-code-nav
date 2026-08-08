@@ -188,7 +188,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_definition",
         label: "Code Definition",
         description:
-            "Return the source code for the definition of the symbol at a 1-based file position. For functions, methods, and classes, the result includes the complete source body. Multiple definition sites are returned as separate blocks. Each block starts with `<defPath>:<startLine>-<endLine>` followed by raw source text.",
+            "Return the source code for the definition of the symbol at a 1-based file position. For functions, methods, and classes, the result includes the complete source body. Multiple definition sites are returned as separate blocks. Each block starts with `<defPath>:<startLine>-<endLine>` followed by source lines prefixed with their absolute line number.",
         promptSnippet: "Return the source code for a symbol's definition",
         promptGuidelines: [
             "Use code_definition after a discovery tool to retrieve semantic source rather than locating it with grep and read.",
@@ -203,7 +203,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
             list_symbols: Type.Optional(
                 Type.Boolean({
                     description:
-                        "If true, append a symbol table for the returned body (default: false). The table lists identifiers with their position and syntactic role (type/call/member/import).",
+                        "If true, add compact `name@column role` navigation metadata below each relevant source line (default: false). Source text is not modified.",
                 }),
             ),
         }),
@@ -256,6 +256,12 @@ function registerTools(pi: ExtensionAPI, state: State): void {
                     minimum: 1,
                     maximum: 200,
                     description: "Maximum references per page (default 25, hard cap 200).",
+                }),
+            ),
+            list_symbols: Type.Optional(
+                Type.Boolean({
+                    description:
+                        "If true, add compact `name@column role` navigation metadata below each contextual source line (default: false). Not valid with context='none'.",
                 }),
             ),
         }),

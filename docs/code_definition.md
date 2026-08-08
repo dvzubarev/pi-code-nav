@@ -1,6 +1,26 @@
 # code_definition
 
-##  ccls bounce + cold-cache race
+## Output
+
+Each definition site starts with `<path>:<startLine>-<endLine>`, followed by source lines in the shared absolute-line-number format:
+
+```text
+src/build.cpp:43-45
+43 | int build(const Config& config) {
+44 |     return run(config);
+45 | }
+```
+
+The gutter is metadata; source text after `| ` retains its original formatting. `list_symbols: true` adds compact line-local navigation metadata without modifying source:
+
+```text
+44 |     return run(config);
+   | symbols: run@12 call
+```
+
+Each `@column` is 1-based and combines with the path and source-line number for direct use with `code_hover`, `code_definition`, or `code_references`. Roles follow the `code_scan` taxonomy. As in `code_scan`, noisy local `var` symbols are excluded by default. Multiple definition sites are blank-line-separated and followed by a count.
+
+## ccls bounce + cold-cache race
 
 `code_definition` previously bounced to the header declaration when the cursor
 was on an out-of-line C++ member definition (`fbin_file_t::assign` in a .cpp).

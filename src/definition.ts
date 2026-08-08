@@ -1,10 +1,10 @@
 /**
- * code_definition — retrieve the verbatim source body of a symbol's
- * definition, ready to copy into an edit. Output format (single site):
+ * code_definition — retrieve the source body of a symbol's definition with
+ * absolute line-number gutters (source text after the gutter stays verbatim). Output format (single site):
  *
  *   <defPath>:<sl>-<el>
- *   <body verbatim from source code>
- *   <optional sym table when list_symbols=true>
+ *   <line> | <source code>
+ *          | symbols: <name>@<column> <role>, ...  (when list_symbols=true)
  *
  * A position may resolve to MULTIPLE definition sites (overloads,
  * multi-definition symbols, header-vs-source in C++, re-exports); the tool
@@ -13,7 +13,7 @@
  *
  * Error contract: HARD failures THROW (index.ts's err() sets isError: true).
  * There are NO fallbacks and NO soft-failure rows — if we cannot return
- * verbatim source code for any reason, the tool fails loudly. See
+ * source code for any reason, the tool fails loudly. See
  * docs/code_definition.md.
  */
 
@@ -37,7 +37,8 @@ import {
 import {
     findEnclosingDefWithDoc,
     parseSymbols,
-    renderSymbolTable,
+    renderNumberedSource,
+    type SymbolEntry,
     tsLangForFile,
 } from "./tree-sitter-parse";
 
@@ -225,7 +226,9 @@ export async function definition(
 }
 
 /**
- * Render a definition snippet as `<defPath>:<sl>-<el>\n<body>[\n\n<sym table>]`.
+ * Render a definition snippet as a range header followed by numbered source.
+ * With list_symbols, compact navigation metadata is inserted below each
+ * source line; the source itself remains unchanged.
  *
  * Shared by the documentSymbol fast path (step 0, which already has the
  * body range) and renderDefinitionBlock (which resolves the range from a
@@ -291,54 +294,40 @@ async function renderSnippetBlock(
             }
         }
     }
-    const out: string[] = [];
-    // Header: <defPath>:<sl>-<el> (1-based inclusive line range of the body).
-    // defPath is the path the definition lives in — relative or absolute as
-    // the server returned it (the agent can feed it back into code_* tools).
-    out.push(`${defPath}:${renderSl + 1}-${el + 1}`);
-    out.push(snippet);
-    // Optional tree-sitter symbol table over the snippet. Reuses the same
-    // parseSymbols helper as code_scan. The snippet's absolute line range is
-    // (renderSl+1 .. el+1) in 1-based coords. Only run when requested: default
-    // false keeps code_definition's output focused on the verbatim body.
+    let entries: SymbolEntry[] = [];
+    // Optional tree-sitter symbol discovery over the snippet. The entries are
+    // rendered beside their source line rather than in a detached table.
     if (listSymbols) {
         const tsLang = tsLangForFile(defPath);
         if (tsLang) {
             try {
-                const entries = await parseSymbols(tsLang, {
-                    text: src,
-                    startLine: renderSl + 1,
-                    endLine: el + 1,
-                });
-                if (entries && entries.length > 0) {
-                    // Blank line separates the verbatim body from the symbol
-                    // table so an agent can unambiguously tell where the body
-                    // ends and the table begins (the body itself may contain
-                    // lines that look table-like).
-                    out.push("");
-                    out.push(renderSymbolTable(defPath, renderSl + 1, el + 1, entries));
-                }
+                entries =
+                    (await parseSymbols(tsLang, {
+                        text: src,
+                        startLine: renderSl + 1,
+                        endLine: el + 1,
+                    })) ?? [];
             } catch (e) {
-                // Hard failure: the symbol scan failed. The verbatim body was
-                // already retrieved (the primary contract), but list_symbols
-                // is an explicit request the agent is relying on — surface the
-                // failure rather than silently omitting the table.
                 throw new Error(
                     `symbol scan failed for ${defPath}:${renderSl + 1}-${el + 1}: ${e}`,
                 );
             }
         }
     }
-    return out.join("\n");
+    return [
+        `${defPath}:${renderSl + 1}-${el + 1}`,
+        renderNumberedSource(src, renderSl + 1, el + 1, entries),
+    ].join("\n");
 }
 
 /**
- * Render one definition site as `<defPath>:<sl>-<el>\n<body>[\n\n<sym table>]`.
+ * Render one definition site as a range header plus numbered source and
+ * optional line-local symbol annotations.
  *
  * Reads the definition's source file, resolves the enclosing DocumentSymbol to
  * the full body range (the server's Location is usually just the identifier
- * span), slices the raw source, and optionally appends a tree-sitter symbol
- * table over the body. Throws a hard error on any per-site failure (cannot
+ * span), slices the source, and optionally adds line-local symbol metadata
+ * over the body. Throws a hard error on any per-site failure (cannot
  * read source, cannot resolve body, symbol scan failed) — there are no
  * fallbacks, since the tool's contract is verbatim source code or failure.
  */

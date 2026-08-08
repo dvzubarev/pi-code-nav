@@ -61,6 +61,22 @@ pythonScenario("code_definition follows a function call to its definition", {
     then: [matches(/^.*defs\.py:28-\d+$/m), matches(/def make_config/)],
 });
 
+pythonScenario("code_definition renders numbered source with line-local symbols", {
+    given: { fixtures: ["defs.py"] },
+    when: ({ root, clientOf }) =>
+        nav.definition(
+            { path: "defs.py", line: 43, column: 9, list_symbols: true },
+            root,
+            clientOf,
+        ),
+    then: [
+        matches(/^43 \|     def config\(self\):$/m),
+        matches(/^44 \|         return make_config\(\)$/m),
+        matches(/^   \| symbols: make_config@16 call$/m),
+        notMatches(/Symbols in /, "detached symbol table should not be rendered"),
+    ],
+});
+
 pythonScenario("code_definition follows a constructor call to its class", {
     given: { fixtures: ["defs.py"] },
     when: ({ root, clientOf }) =>

@@ -79,7 +79,7 @@ to override (include `"var"` to see locals, or `["import"]` to see only
 imports). `import` was split from `var` specifically so "drop the noisy
 locals" does not drop the third-party entry points imports represent.
 
-The same default applies to `code_definition`'s `list_symbols` integration
+The same default applies to definition/reference `list_symbols` integration
 (snippet symbol tables also omit `var`), so the two stay consistent.
 
 ## `include_docs` — opt-in hover enrichment
@@ -145,15 +145,21 @@ Bash is the loose one: `variable_name` → `var`, the `word` child of a
 literals and too noisy; this conservative set is what shipped. Do not block
 the tool on bash polish.
 
-## `code_definition` integration — `list_symbols`
+## Definition/reference integration — `list_symbols`
 
-`code_definition` gained an optional `list_symbols?: boolean` (default
-`false`) that runs the same `parseSymbols` over its returned body and
-appends the symbol table. This removes the agent's need to hold the
+`code_definition` and `code_references` expose optional `list_symbols?: boolean`
+(default `false`). They run the same `parseSymbols` over rendered source and
+place compact `name@column role` metadata directly below each relevant numbered
+source line. Source remains unchanged, while its gutter line plus `@column`
+forms a reusable code_* position. This removes the agent's need to hold the
 snippet's path and line range across a turn (the driving scenario was
-`code_definition` → see a third-party symbol → want its API). The scan
-reuses the exact same `parseSymbols` helper as `code_scan`, so the two
-share one implementation.
+`code_definition` → see a third-party symbol → want its API).
+
+`code_references` annotates only source rows retained by syntax/enclosing
+context rendering; it rejects `list_symbols` with `context: "none"`. Both tools
+reuse the exact same `parseSymbols` helper as `code_scan`, so discovery and role
+classification share one implementation. The standalone `code_scan` keeps its
+symbol-table format because it has no source body to annotate.
 
 ## Dependency — WASM, not native bindings
 
@@ -255,4 +261,4 @@ loader pi uses). `Parser.init()` must be called once before constructing a
 - **Verify absolute-position math**: a symbol at snippet-relative
   `(row=2, col=10)` with `startLine=43` must print `path:45:11` (1-based).
   Off-by-one here silently breaks the round-trip into `code_hover`/
-  `code_definition`.
+  `code_definition` and `code_references`.

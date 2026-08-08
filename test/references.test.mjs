@@ -105,6 +105,20 @@ test("enclosing context skips try and falls back to the containing function", as
     assert.doesNotMatch(context.source, /2 \|   try|finally|cleanup/);
 });
 
+test("references rejects list_symbols with location-only context", async () => {
+    const { references } = await load("./src/nav.ts");
+    await assert.rejects(
+        references(
+            { path: "sample.ts", line: 1, column: 1, context: "none", list_symbols: true },
+            process.cwd(),
+            async () => {
+                throw new Error("server should not be reached");
+            },
+        ),
+        /list_symbols requires context/,
+    );
+});
+
 test("references compact mode is paginated and reports the total", async () => {
     const { references } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-refs-page-"));

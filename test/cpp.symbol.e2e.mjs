@@ -203,7 +203,7 @@ cppScenario("code_search_symbol returns the source declaration for a C++ enum", 
         );
     },
     then: [
-        matches(/--- definition ---\n[\s\S]*\nenum class Rank : std::uint16_t \{[\s\S]*ACE = 1,[\s\S]*KING/),
+        matches(/--- definition ---[\s\S]*enum class Rank : std::uint16_t \{[\s\S]*ACE = 1,[\s\S]*KING/),
     ],
 });
 

@@ -53,7 +53,7 @@
   dependency; takes a `ClientProvider` (`(lang) => LspClient`) instead of
   `ServerPool`. `index.ts` and `scripts/nav-cli.mjs` call the same exported
   implementations via `src/nav.ts`; `scan` is exercised only by the CLI/tests
-  and `code_definition(list_symbols=true)`, not registered as an agent tool.
+  and the definition/reference `list_symbols=true` paths, not registered as an agent tool.
 - `src/tree-sitter-parse.ts` — `parseSymbols()` parses a line range with WASM
   tree-sitter, returns a deduplicated symbol table. No pi or LSP dependency.
   See `code_scan.md`.
@@ -147,7 +147,7 @@ the per-tool output contracts are documented in `IMPL.md`. CLI subcommands
   outline <file> [offset:1-based] [limit]
   hover <file> <line:1> <col:1>
   definition <file> <line:1> <col:1> [--list-symbols]
-  references <file> <line:1> <col:1> [--context none|syntax|enclosing] [--offset N] [--limit N]
+  references <file> <line:1> <col:1> [--context none|syntax|enclosing] [--offset N] [--limit N] [--list-symbols]
   rename <file> <line:1> <col:1> <newName>
   symbol <query> [python|cpp|bash]
   scan <file> [<startLine:1> <endLine:1>] [--pattern <re>] [--docs] [--roles ...]

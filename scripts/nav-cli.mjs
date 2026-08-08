@@ -20,15 +20,15 @@
 //   node nav-cli.mjs outline <file> [offset:1-based] [limit]
 //   node nav-cli.mjs hover <file> <line:1-based> <col:1-based>
 //   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [--list-symbols]
-//   node nav-cli.mjs references <file> <line:1-based> <col:1-based> [--context none|syntax|enclosing] [--offset N] [--limit N]
+//   node nav-cli.mjs references <file> <line:1-based> <col:1-based> [--context none|syntax|enclosing] [--offset N] [--limit N] [--list-symbols]
 //   node nav-cli.mjs rename <file> <line:1-based> <col:1-based> <newName>
 //   node nav-cli.mjs symbol <query> [python|cpp|bash|typescript]
 //   node nav-cli.mjs scan <file> [<startLine:1-based> <endLine:1-based>] [--pattern <regexp>] [--docs] [--roles type,call,member,import,var]
 //   node nav-cli.mjs diagnostics <file>
 //
 // hover/definition/references each take a SINGLE (file line col) triple —
-// one symbol per call. definition also accepts a trailing --list-symbols flag
-// (mirrors the list_symbols parameter of the code_definition tool).
+// one symbol per call. definition and contextual references also accept a
+// --list-symbols flag (mirrors their list_symbols tool parameter).
 //
 // Examples:
 //   node nav-cli.mjs outline temp.py
@@ -66,7 +66,7 @@ function usage() {
   node nav-cli.mjs outline <file> [offset:1-based] [limit]
   node nav-cli.mjs hover <file> <line:1-based> <col:1-based>
   node nav-cli.mjs definition <file> <line:1-based> <col:1-based> [--list-symbols]
-  node nav-cli.mjs references <file> <line:1-based> <col:1-based> [--context none|syntax|enclosing] [--offset N] [--limit N]
+  node nav-cli.mjs references <file> <line:1-based> <col:1-based> [--context none|syntax|enclosing] [--offset N] [--limit N] [--list-symbols]
   node nav-cli.mjs rename <file> <line:1-based> <col:1-based> <newName>
   node nav-cli.mjs symbol <query> [python|cpp|bash|typescript]
   node nav-cli.mjs scan <file> [<startLine:1-based> <endLine:1-based>] [--pattern <regexp>] [--docs] [--roles type,call,member,import,var]
@@ -77,11 +77,11 @@ hover/definition/references each take a SINGLE (file line col) triple — one
   functions, constructors, interfaces, structs) with signatures, body line
   ranges, and a one-line doc snippet per entry — constants/variables/properties
   are dropped. Paginated: optional offset (1-based) and limit (default 20).
-definition accepts a SINGLE (file line col) triple and returns the verbatim
-  source body of the symbol at that position (header \`<defPath>:<sl>-<el>\` +
-  raw source, no fence). Throws a hard error if it cannot return source code
-  (no definition found, multiple definitions, cannot resolve body, etc.).
-  --list-symbols appends a symbol table per the list_symbols parameter.
+definition accepts a SINGLE (file line col) triple and returns the source body
+  with absolute line-number gutters (header \`<defPath>:<sl>-<el>\`, no fence).
+  Throws a hard error if it cannot return source code. --list-symbols adds
+  compact name@column role metadata below relevant source lines. references
+  accepts the same flag for contextual source output.
 scan lists identifiers with their absolute 1-based position and syntactic role
   (type/call/member/import/var). With no line range it scans the whole file.
   --pattern filters symbols by name regexp. --docs enriches each row with a
@@ -138,21 +138,27 @@ async function main() {
             if (rest.length !== 3) usage();
             console.log(await nav.hover(params, ROOT, clientOf));
         } else {
-            for (let i = 3; i < rest.length; i += 2) {
+            for (let i = 3; i < rest.length; ) {
                 const flag = rest[i];
+                if (flag === "--list-symbols") {
+                    params.list_symbols = true;
+                    i += 1;
+                    continue;
+                }
                 const value = rest[i + 1];
                 if (!value) usage();
                 if (flag === "--context") params.context = value;
                 else if (flag === "--offset") params.offset = parseInt(value, 10);
                 else if (flag === "--limit") params.limit = parseInt(value, 10);
                 else usage();
+                i += 2;
             }
             console.log(await nav.references(params, ROOT, clientOf));
         }
     } else if (cmd === "definition") {
         // definition takes a SINGLE (file line col) triple — it returns the
-        // verbatim source body of one symbol (no batching). --list-symbols is
-        // optional and appends a symbol table after the body.
+        // numbered source body of one symbol (no batching). --list-symbols is
+        // optional and adds compact metadata below relevant source lines.
         const listSymbols = rest.includes("--list-symbols");
         const positional = rest.filter((a) => a !== "--list-symbols");
         if (positional.length !== 3) usage();

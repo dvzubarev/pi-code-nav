@@ -1020,29 +1020,71 @@ export async function parseSymbols(
     }
 }
 
+/** Render a contiguous 1-based line range with the shared source gutter. */
+export function renderNumberedSource(
+    text: string,
+    startLine: number,
+    endLine: number,
+    entries: SymbolEntry[] = [],
+): string {
+    const sourceLines = text.split(/\r?\n/);
+    const numbered = sourceLines
+        .slice(startLine - 1, endLine)
+        .map((line, index) => `${startLine + index} | ${line}`)
+        .join("\n");
+    return annotateNumberedSource(numbered, text, entries);
+}
+
 /**
- * Render a symbol table as the text an agent reads. Mirrored exactly in
- * nav-cli.mjs's `scan` subcommand — keep the two in sync (the harness's
- * "precise mirror of index.ts output" rule).
+ * Add compact, line-local navigation metadata without modifying source text.
+ * `numberedSource` may be contiguous definition output or the sparse source
+ * skeleton produced for references. Only symbols whose original token is
+ * actually visible on a rendered line are included.
  *
- * Output format (1-based, reusable as code_* input). The full path appears
- * ONCE in the header; each row carries only `:line:col` (the row order is
- * stable, and the header path + row :line:col reconstructs the full position).
- * A one-line role legend follows the header so the agent can branch on the
- * closed enumeration without guessing:
- *
- *   Symbols in <path>:<startLine>-<endLine> (roles: type|call|member|import|var):
- *     type   vector      :43:11
- *     call   sort        :43:9
- *     ...
- *
- * Per-position soft failures emit a structured row with the SAME column
- * grammar as a data row, prefixed `ERROR` (mirrors `### position` headers):
- *
- *     ERROR  <path>:<line>:<col>  <reason>
- *
- * so a consumer splits rows on `\n` and distinguishes data from error by the
- * leading token (an ERROR row has kind `ERROR` and no name column).
+ *   43 | return build(value);
+ *      | symbols: build@12 call, value@18 var
+ */
+export function annotateNumberedSource(
+    numberedSource: string,
+    originalText: string,
+    entries: SymbolEntry[],
+): string {
+    if (entries.length === 0) return numberedSource;
+    const originalLines = originalText.split(/\r?\n/);
+    const out: string[] = [];
+    for (const rendered of numberedSource.split("\n")) {
+        out.push(rendered);
+        const match = /^(\d+) \| (.*)$/.exec(rendered);
+        if (!match) continue;
+        const line = Number(match[1]);
+        const shown = match[2];
+        const original = originalLines[line - 1];
+        if (original === undefined || shown.length === 0) continue;
+        const shownIndex = original.indexOf(shown);
+        if (shownIndex < 0) continue; // truncated/marker line, not verbatim source
+        const shownStartByte = Buffer.byteLength(original.slice(0, shownIndex), "utf8");
+        const shownEndByte = shownStartByte + Buffer.byteLength(shown, "utf8");
+        const visible = entries.filter((entry) => {
+            if (entry.line !== line) return false;
+            const startByte = entry.column - 1;
+            const endByte = startByte + Buffer.byteLength(entry.name, "utf8");
+            return startByte >= shownStartByte && endByte <= shownEndByte;
+        });
+        if (visible.length === 0) continue;
+        const gutter = " ".repeat(match[1].length);
+        out.push(
+            `${gutter} | symbols: ${visible
+                .map((entry) => `${entry.name}@${entry.column} ${entry.role}`)
+                .join(", ")}`,
+        );
+    }
+    return out.join("\n");
+}
+
+/**
+ * Render the standalone code_scan symbol table. Definition/reference snippets
+ * use line-local annotations instead, but code_scan keeps this compact survey
+ * format because it has no source body to annotate.
  */
 export function renderSymbolTable(
     path: string,

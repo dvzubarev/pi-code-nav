@@ -85,9 +85,12 @@ found" is a HARD failure there (no source code to return).
 
 `hover`, `definition`, and `references` each take a **single** `(file line
 col)` triple — one symbol per call (no batching; see `DESIGN.md` "Scalar
-input"). `definition` returns the verbatim source body of the symbol: a
-header line `<defPath>:<sl>-<el>` (1-based inclusive line range of the body)
-then the raw source lines (no code fence). A position may resolve to
+input"). `definition` returns the source body of the symbol: a header line
+`<defPath>:<sl>-<el>` (1-based inclusive line range of the body), then source
+lines prefixed by their absolute line-number gutter (no code fence). The source
+text after `| ` is unchanged. Optional `list_symbols` adds compact
+`name@column role` metadata below relevant source lines; references supports
+the same option for contextual output. A position may resolve to
 MULTIPLE definition sites (overloads, header-vs-source, re-exports) — that's
 reported as one block per site (each with the same `<defPath>:<sl>-<el>`
 header + body, blank-line-separated) plus a trailing

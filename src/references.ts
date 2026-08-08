@@ -16,7 +16,15 @@ import {
     validatePosition,
 } from "./nav-core";
 import { langForFile, renderLocation, toAbs, uriToPath } from "./render";
-import { referenceSyntaxContext, ReferenceContextMode, tsLangForFile } from "./tree-sitter-parse";
+import {
+    annotateNumberedSource,
+    parseSymbols,
+    referenceSyntaxContext,
+    ReferenceContextMode,
+    type SymbolEntry,
+    type TsLang,
+    tsLangForFile,
+} from "./tree-sitter-parse";
 
 export interface ReferencesParams {
     path: string;
@@ -28,6 +36,8 @@ export interface ReferencesParams {
     offset?: number;
     /** Maximum references returned. Defaults to 25; hard cap 200. */
     limit?: number;
+    /** Add compact name/column/role annotations below contextual source lines. */
+    list_symbols?: boolean;
 }
 
 const DEFAULT_REFERENCE_LIMIT = 25;
@@ -98,7 +108,46 @@ function validatePagination(params: ReferencesParams): { offset: number; limit: 
     if (params.context !== undefined && !["none", "syntax", "enclosing"].includes(params.context)) {
         throw new Error('context must be one of: "none", "syntax", "enclosing"');
     }
+    if (params.list_symbols && params.context === "none") {
+        throw new Error('list_symbols requires context "syntax" or "enclosing"');
+    }
     return { offset, limit };
+}
+
+/** Parse only source rows that survived contextual/skeleton rendering. */
+async function symbolsForRenderedSource(
+    lang: TsLang,
+    text: string,
+    numberedSource: string,
+): Promise<SymbolEntry[]> {
+    const rows = numberedSource
+        .split("\n")
+        .map((line) => /^(\d+) \| /.exec(line))
+        .filter((match): match is RegExpExecArray => match !== null)
+        .map((match) => Number(match[1]));
+    if (rows.length === 0) return [];
+    const unique = [...new Set(rows)].sort((a, b) => a - b);
+    const ranges: Array<{ start: number; end: number }> = [];
+    for (const row of unique) {
+        const last = ranges[ranges.length - 1];
+        if (last && row === last.end + 1) last.end = row;
+        else ranges.push({ start: row, end: row });
+    }
+    const discovered = (
+        await Promise.all(
+            ranges.map((range) =>
+                parseSymbols(lang, { text, startLine: range.start, endLine: range.end }),
+            ),
+        )
+    ).flatMap((entries) => entries ?? []);
+    // Match parseSymbols' stable first-occurrence dedup across sparse ranges.
+    const seen = new Set<string>();
+    return discovered.filter((entry) => {
+        const key = `${entry.name}|${entry.role}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
 }
 
 export async function references(
@@ -170,7 +219,20 @@ export async function references(
                     const metadata = ast.enclosing
                         ? `enclosing: ${ast.enclosing.name}  ${refPath}:${ast.enclosing.line}:${ast.enclosing.column}\n`
                         : "";
-                    return `${location}\n${metadata}kind: ${ast.kind}\n\n${ast.source}`;
+                    let renderedSource = ast.source;
+                    if (params.list_symbols) {
+                        try {
+                            const entries = await symbolsForRenderedSource(
+                                tsLang,
+                                sourceText,
+                                ast.source,
+                            );
+                            renderedSource = annotateNumberedSource(ast.source, sourceText, entries);
+                        } catch (e) {
+                            renderedSource += `\nsymbols: ERROR ${e}`;
+                        }
+                    }
+                    return `${location}\n${metadata}kind: ${ast.kind}\n\n${renderedSource}`;
                 } catch {
                     // A reference may point into a generated, deleted, or
                     // unsupported external file. Keep the semantically useful
