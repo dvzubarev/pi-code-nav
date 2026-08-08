@@ -11,12 +11,14 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <utility>
 
 // ─── Basic namespace with nested hierarchy ─────────────────────────────────
 
 namespace engine {
 namespace math {
 
+/// A three-dimensional vector used by the engine math library.
 struct Vec3 {
     float x, y, z;
 
@@ -93,7 +95,7 @@ bool AABB::intersects(const AABB& other) const {
 }
 
 float AABB::volume() const {
-    math::Vec3 size = max - min;
+    math::Vec3 size{max.x - min.x, max.y - min.y, max.z - min.z};
     return size.x * size.y * size.z;
 }
 
@@ -116,7 +118,9 @@ public:
 
     using CollisionCallback = std::function<void(RigidBody& other)>;
 
-    RigidBody(math::Vec3 position, Properties props = {})
+    RigidBody(math::Vec3 position)
+        : RigidBody(position, Properties{}) {}
+    RigidBody(math::Vec3 position, Properties props)
         : position_(position), properties_(props), state_(State::Dynamic) {}
 
     // Getters
@@ -173,7 +177,7 @@ AABB RigidBody::getBounds() const {
     // Simplified bounding box
     constexpr float halfSize = 0.5f;
     return AABB{
-        position_ - math::Vec3(halfSize, halfSize, halfSize),
+        position_ + math::Vec3(-halfSize, -halfSize, -halfSize),
         position_ + math::Vec3(halfSize, halfSize, halfSize)
     };
 }
@@ -207,11 +211,11 @@ public:
     const std::string& errorMessage() const { return errorMessage_; }
 
     template<typename F>
-    auto map(F&& func) -> Result<decltype(func(value_))> {
+    auto map(F&& func) -> Result<decltype(func(std::declval<T>()))> {
         if (hasValue_) {
-            return Result<decltype(func(value_))>::success(func(value_));
+            return Result<decltype(func(std::declval<T>()))>::success(func(value_));
         }
-        return Result<decltype(func(value_))>::error(errorMessage_);
+        return Result<decltype(func(std::declval<T>()))>::error(errorMessage_);
     }
 
 private:
@@ -390,6 +394,14 @@ std::string toString(const math::Vec3& vec) {
     return "(" + std::to_string(vec.x) + ", " +
                  std::to_string(vec.y) + ", " +
                  std::to_string(vec.z) + ")";
+}
+
+std::string toString(long value) {
+    return std::to_string(value);
+}
+
+std::string toString(double value) {
+    return std::to_string(value);
 }
 
 // Template function
@@ -599,3 +611,25 @@ void setLogLevel(LogLevel level) {
 }
 
 } // namespace config
+
+// Additional same-name symbols exercise namespace and kind filtering.
+namespace physics {
+
+inline math::Vec3 cross(const math::Vec3& a, const math::Vec3& b) {
+    return math::Vec3(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+
+RigidBody::State getState(const RigidBody& body) {
+    return body.getState();
+}
+
+} // namespace physics
+
+namespace scene {
+
+math::Vec3 getPosition(const GameObject& object) {
+    return object.getPosition();
+}
+
+} // namespace scene
+} // namespace engine

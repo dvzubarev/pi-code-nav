@@ -1,7 +1,7 @@
 // End-to-end C++ code_search_symbol scenarios through ccls.
 //
 // Tests various symbol search scenarios with complex C++ code featuring:
-// - Templates (Result<T>, IntrusiveList<T>, PoolAllocator<T>)
+// - Templates (Result<T>, IntrusiveList<T>, PoolAllocator<T, BlockSize>)
 // - Nested namespaces (engine::math, engine::physics, data, util)
 // - Overloaded functions (toString)
 // - Nested classes (RigidBody::State, RigidBody::Properties)
@@ -15,6 +15,7 @@
 // All tests share a single ccls instance to avoid re-parsing the fixture
 // and C++ stdlib for every test case.
 
+import assert from "node:assert/strict";
 import { describe, before, after, test } from "node:test";
 import { nav } from "./cpp-helpers.mjs";
 import { serverAvailable, SHOULD_RUN_E2E, withSharedWorkspace } from "./e2e-helpers.mjs";
@@ -42,15 +43,26 @@ register("code_search_symbol C++ scenarios", () => {
 
     // Helper: run a symbol search against the shared workspace.
     const search = (params) => nav.symbol(params, ws.root, ws.clientOf);
+    const countRows = (pattern, expected, message) => (response) => {
+        const actual = response.match(pattern)?.length ?? 0;
+        assert.equal(
+            actual,
+            expected,
+            `${message}: expected ${expected}, got ${actual}\n${response}`,
+        );
+    };
 
     // ─── Bare name searches ────────────────────────────────────────────────
 
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Vec3 cpp
-    test("code_search_symbol finds a struct by bare name", async () => {
+    test("code_search_symbol finds a struct by bare name with a complete row", async () => {
         const response = await search({ query: "Vec3", language: "cpp" });
-        matches(/\[cpp\].*Vec3/, "Vec3 struct not found")(response);
-        matches(/Struct/, "should be identified as a struct")(response);
+        countRows(/^\[cpp\] /gm, 3, "Vec3 should have three exact rows")(response);
+        matches(
+            /\[cpp\] Struct struct engine::math::Vec3 \{\}  .*symbol_search\.cpp:22:8$/m,
+            "Vec3 row should contain its kind, qualified name, path, line, and column",
+        )(response);
     });
 
     // Reproduce from the repository root:
@@ -64,6 +76,12 @@ register("code_search_symbol C++ scenarios", () => {
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp
     test("code_search_symbol finds overloaded functions by bare name", async () => {
         const response = await search({ query: "toString", language: "cpp" });
+        // All six exact overloads should appear, with no deduplication or fuzzy rows.
+        countRows(
+            /^\[cpp\] Function .*engine::util::toString\(/gm,
+            6,
+            "all overloads should remain",
+        )(response);
         // Multiple toString overloads should appear
         matches(
             /\[cpp\] Function std::string engine::util::toString\(int value\)/,
@@ -78,8 +96,16 @@ register("code_search_symbol C++ scenarios", () => {
             "bool overload missing",
         )(response);
         matches(
-            /\[cpp\] Function std::string engine::util::toString\(const math::Vec3 &vec\)/,
-            "Vec3 overload missing",
+            /\[cpp\] Function std::string engine::util::toString\(const math::Vec3 &vec\)  .*symbol_search\.cpp:393:13$/m,
+            "Vec3 overload should include its exact location",
+        )(response);
+        matches(
+            /\[cpp\] Function std::string engine::util::toString\(long value\)/,
+            "long overload missing",
+        )(response);
+        matches(
+            /\[cpp\] Function std::string engine::util::toString\(double value\)/,
+            "double overload missing",
         )(response);
     });
 
@@ -101,10 +127,13 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'engine::physics::RigidBody' cpp
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'physics::RigidBody' cpp
     test("code_search_symbol finds a class via partial namespace qualification", async () => {
-        const response = await search({ query: "engine::physics::RigidBody", language: "cpp" });
-        matches(/\[cpp\].*engine::physics::RigidBody/, "qualified RigidBody not found")(response);
+        const response = await search({ query: "physics::RigidBody", language: "cpp" });
+        matches(
+            /\[cpp\] Class class engine::physics::RigidBody \{\}  .*symbol_search\.cpp:104:7$/m,
+            "partial qualification should resolve the fully qualified class row",
+        )(response);
     });
 
     // Reproduce from the repository root:
@@ -138,10 +167,15 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol IntrusiveList cpp
-    test("code_search_symbol finds a template with non-type parameters", async () => {
-        const response = await search({ query: "IntrusiveList", language: "cpp" });
-        matches(/\[cpp\].*IntrusiveList/, "IntrusiveList template not found")(response);
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol PoolAllocator cpp --info code
+    test("code_search_symbol includes a template with non-type parameters", async () => {
+        const response = await search({
+            query: "PoolAllocator",
+            language: "cpp",
+            include: ["definition"],
+        });
+        matches(/PoolAllocator/, "PoolAllocator template not found")(response);
+        matches(/BlockSize/, "non-type template parameter should be rendered")(response);
     });
 
     // ─── Include parameter tests ───────────────────────────────────────────
@@ -154,6 +188,14 @@ register("code_search_symbol C++ scenarios", () => {
             language: "cpp",
             include: ["definition"],
         });
+        matches(
+            /^# 3 matches for "Vec3" — include: definition$/m,
+            "definition match count missing",
+        )(response);
+        matches(
+            /== \[\d+\] \[cpp\] Struct struct engine::math::Vec3 \{\}  .*symbol_search\.cpp:22:8 ==/m,
+            "struct row missing",
+        )(response);
         matches(/--- definition ---/, "definition section header missing")(response);
         matches(/struct Vec3 \{/, "struct definition body missing")(response);
         matches(/float x, y, z;/, "member declaration missing")(response);
@@ -167,8 +209,20 @@ register("code_search_symbol C++ scenarios", () => {
             language: "cpp",
             include: ["hover"],
         });
+        matches(
+            /^# 3 matches for "Vec3" — include: hover$/m,
+            "hover match count missing",
+        )(response);
         matches(/--- hover ---/, "hover section header missing")(response);
-        matches(/signature:/, "signature line missing")(response);
+        matches(/signature: struct engine::math::Vec3 \{\}/, "struct signature missing")(response);
+        matches(
+            /A three-dimensional vector used by the engine math library\./,
+            "struct documentation missing",
+        )(response);
+        matches(
+            /signature: engine::math::Vec3::Vec3\(float x, float y, float z\)/,
+            "constructor signature missing",
+        )(response);
     });
 
     // Reproduce from the repository root:
@@ -179,8 +233,16 @@ register("code_search_symbol C++ scenarios", () => {
             language: "cpp",
             include: ["references"],
         });
+        matches(
+            /^# 3 matches for "Vec3" — include: references$/m,
+            "reference match count missing",
+        )(response);
         matches(/--- references ---/, "references section header missing")(response);
-        matches(/# \d+ references/, "reference count missing")(response);
+        matches(
+            /# showing references 1-\d+ of [1-9]\d*/,
+            "non-empty reference page missing",
+        )(response);
+        matches(/symbol_search\.cpp:\d+:\d+/, "reference location missing")(response);
     });
 
     // Reproduce from the repository root:
@@ -191,25 +253,65 @@ register("code_search_symbol C++ scenarios", () => {
             language: "cpp",
             include: ["definition", "hover", "references"],
         });
+        matches(
+            /^# 3 matches for "Vec3" — include: definition, hover, references$/m,
+            "combined match count missing",
+        )(response);
         matches(/--- definition ---/, "definition section missing")(response);
+        matches(/struct Vec3 \{/, "combined definition body missing")(response);
         matches(/--- hover ---/, "hover section missing")(response);
+        matches(
+            /signature: struct engine::math::Vec3 \{\}/,
+            "combined hover signature missing",
+        )(response);
         matches(/--- references ---/, "references section missing")(response);
+        matches(
+            /# showing references 1-\d+ of [1-9]\d*/,
+            "combined references should be non-empty",
+        )(response);
     });
 
     // ─── list_symbols parameter tests ──────────────────────────────────────
 
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Vec3 cpp --info code --list-symbols
-    test("code_search_symbol with list_symbols adds metadata to definitions", async () => {
-        const response = await search({
+    test("code_search_symbol list_symbols controls definition metadata", async () => {
+        const withSymbols = await search({
             query: "Vec3",
             language: "cpp",
             include: ["definition"],
             list_symbols: true,
         });
-        matches(/--- definition ---/, "definition section missing")(response);
-        // list_symbols should add role metadata like "Vec3@1 type"
-        matches(/\w+@\d+ \w+/, "symbol role metadata missing")(response);
+        const withoutSymbols = await search({
+            query: "Vec3",
+            language: "cpp",
+            include: ["definition"],
+            list_symbols: false,
+        });
+        matches(/--- definition ---/, "definition section missing")(withSymbols);
+        matches(/symbols: Vec3@8 type/, "definition symbol metadata missing")(withSymbols);
+        notMatches(/symbols:/, "definition metadata should be absent by default")(withoutSymbols);
+    });
+
+    test("code_search_symbol list_symbols also annotates references", async () => {
+        const withSymbols = await search({
+            query: "Vec3",
+            language: "cpp",
+            include: ["references"],
+            list_symbols: true,
+        });
+        const withoutSymbols = await search({
+            query: "Vec3",
+            language: "cpp",
+            include: ["references"],
+            list_symbols: false,
+        });
+        matches(/--- references ---/, "references section missing")(withSymbols);
+        matches(
+            /symbols: Vec3@\d+ (?:call|type|var)/,
+            "reference symbol metadata missing",
+        )(withSymbols);
+        notMatches(/symbols:/, "reference metadata should be absent by default")(withoutSymbols);
     });
 
     // ─── kinds filter tests ────────────────────────────────────────────────
@@ -228,7 +330,10 @@ register("code_search_symbol C++ scenarios", () => {
             /^\(no symbols matching "RigidBody"\)$/,
             "the RigidBody class should be removed by the enum filter",
         )(response);
-        notMatches(/RigidBody::State/, "the filter should not return nested enum members")(response);
+        notMatches(
+            /RigidBody::State/,
+            "the filter should not return nested enum members",
+        )(response);
     });
 
     // Reproduce from the repository root:
@@ -238,9 +343,7 @@ register("code_search_symbol C++ scenarios", () => {
         const accepted = await search({ query: "State", language: "cpp", kinds: ["enum"] });
         const rejected = await search({ query: "State", language: "cpp", kinds: ["class"] });
         matches(/\[cpp\] Enum .*RigidBody::State/, "enum should pass the enum filter")(accepted);
-        matches(/^\(no symbols matching "State"\)$/, "enum should fail the class filter")(
-            rejected,
-        );
+        matches(/^\(no symbols matching "State"\)$/, "enum should fail the class filter")(rejected);
     });
 
     // Reproduce from the repository root:
@@ -265,49 +368,44 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --kind function
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --kind method
-    test("code_search_symbol function kinds filter accepts functions and rejects them as methods", async () => {
-        const accepted = await search({
-            query: "toString",
-            language: "cpp",
-            kinds: ["function"],
-        });
-        const rejected = await search({
-            query: "toString",
-            language: "cpp",
-            kinds: ["method"],
-        });
-        matches(/\[cpp\] Function .*toString\(int value\)/, "function should pass")(accepted);
-        matches(/^\(no symbols matching "toString"\)$/, "functions should fail the method filter")(
-            rejected,
-        );
-    });
-
-    // Reproduce from the repository root:
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp --kind method
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp --kind function
-    test("code_search_symbol method kinds filter accepts methods and rejects them as functions", async () => {
-        const accepted = await search({
-            query: "getState",
-            language: "cpp",
-            kinds: ["method"],
-        });
-        const rejected = await search({
-            query: "getState",
-            language: "cpp",
-            kinds: ["function"],
-        });
-        matches(/\[cpp\] Method .*RigidBody::getState\(\)/, "method should pass")(accepted);
-        matches(/^\(no symbols matching "getState"\)$/, "method should fail the function filter")(
-            rejected,
-        );
+    test("code_search_symbol kind filter rejects a real competing kind", async () => {
+        const unfiltered = await search({ query: "getState", language: "cpp" });
+        const methods = await search({ query: "getState", language: "cpp", kinds: ["method"] });
+        const functions = await search({ query: "getState", language: "cpp", kinds: ["function"] });
+
+        countRows(
+            /^\[cpp\] /gm,
+            2,
+            "unfiltered getState candidates should include both kinds",
+        )(unfiltered);
+        matches(
+            /\[cpp\] Method .*RigidBody::getState\(\)/,
+            "method should be in the unfiltered set",
+        )(unfiltered);
+        matches(
+            /\[cpp\] Function .*physics::getState\(/,
+            "function should be in the unfiltered set",
+        )(unfiltered);
+        matches(/\[cpp\] Method .*RigidBody::getState\(\)/, "method should pass")(methods);
+        notMatches(
+            /\[cpp\] Function .*physics::getState\(/,
+            "function should be filtered out",
+        )(methods);
+        matches(/\[cpp\] Function .*physics::getState\(/, "function should pass")(functions);
+        notMatches(
+            /\[cpp\] Method .*RigidBody::getState\(\)/,
+            "method should be filtered out",
+        )(functions);
     });
 
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --kind method
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp --kind function
     test("code_search_symbol method kinds filter works with another bare method", async () => {
+        const unfiltered = await search({ query: "getPosition", language: "cpp" });
         const accepted = await search({
             query: "getPosition",
             language: "cpp",
@@ -318,10 +416,20 @@ register("code_search_symbol C++ scenarios", () => {
             language: "cpp",
             kinds: ["function"],
         });
+        countRows(
+            /^\[cpp\] /gm,
+            3,
+            "unfiltered getPosition candidates should include both kinds",
+        )(unfiltered);
         matches(/\[cpp\] Method .*getPosition\(\)/, "method should pass")(accepted);
-        matches(
-            /^\(no symbols matching "getPosition"\)$/,
-            "method should fail the function filter",
+        notMatches(
+            /\[cpp\] Function .*scene::getPosition\(/,
+            "function should be filtered from methods",
+        )(accepted);
+        matches(/\[cpp\] Function .*scene::getPosition\(/, "function should pass")(rejected);
+        notMatches(
+            /\[cpp\] Method .*getPosition\(\)/,
+            "methods should be filtered from functions",
         )(rejected);
     });
 
@@ -336,9 +444,10 @@ register("code_search_symbol C++ scenarios", () => {
         });
         const rejected = await search({ query: "Debug", language: "cpp", kinds: ["enum"] });
         matches(/\[cpp\] EnumMember .*LogLevel::Debug/, "enum member should pass")(accepted);
-        matches(/^\(no symbols matching "Debug"\)$/, "enum member should fail the enum filter")(
-            rejected,
-        );
+        matches(
+            /^\(no symbols matching "Debug"\)$/,
+            "enum member should fail the enum filter",
+        )(rejected);
     });
 
     // ─── name_pattern filter tests ─────────────────────────────────────────
@@ -346,11 +455,17 @@ register("code_search_symbol C++ scenarios", () => {
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol toString cpp --regex 'toString\(int value\)'
     test("code_search_symbol name_pattern selects one C++ overload by full signature", async () => {
+        const unfiltered = await search({ query: "toString", language: "cpp" });
         const response = await search({
             query: "toString",
             language: "cpp",
             name_pattern: "toString\\(int value\\)",
         });
+        countRows(
+            /^\[cpp\] Function .*engine::util::toString\(/gm,
+            6,
+            "pattern should start with six overload candidates",
+        )(unfiltered);
         matches(/\[cpp\] Function .*toString\(int value\)/, "int overload should remain")(response);
         notMatches(/toString\(float value\)/, "float overload should be filtered out")(response);
         notMatches(/toString\(bool value\)/, "bool overload should be filtered out")(response);
@@ -365,9 +480,10 @@ register("code_search_symbol C++ scenarios", () => {
             language: "cpp",
             name_pattern: "RigidBody::RigidBody",
         });
-        matches(/\[cpp\] Constructor .*RigidBody::RigidBody\(/, "constructor should remain")(
-            response,
-        );
+        matches(
+            /\[cpp\] Constructor .*RigidBody::RigidBody\(/,
+            "constructor should remain",
+        )(response);
         notMatches(/\[cpp\] Class class .*RigidBody/, "class should be filtered out")(response);
     });
 
@@ -429,6 +545,61 @@ register("code_search_symbol C++ scenarios", () => {
         );
     });
 
+    // Include fan-out behavior: exact overloads fan out up to five, then a
+    // filter narrows the candidates before fan-out. A fuzzy query is useful in
+    // list mode but must not fan out as if it were an exact symbol.
+    test("code_search_symbol caps fan-out and narrows before retrieving details", async () => {
+        const capped = await search({
+            query: "toString",
+            language: "cpp",
+            include: ["hover"],
+        });
+        const narrowed = await search({
+            query: "toString",
+            language: "cpp",
+            include: ["hover"],
+            name_pattern: "toString\\(int value\\)",
+        });
+
+        matches(
+            /# 6 exact matches — narrow with kinds \/ name_pattern \/ a qualified name/,
+            "fan-out cap note missing",
+        )(capped);
+        notMatches(/--- hover ---/, "over-cap search should not retrieve hover sections")(capped);
+        matches(
+            /# 1 match for "toString" — include: hover/,
+            "narrowed fan-out count missing",
+        )(narrowed);
+        matches(
+            /signature: std::string engine::util::toString\(int value\)/,
+            "narrowed overload hover missing",
+        )(narrowed);
+        notMatches(
+            /toString\(float value\)/,
+            "narrowing should remove sibling overloads",
+        )(narrowed);
+    });
+
+    test("code_search_symbol drops fuzzy tails in include mode", async () => {
+        const list = await search({ query: "getPos", language: "cpp" });
+        const detailed = await search({ query: "getPos", language: "cpp", include: ["hover"] });
+
+        countRows(/^\[cpp\] /gm, 3, "fuzzy list should expose all getPosition candidates")(list);
+        countRows(
+            /^\[cpp\] Method .*getPosition\(/gm,
+            2,
+            "fuzzy list should expose both methods",
+        )(list);
+        matches(
+            /\[cpp\] Function .*scene::getPosition\(/,
+            "fuzzy list should expose the free function",
+        )(list);
+        matches(
+            /^\(no symbols matching "getPos"\)$/,
+            "fuzzy candidates must not fan out",
+        )(detailed);
+    });
+
     // ─── Language detection tests ──────────────────────────────────────────
 
     // Reproduce from the repository root:
@@ -458,14 +629,25 @@ register("code_search_symbol C++ scenarios", () => {
     });
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol 'engine::math::cross' cpp
-    test("code_search_symbol distinguishes between similarly named functions in namespaces", async () => {
-        const response = await search({ query: "engine::math::cross", language: "cpp" });
-        matches(/\[cpp\].*engine::math::cross/, "cross product function not found")(response);
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol cross cpp
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol cross cpp --regex 'engine::math::cross'
+    test("code_search_symbol name_pattern narrows similarly named functions by namespace", async () => {
+        const unfiltered = await search({ query: "cross", language: "cpp" });
+        const filtered = await search({
+            query: "cross",
+            language: "cpp",
+            name_pattern: "engine::math::cross",
+        });
+        matches(/engine::math::cross/, "math cross should be a candidate")(unfiltered);
+        matches(/engine::physics::cross/, "physics cross should be a candidate")(unfiltered);
+        matches(
+            /\[cpp\] Function .*engine::math::cross\(.*\)  .*symbol_search\.cpp:\d+:\d+/,
+            "filtered cross row should be complete",
+        )(filtered);
         notMatches(
-            /\[cpp\].*dot/,
-            "dot function should not appear when searching for cross",
-        )(response);
+            /engine::physics::cross/,
+            "the namespace filter should reject physics cross",
+        )(filtered);
     });
 
     // ─── Operator overload searches ────────────────────────────────────────
@@ -496,10 +678,22 @@ register("code_search_symbol C++ scenarios", () => {
     // ─── Edge case: Multiple kinds of same name ────────────────────────────
 
     // Reproduce from the repository root:
-    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol State cpp
-    test("code_search_symbol finds symbols with common names across scopes", async () => {
-        const response = await search({ query: "State", language: "cpp" });
-        matches(/\[cpp\].*State/, "State should be found")(response);
+    //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getPosition cpp
+    test("code_search_symbol finds a common method name across scopes", async () => {
+        const response = await search({ query: "getPosition", language: "cpp" });
+        countRows(/^\[cpp\] /gm, 3, "all common-name candidates should remain")(response);
+        matches(
+            /\[cpp\] Method .*engine::physics::RigidBody::getPosition\(\) const  .*symbol_search\.cpp:\d+:\d+/,
+            "RigidBody getPosition missing",
+        )(response);
+        matches(
+            /\[cpp\] Method .*engine::scene::GameObject::getPosition\(\) const  .*symbol_search\.cpp:\d+:\d+/,
+            "GameObject getPosition missing",
+        )(response);
+        matches(
+            /\[cpp\] Function .*engine::scene::getPosition\(.*\)  .*symbol_search\.cpp:\d+:\d+/,
+            "free getPosition missing",
+        )(response);
     });
 
     // ─── Edge case: Template specialization names ──────────────────────────
@@ -512,7 +706,10 @@ register("code_search_symbol C++ scenarios", () => {
             language: "cpp",
             include: ["definition"],
         });
-        matches(/^# 1 match for "data::Result<void>"/m, "expected one exact specialization")(response);
+        matches(
+            /^# 1 match for "data::Result<void>"/m,
+            "expected one exact specialization",
+        )(response);
         matches(
             /\[cpp\] Class template<> class engine::data::Result<void>/,
             "Result<void> specialization should be selected",
@@ -528,14 +725,20 @@ register("code_search_symbol C++ scenarios", () => {
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol getState cpp --kind method --regex 'get.*'
     test("code_search_symbol combines kinds and name_pattern filters", async () => {
+        const unfiltered = await search({ query: "getState", language: "cpp" });
         const response = await search({
             query: "getState",
             language: "cpp",
             kinds: ["method"],
             name_pattern: "get.*",
         });
-        matches(/\[cpp\] Method.*get/, "getter methods should be present")(response);
-        notMatches(/\[cpp\] Method.*set/, "setter methods should be filtered")(response);
+        countRows(
+            /^\[cpp\] /gm,
+            2,
+            "combined filter should start with both exact candidates",
+        )(unfiltered);
+        matches(/\[cpp\] Method.*getState/, "getter method should be present")(response);
+        notMatches(/\[cpp\] Function.*getState/, "function should be filtered by kinds")(response);
         notMatches(/\[cpp\] Class/, "class should be filtered by kinds")(response);
     });
 
