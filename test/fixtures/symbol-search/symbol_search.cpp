@@ -633,3 +633,17 @@ math::Vec3 getPosition(const GameObject& object) {
 
 } // namespace scene
 } // namespace engine
+
+class SearchCommentClass
+// comments before the symbol-search fixture class body
+/* block comment before the symbol-search fixture class body */
+{
+public:
+    int run()
+    /// comments before the symbol-search fixture method body
+    /* block comment before the symbol-search fixture method body */
+    {
+        // comment before the first symbol-search fixture statement
+        return 33;
+    }
+};

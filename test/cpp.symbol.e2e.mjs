@@ -191,6 +191,88 @@ registerBlackjack("code_search_symbol C++ blackjack scenarios", () => {
 
 // Reproduce from the repository root:
 //   tmp=$(mktemp -d); cp test/fixtures/functor.cpp "$tmp/"; CODE_NAV_ROOT="$tmp" node scripts/nav-cli.mjs symbol MyAddFunctor cpp --kind struct; rm -rf "$tmp"
+cppScenario(
+    "code_search_symbol include=definition keeps comments before C++ class and method bodies",
+    {
+        given: {
+            files: {
+                "symbol-comments.cpp": `
+                class SymbolCommentClass
+                // comments before the symbol-search class body
+                /* block comment before the symbol-search class body */
+                {
+                public:
+                    int run()
+                    /// comments before the symbol-search method body
+                    /* block comment before the symbol-search method body */
+                    {
+                        // comment before the first symbol-search statement
+                        return 22;
+                    }
+                };
+                int main() { return 0; }
+            `,
+                "build/compile_commands.json": compileCommands("symbol-comments.cpp"),
+            },
+        },
+        when: async ({ root, clientOf }) => ({
+            classBody: await nav.symbol(
+                { query: "SymbolCommentClass", language: "cpp", include: ["definition"] },
+                root,
+                clientOf,
+            ),
+            methodBody: await nav.symbol(
+                { query: "SymbolCommentClass::run", language: "cpp", include: ["definition"] },
+                root,
+                clientOf,
+            ),
+        }),
+        then: [
+            ({ classBody, methodBody }) => {
+                matches(
+                    /^# 1 match for "SymbolCommentClass" — include: definition$/m,
+                    "class match header is wrong",
+                )(classBody);
+                matches(/symbol-comments\.cpp:1-13/m, "class body range is wrong")(classBody);
+                matches(
+                    /^2 \| \/\/ comments before the symbol-search class body$/m,
+                    "class line comment missing",
+                )(classBody);
+                matches(
+                    /^3 \| \/\* block comment before the symbol-search class body \*\/$/m,
+                    "class block comment missing",
+                )(classBody);
+                matches(
+                    /^7 \|     \/\/\/ comments before the symbol-search method body$/m,
+                    "method line comment missing",
+                )(classBody);
+                matches(/^11 \|         return 22;$/m, "class body method missing")(classBody);
+                notMatches(/main\(\)/, "class definition leaked the following function")(classBody);
+
+                matches(
+                    /^# 1 match for "SymbolCommentClass::run" — include: definition$/m,
+                    "method match header is wrong",
+                )(methodBody);
+                matches(/symbol-comments\.cpp:6-12/m, "method body range is wrong")(methodBody);
+                matches(
+                    /^7 \|     \/\/\/ comments before the symbol-search method body$/m,
+                    "method line comment missing",
+                )(methodBody);
+                matches(
+                    /^8 \|     \/\* block comment before the symbol-search method body \*\/$/m,
+                    "method block comment missing",
+                )(methodBody);
+                matches(
+                    /^10 \|         \/\/ comment before the first symbol-search statement$/m,
+                    "method body comment missing",
+                )(methodBody);
+                matches(/^11 \|         return 22;$/m, "method body statement missing")(methodBody);
+                notMatches(/class body|main\(\)/, "method definition leaked surrounding source")(methodBody);
+            },
+        ],
+    },
+);
+
 cppScenario("code_search_symbol applies the public kinds filter to C++ classes and constructors", {
     given: { fixtures: ["functor.cpp"] },
     when: ({ root, clientOf }) =>

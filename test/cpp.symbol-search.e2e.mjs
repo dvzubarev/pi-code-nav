@@ -201,6 +201,65 @@ register("code_search_symbol C++ scenarios", () => {
         matches(/float x, y, z;/, "member declaration missing")(response);
     });
 
+    test("code_search_symbol include=definition keeps comments before C++ class and method bodies", async () => {
+        const classBody = await search({
+            query: "SearchCommentClass",
+            language: "cpp",
+            include: ["definition"],
+        });
+        const methodBody = await search({
+            query: "SearchCommentClass::run",
+            language: "cpp",
+            include: ["definition"],
+        });
+
+        matches(
+            /^# 1 match for "SearchCommentClass" — include: definition$/m,
+            "class match header is wrong",
+        )(classBody);
+        matches(/symbol_search\.cpp:637-649/m, "class body range is wrong")(classBody);
+        matches(
+            /^638 \| \/\/ comments before the symbol-search fixture class body$/m,
+            "class line comment missing",
+        )(classBody);
+        matches(
+            /^639 \| \/\* block comment before the symbol-search fixture class body \*\/$/m,
+            "class block comment missing",
+        )(classBody);
+        matches(
+            /^643 \|     \/\/\/ comments before the symbol-search fixture method body$/m,
+            "method line comment missing",
+        )(classBody);
+        matches(/^647 \|         return 33;$/m, "class body method missing")(classBody);
+        notMatches(
+            /namespace (?:physics|scene)/,
+            "class definition leaked preceding namespaces",
+        )(classBody);
+
+        matches(
+            /^# 1 match for "SearchCommentClass::run" — include: definition$/m,
+            "method match header is wrong",
+        )(methodBody);
+        matches(/symbol_search\.cpp:642-648/m, "method body range is wrong")(methodBody);
+        matches(
+            /^643 \|     \/\/\/ comments before the symbol-search fixture method body$/m,
+            "method line comment missing",
+        )(methodBody);
+        matches(
+            /^644 \|     \/\* block comment before the symbol-search fixture method body \*\/$/m,
+            "method block comment missing",
+        )(methodBody);
+        matches(
+            /^646 \|         \/\/ comment before the first symbol-search fixture statement$/m,
+            "method body comment missing",
+        )(methodBody);
+        matches(/^647 \|         return 33;$/m, "method body statement missing")(methodBody);
+        notMatches(
+            /class body|namespace (?:physics|scene)/,
+            "method definition leaked surrounding source",
+        )(methodBody);
+    });
+
     // Reproduce from the repository root:
     //   CODE_NAV_ROOT=test/fixtures/symbol-search node scripts/nav-cli.mjs symbol Vec3 cpp --info hover
     test("code_search_symbol with include=hover returns signature and docs", async () => {
