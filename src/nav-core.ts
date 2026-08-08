@@ -43,10 +43,9 @@ export const ALL_LANGS = ["cpp", "python", "bash", "typescript"] as const satisf
  * queries issued before indexing finishes return stale/incomplete results
  * — e.g. `code_outline` on a freshly-opened .cpp shows only the namespace
  * with `{0:0}` ranges, `textDocument/definition` bounces to the declaration,
- * `documentSymbol` returns placeholder ranges. The wait is best-effort
- * (try/catch around `waitForIndexingComplete`): a wedged server must not
- * block the query — the caller still gets whatever (possibly stale) result
- * the server can produce, which is strictly better than hanging.
+ * `documentSymbol` returns placeholder ranges. The wait has a bounded
+ * deadline; timeout is surfaced instead of returning a plausible but stale
+ * result.
  *
  * Idempotent: `openDocument` dedupes by URI, and `waitForIndexingComplete`
  * is a no-op once ccls's `indexState === "ended"` (warm cache). So on a warm
@@ -65,13 +64,7 @@ export async function awaitReadyForQuery(
     text: string,
 ): Promise<void> {
     await client.openDocument(abs, text);
-    if (lang === "cpp") {
-        try {
-            await client.waitForIndexingComplete();
-        } catch {
-            // Best-effort: a wedged server shouldn't block the query.
-        }
-    }
+    if (lang === "cpp") await client.waitForIndexingComplete();
 }
 
 // ---------------------------------------------------------------------------

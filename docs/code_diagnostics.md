@@ -52,17 +52,18 @@ index and the tool surfaced the misleading pull error:
 cpp: textDocument/diagnostic request failed: unknown request textDocument/diagnostic
 ```
 
-The new flow is event-driven on both signals ccls already emits:
+The new flow waits on ccls's authoritative pipeline state and then on the diagnostic notification:
 
-1. **Indexing done** — ccls reports whole-project indexing via the LSP
-   work-done-progress protocol: it sends a `window/workDoneProgress/create`
-   SERVER request to register its "index" token, then `$/progress`
-   `begin`/`report`/`end` notifications on that token. `LspClient.start()`
-   advertises `window.workDoneProgress` and answers the create request so
-   ccls emits the progress. `waitForIndexingComplete()` blocks until "end"
-   (cold cache) or a short no-begin timeout (warm cache / tiny project).
-   `code_diagnostics` calls this FIRST for cpp, so the subsequent push wait
-   isn't racing the indexer.
+1. **Indexing done** — `waitForIndexingComplete()` polls ccls's `$ccls/info`
+   request, whose `pipeline.completed` and `pipeline.enqueued` counters expose
+   the actual indexing queue. It requires two stable idle samples so the final
+   queued database update reaches ccls's query database. This is deliberately
+   not based solely on `$/progress`: ccls emits no `begin`/`end` pair when a
+   batch contains only one translation unit, even if that TU spends seconds
+   parsing the C++ standard library. Warm caches return after a 25ms
+   confirmation; cold projects wait exactly until all queued work completes.
+   `code_diagnostics` does this first for cpp, so the subsequent push wait is
+   not racing the indexer.
 2. **Push diagnostics** — `LspClient.waitForPushedDiagnostics(uri)` registers
    a per-URI resolver in `diagnosticWaiters` and resolves it from
    the `textDocument/publishDiagnostics` handler the moment a set arrives

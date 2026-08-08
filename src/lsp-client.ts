@@ -405,25 +405,15 @@ export class LspClient {
      */
     private diagnosticWaiters = new Map<string, Set<(diags: Diagnostic[] | undefined) => void>>();
     /**
-     * ccls project-wide indexing progress, tracked via the LSP work-done-
-     * progress protocol. ccls parses ALL translation units from
-     * compile_commands.json on initialize (cold cache) and reports progress
-     * through $/progress notifications on a token it registers up-front via
-     * a window/workDoneProgress/create SERVER request. We advertise
-     * window.workDoneProgress in initialize and answer that create request
-     * (see start()) so ccls emits begin/report/end on the "index" token.
-     * waitForIndexingComplete() blocks until "end" arrives — on a warm cache
-     * ccls loads indexes from disk and never sends "begin", so a short
-     * no-begin timeout lets us proceed. ensureProjectLoaded() uses this so
-     * code_search_symbol sees symbols from ALL TUs, not just an opened file.
-     * Only ccls emits this; other servers index eagerly on initialize
-     * (pyright/ty/bash) or per-file (tsserver), and we ignore progress on any
-     * token other than "index". State machine: idle (no begin yet) →
-     * in_progress (begin seen) → ended (end seen).
+     * ccls project-wide indexing state. $/progress is observed but is not an
+     * authoritative completion signal: ccls emits no begin/end pair when a
+     * batch contains only one translation unit, and an old end can race with
+     * newly opened work. Readiness is established only by polling `$ccls/info`
+     * until its pipeline has
+     * been stably idle (completed === enqueued) twice; see
+     * waitForIndexingComplete().
      */
     private indexState: "idle" | "in_progress" | "ended" = "idle";
-    private indexBeginResolvers: Array<() => void> = [];
-    private indexEndResolvers: Array<() => void> = [];
 
     constructor(lang: Lang, rootPath: string, cfg: ServerConfig, logDir?: string) {
         this.lang = lang;
@@ -666,10 +656,11 @@ export class LspClient {
         // ccls reports project-wide indexing via the LSP work-done-progress
         // protocol. It registers the "index" token through a SERVER-initiated
         // window/workDoneProgress/create REQUEST (has both id and method) and
-        // then pushes $/progress notifications (begin/report/end) on that
-        // token. We must (a) answer the create request (return null) so ccls
-        // proceeds to emit $/progress, and (b) feed $/progress into
-        // handleIndexProgress so waitForIndexingComplete can gate on "end".
+        // then may push $/progress notifications (begin/report/end) on that
+        // token. We answer the create request and retain those notifications
+        // for observability, but do not treat "end" as authoritative: one-TU
+        // batches emit no pair, and it can race with newly opened work.
+        // waitForIndexingComplete uses `$ccls/info` pipeline counters.
         // Registered BEFORE initialize (like publishDiagnostics) so the create
         // request ccls sends ~1s after initialize is never dropped. String
         // method names per the landmine #2 rule. Only ccls uses this; other
@@ -768,11 +759,9 @@ export class LspClient {
                     symbol: {},
                 },
                 // Opt into the work-done-progress protocol so ccls reports
-                // project-wide indexing via $/progress (see handleIndexProgress
-                // / waitForIndexingComplete). Without this, ccls still sends the
-                // window/workDoneProgress/create request but does not emit
-                // begin/report/end, leaving us no deterministic "indexing done"
-                // signal. Other servers ignore this capability.
+                // project-wide indexing via $/progress when the batch is large
+                // enough (see handleIndexProgress / waitForIndexingComplete).
+                // Other servers ignore this capability.
                 window: {
                     workDoneProgress: true,
                 },
@@ -867,6 +856,10 @@ export class LspClient {
                 textDocument: { uri, version },
                 contentChanges: [{ text }],
             });
+            // ccls may enqueue fresh indexing work for the changed document.
+            // Invalidate readiness after the write so an older progress "end"
+            // racing with didChange cannot make the new work look complete.
+            if (this.lang === "cpp") this.indexState = "idle";
             this.openDocs.set(uri, { version, text });
             return;
         }
@@ -888,6 +881,11 @@ export class LspClient {
         await notifyWithTimeout(this.conn!, "textDocument/didOpen", {
             textDocument: doc,
         });
+        // didOpen can enqueue a TU even after the initial project batch ended.
+        // Force the next readiness check through `$ccls/info`; unchanged
+        // documents remain cheap because the early return above preserves the
+        // established "ended" state.
+        if (this.lang === "cpp") this.indexState = "idle";
         this.openDocs.set(uri, { version, text });
     }
 
@@ -908,11 +906,10 @@ export class LspClient {
      *     then. didOpen alone suffices (project load is triggered on open).
      *   - ccls populates its `workspace/symbol` index by parsing ALL the
      *     translation units listed in compile_commands.json. On a COLD cache
-     *     this takes several seconds (ccls reports it via $/progress — see
-     *     waitForIndexingComplete); until it finishes, workspace/symbol sees
-     *     symbols from only a subset of TUs. On a WARM cache ccls loads indexes
-     *     from disk near-instantly and no $/progress "begin" is ever sent, so
-     *     waitForIndexingComplete returns after a short no-begin timeout.
+     *     this takes several seconds; until it finishes, workspace/symbol sees
+     *     symbols from only a subset of TUs. waitForIndexingComplete polls
+     *     ccls's own pipeline counters, so warm caches return immediately and
+     *     cold caches wait for all queued work regardless of project size.
      * pyright/ty/bash index eagerly on `initialize` and need no warm-up.
      *
      * Implementation: if no document has been opened yet, find one source file
@@ -924,29 +921,30 @@ export class LspClient {
      */
     async ensureProjectLoaded(): Promise<boolean> {
         await this.ensureReady();
-        if (this.openDocs.size > 0) return true; // a doc is open → project loaded
         if (this.lang !== "typescript" && this.lang !== "cpp") return true;
-        const file = await findFirstSourceFile(this.rootUri, this.lang);
-        if (!file) return false;
-        try {
-            const text = await readFile(file, "utf8");
-            await this.openDocument(file, text);
-            // ccls dispatches the initial index at `initialize`, independent of
-            // didOpen — the $/progress "begin" typically arrives ~1.4s after
-            // initialize. Wait for the whole-project index to finish (or for
-            // the short no-begin timeout on a warm cache) before the caller's
-            // workspace/symbol runs, so symbols from ALL TUs are findable.
-            if (this.lang === "cpp") await this.waitForIndexingComplete();
-            return true;
-        } catch {
-            return false;
+        if (this.openDocs.size === 0) {
+            try {
+                const file = await findFirstSourceFile(this.rootUri, this.lang);
+                if (!file) return false;
+                const text = await readFile(file, "utf8");
+                await this.openDocument(file, text);
+            } catch {
+                return false;
+            }
         }
+        // Opening a document is not evidence that ccls's background index is
+        // complete. This must run even when another tool already opened a file;
+        // after readiness is established it is immediate for the session.
+        // Index timeout/protocol errors propagate rather than masquerading as
+        // an empty symbol result.
+        if (this.lang === "cpp") await this.waitForIndexingComplete();
+        return true;
     }
 
     /**
      * Drive the ccls indexing state machine from a $/progress notification
-     * on the "index" token. begin → in_progress (resolve anyone waiting for a
-     * begin); end → ended (resolve anyone waiting for end). report is ignored.
+     * on the "index" token. begin → in_progress; end → idle (completion still
+     * requires `$ccls/info`). report is ignored.
      * Notifications on any other token are ignored (only ccls's "index" token
      * is meaningful to us). Safe to call for any language — only ccls emits
      * this, and the token gate makes it inert otherwise.
@@ -959,119 +957,75 @@ export class LspClient {
         const kind = params?.value?.kind;
         if (kind === "begin") {
             this.indexState = "in_progress";
-            const rs = this.indexBeginResolvers;
-            this.indexBeginResolvers = [];
-            for (const r of rs) r();
         } else if (kind === "end") {
-            this.indexState = "ended";
-            const rs = this.indexEndResolvers;
-            this.indexEndResolvers = [];
-            for (const r of rs) r();
+            // Do not mark this authoritative: didOpen/didChange may already be
+            // in flight with work that was not part of this progress batch.
+            this.indexState = "idle";
         }
         // "report" carries a percentage but we don't render it — ignore.
     }
 
     /**
-     * Block until ccls's project-wide indexing is known to be done, with two
-     * bounded outcomes:
-     *   - COLD cache: a $/progress "begin" arrives (we're mid-index) → await
-     *     the "end" notification, up to `endMs` (default 60s — generous; the
-     *     DiskANN project cold-indexes in ~15s, and the bound only guards
-     *     against a wedged server).
-     *   - WARM cache / tiny project: no "begin" is ever sent (ccls loads
-     *     indexes from disk, completes within one mainloop tick, never enters
-     *     the in_progress branch) → return after `noBeginMs` (default 3s —
-     *     long enough to catch a cold "begin" that arrives ~1.4s after
-     *     initialize, short enough not to stall every warm first-search).
-     * Idempotent and cheap to call repeatedly: once "ended" is seen it returns
-     * immediately. Also returns immediately if begin+end both arrive during
-     * the no-begin wait. No-op for non-ccls callers (only ensureProjectLoaded's
-     * cpp branch invokes this).
+     * Block until ccls's indexing pipeline is stably idle.
+     *
+     * `$ccls/info` exposes the server's authoritative `completed` and
+     * `enqueued` counters. This is more reliable than work-done progress:
+     * ccls only sends a begin notification after one task completes while
+     * another remains, so a single expensive TU produces no begin/end pair.
+     *
+     * Two equal samples are required because an indexer increments completed
+     * just after queueing its final database update. The short gap gives the
+     * ccls main loop a chance to apply that update before a query is issued.
+     * Warm caches and tiny projects therefore cost only one 25ms confirmation,
+     * while cold projects wait exactly as long as their indexing takes.
      */
-    async waitForIndexingComplete(noBeginMs = 3000, endMs = 60000): Promise<void> {
-        // Env-var overrides for test environments where ccls indexes tiny
-        // fixtures instantly. Follows CODE_NAV_REQUEST_TIMEOUT_MS pattern.
-        const resolvedNoBegin = process.env.CODE_NAV_INDEX_WAIT_MS
-            ? parseInt(process.env.CODE_NAV_INDEX_WAIT_MS, 10)
-            : noBeginMs;
+    async waitForIndexingComplete(endMs = 60000): Promise<void> {
         const resolvedEndMs = process.env.CODE_NAV_INDEX_END_TIMEOUT_MS
             ? parseInt(process.env.CODE_NAV_INDEX_END_TIMEOUT_MS, 10)
             : endMs;
         if (this.indexState === "ended") return;
-        if (this.indexState === "in_progress") {
-            await this.awaitIndexEnd(resolvedEndMs);
-            return;
-        }
-        // idle — no "begin" seen yet. Wait briefly for one; a cold "begin"
-        // arrives ~1.4s after initialize, so noBeginMs=3s catches it.
-        let began = false;
-        await this.raceWithCleanup(
-            (resolve) => {
-                this.indexBeginResolvers.push(() => {
-                    began = true;
-                    resolve();
-                });
-            },
-            resolvedNoBegin,
-        );
-        // begin+end may have both landed during the wait. Cast to the union so
-        // TS doesn't narrow this.indexState to "idle" (it can't see the
-        // $/progress handler mutating it across the await).
-        const state = this.indexState as "idle" | "in_progress" | "ended";
-        if (state === "ended") return;
-        if (began || state === "in_progress") {
-            await this.awaitIndexEnd(resolvedEndMs);
-        }
-        // else: still idle — no "begin" came within noBeginMs (warm cache or
-        // tiny project). Proceed without waiting.
-    }
+        const conn = this.conn;
+        if (!conn) throw new Error("LSP server is not connected");
 
-    /**
-     * Resolve when the "end" notification lands, or after `endMs`.
-     * Uses raceWithCleanup so the timer is cancelled on early resolution;
-     * otherwise the 60s endMs timer keeps the event loop alive.
-     */
-    private awaitIndexEnd(endMs: number): Promise<void> {
-        if (this.indexState === "ended") return Promise.resolve();
-        return this.raceWithCleanup(
-            (resolve) => this.indexEndResolvers.push(resolve),
-            endMs,
-        );
-    }
-
-    /**
-     * Race signal registrations against a timeout. Each signal registration
-     * is a `(resolve: () => void) => void` that registers a callback with
-     * some external event source. The last argument is the timeout in ms.
-     * When any signal fires, the timer is cancelled so the event loop
-     * doesn't stay alive for the full timeout.
-     */
-    private raceWithCleanup(
-        ...entries: Array<((resolve: () => void) => void) | number>
-    ): Promise<void> {
-        const timeoutMs = entries.pop() as number;
-        return new Promise<void>((finalResolve) => {
-            let settled = false;
-            const timer = setTimeout(() => {
-                settled = true;
-                finalResolve();
-            }, timeoutMs);
-            for (const reg of entries as Array<(resolve: () => void) => void>) {
-                reg(() => {
-                    if (settled) return;
-                    settled = true;
-                    clearTimeout(timer);
-                    finalResolve();
-                });
+        const deadline = Date.now() + resolvedEndMs;
+        let idleEnqueued: number | undefined;
+        while (Date.now() < deadline) {
+            const remaining = Math.max(1, deadline - Date.now());
+            const raw = (await requestWithTimeout(
+                conn,
+                "$ccls/info",
+                undefined,
+                Math.min(resolveRequestTimeoutMs(), remaining),
+            )) as {
+                pipeline?: { completed?: number; enqueued?: number };
+            };
+            const completed = raw?.pipeline?.completed;
+            const enqueued = raw?.pipeline?.enqueued;
+            if (typeof completed !== "number" || typeof enqueued !== "number") {
+                throw new Error("ccls returned invalid $ccls/info pipeline statistics");
             }
-        });
+
+            if (completed === enqueued) {
+                if (idleEnqueued === enqueued) {
+                    this.indexState = "ended";
+                    return;
+                }
+                idleEnqueued = enqueued;
+            } else {
+                this.indexState = "in_progress";
+                idleEnqueued = undefined;
+            }
+
+            await new Promise<void>((resolve) =>
+                setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))),
+            );
+        }
+        throw new Error(`ccls indexing timed out after ${resolvedEndMs}ms`);
     }
 
     /** Drop any progress-tracking state (used on shutdown/exit/spawn-fail). */
     private resetIndexingState(): void {
         this.indexState = "idle";
-        this.indexBeginResolvers = [];
-        this.indexEndResolvers = [];
     }
 
     /**

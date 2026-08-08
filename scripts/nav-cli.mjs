@@ -58,7 +58,7 @@ const jiti = createJiti(EXT_DIR, { cache: false, interopDefault: true });
 const { LspClient, resolveConfig } = await jiti.import("./src/lsp-client.ts");
 const nav = await jiti.import("./src/nav.ts");
 
-const ROOT = process.env.CODE_NAV_ROOT ?? process.cwd();
+const ROOT = resolve(process.env.CODE_NAV_ROOT ?? process.cwd());
 const [cmd, ...rest] = process.argv.slice(2);
 
 function usage() {
