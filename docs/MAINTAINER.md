@@ -59,7 +59,7 @@
   dependency; takes a `ClientProvider` (`(lang) => LspClient`) instead of
   `ServerPool`. `index.ts` and `scripts/nav-cli.mjs` call the same exported
   implementations via `src/nav.ts`; `scan` is exercised only by the CLI/tests
-  and the definition/reference `list_symbols=true` paths, not registered as an agent tool.
+  and the definition/reference `list_symbols=[...]` paths, not registered as an agent tool.
 - `src/tree-sitter-parse.ts` — `parseSymbols()` parses a line range with WASM
   tree-sitter and returns every symbol occurrence. No pi or LSP dependency.
   See `code_scan.md`.

@@ -157,7 +157,13 @@ test("references rejects list_symbols with location-only context", async () => {
     const { references } = await load("./src/nav.ts");
     await assert.rejects(
         references(
-            { path: "sample.ts", line: 1, column: 1, context: "none", list_symbols: true },
+            {
+                path: "sample.ts",
+                line: 1,
+                column: 1,
+                context: "none",
+                list_symbols: ["call"],
+            },
             process.cwd(),
             async () => {
                 throw new Error("server should not be reached");

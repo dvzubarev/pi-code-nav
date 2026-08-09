@@ -33,11 +33,11 @@ Use `offset` and `limit` to paginate. `code_search_symbol(include=["references"]
 uses the same contextual format.
 
 `code_definition`, `code_references`, and `code_search_symbol` also accept an
-optional `list_symbols` boolean (default `false`). For symbol search it applies
-to included definitions and references. When true, compact line-local metadata
-includes every `type|call|member|import|var` occurrence, so each source line has
-identifier coordinates ready for `code_hover`/`code_definition`/
-`code_references`.
+optional `list_symbols` role list. Available roles are `type`, `call`, `member`,
+`import`, and `var`; symbol search applies the selection to included definitions
+and references. Matching occurrences become compact line-local metadata, so
+each source line has identifier coordinates ready for `code_hover`/
+`code_definition`/`code_references`. Omit the parameter for no metadata.
 
 All tool inputs and outputs use **1-based** positions. Discovery results print
 the identifier position—not merely the enclosing range—so a printed
@@ -105,13 +105,13 @@ Use `include` to expand up to five exact matches in the same call:
 code_search_symbol(query="cbor2.loads", include=["definition", "hover"])
 code_search_symbol(query="vector::push_back", kinds=["method"],
                    name_pattern="int", include=["definition", "references"],
-                   list_symbols=true)
+                   list_symbols=["type", "call", "member"])
 ```
 
 ### Internal `code_scan` implementation
 
 `src/scan.ts` remains available to the CLI/tests, and its tree-sitter parser is
-also used by `code_definition(list_symbols=true)`. It is not currently
+also used by `code_definition(list_symbols=["type", "call"])`. It is not currently
 registered as an agent tool. It can bridge from a source range to third-party
 identifiers by parsing a snippet's syntax (no LSP
 index needed) and returns each identifier with a reusable 1-based position.
@@ -375,4 +375,4 @@ End-to-end smoke-tested against **ty** (auto-detected default) and **pyright**:
 - absolute 1-position math round-trips into `code_hover`/`code_definition` ✓
 - third-party discovery: `code_scan` → `code_definition` jumps into
   nix-store `site-packages` (e.g. `cbor2._decoder.py`) — `code_search_symbol` cannot ✓
-- `code_definition {list_symbols: true}` appends the table to the body ✓
+- `code_definition {list_symbols: ["type", "call"]}` appends selected metadata to the body ✓

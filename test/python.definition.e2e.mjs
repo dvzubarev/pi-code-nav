@@ -65,7 +65,12 @@ pythonScenario("code_definition renders numbered source with line-local symbols"
     given: { fixtures: ["defs.py"] },
     when: ({ root, clientOf }) =>
         nav.definition(
-            { path: "defs.py", line: 43, column: 9, list_symbols: true },
+            {
+                path: "defs.py",
+                line: 43,
+                column: 9,
+                list_symbols: ["call"],
+            },
             root,
             clientOf,
         ),
@@ -73,6 +78,7 @@ pythonScenario("code_definition renders numbered source with line-local symbols"
         matches(/^43 \|     def config\(self\):$/m),
         matches(/^44 \|         return make_config\(\)$/m),
         matches(/^   \| symbols: make_config@16 call$/m),
+        notMatches(/self@\d+ var/, "unrequested vars should not be rendered"),
         notMatches(/Symbols in /, "detached symbol table should not be rendered"),
     ],
 });

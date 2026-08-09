@@ -42,7 +42,10 @@ typescriptScenario("code_search_symbol waits for a cold TypeScript project to lo
             /\[typescript\] Class InvoiceLedger  .*billing[\\/]invoice\.ts:\d+:\d+/,
             "symbol from an unopened project file missing",
         ),
-        notMatches(/api[\\/]checkout\.ts/, "an import binding was returned instead of the declaration"),
+        notMatches(
+            /api[\\/]checkout\.ts/,
+            "an import binding was returned instead of the declaration",
+        ),
     ],
 });
 
@@ -80,7 +83,7 @@ typescriptScenario("code_search_symbol includes definition, hover, and reference
                 query: "calculateInvoiceTotal",
                 language: "typescript",
                 include: ["definition", "hover", "references"],
-                list_symbols: true,
+                list_symbols: ["type", "call", "member", "import", "var"],
             },
             root,
             clientOf,
@@ -158,7 +161,7 @@ typescriptScenario("code_search_symbol combines kinds, name_pattern, and include
                 kinds: ["method"],
                 name_pattern: "^SERIALIZE$",
                 include: ["definition"],
-                list_symbols: true,
+                list_symbols: ["type", "call", "member", "import", "var"],
             },
             root,
             clientOf,

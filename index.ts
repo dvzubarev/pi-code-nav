@@ -41,6 +41,8 @@ import { LspClient, resolveConfig, type Lang, type ServerConfig } from "./src/ls
 import * as nav from "./src/nav";
 import { ALL_LANGS } from "./src/nav";
 
+const SYMBOL_ROLES = ["type", "call", "member", "import", "var"] as const;
+
 /** File extension → language (re-exported from src/render.ts for status reporting). */
 // EXT_LANG and langForFile now live in src/render.ts; index.ts imports them.
 
@@ -201,9 +203,11 @@ function registerTools(pi: ExtensionAPI, state: State): void {
                 description: "1-based column number of the symbol",
             }),
             list_symbols: Type.Optional(
-                Type.Boolean({
+                Type.Array(StringEnum(SYMBOL_ROLES), {
+                    minItems: 1,
+                    uniqueItems: true,
                     description:
-                        "If true, add every `type|call|member|import|var` occurrence as compact `name@column role` metadata below its source line (default: false). Source text is not modified.",
+                        "Roles to add as compact `name@column role` metadata below each source line. Omit for no metadata. Source text is not modified.",
                 }),
             ),
         }),
@@ -259,9 +263,11 @@ function registerTools(pi: ExtensionAPI, state: State): void {
                 }),
             ),
             list_symbols: Type.Optional(
-                Type.Boolean({
+                Type.Array(StringEnum(SYMBOL_ROLES), {
+                    minItems: 1,
+                    uniqueItems: true,
                     description:
-                        "If true, add every `type|call|member|import|var` occurrence as compact `name@column role` metadata below its contextual source line (default: false). Not valid with context='none'.",
+                        "Roles to add as compact `name@column role` metadata below contextual source lines. Omit for no metadata. Not valid with context='none'.",
                 }),
             ),
         }),
@@ -305,9 +311,11 @@ function registerTools(pi: ExtensionAPI, state: State): void {
                 ),
             ),
             list_symbols: Type.Optional(
-                Type.Boolean({
+                Type.Array(StringEnum(SYMBOL_ROLES), {
+                    minItems: 1,
+                    uniqueItems: true,
                     description:
-                        "If true, add every `type|call|member|import|var` occurrence as line-local metadata in included definitions and references for follow-up navigation calls.",
+                        "Roles to add as line-local metadata in included definitions and references for follow-up navigation calls. Omit for no metadata.",
                 }),
             ),
             kinds: Type.Optional(
@@ -591,7 +599,7 @@ directly to a position-based tool.
 DISCOVERY TOOLS (produce positions):
 - code_search_symbol — search workspace and indexed third-party symbols by bare
   or qualified name; use include to retrieve details in the same call;
-  list_symbols adds chainable identifier positions to definitions/references
+  list_symbols selects roles for chainable positions in definitions/references
 - code_outline — show a file's classes/functions/methods with signatures,
   documentation summaries, identifier positions, and body ranges
 
@@ -607,7 +615,7 @@ FILE-ANALYSIS TOOL:
 
 code_search_symbol examples:
   code_search_symbol(query="parse", include=["definition","references"],
-                     list_symbols=true)
+                     list_symbols=["type", "call"])
   code_search_symbol(query="cbor2.loads", include=["definition","hover"])
   code_search_symbol(query="vector::push_back", kinds=["method"],
                      name_pattern="int", include=["definition"])

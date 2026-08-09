@@ -17,12 +17,12 @@ import {
 } from "./nav-core";
 import { langForFile, renderLocation, toAbs, uriToPath } from "./render";
 import {
-    ALL_SYMBOL_ROLES,
     annotateNumberedSource,
     parseSymbols,
     referenceSyntaxContext,
     ReferenceContextMode,
     type SymbolEntry,
+    type SymbolRole,
     type TsLang,
     tsLangForFile,
 } from "./tree-sitter-parse";
@@ -37,8 +37,8 @@ export interface ReferencesParams {
     offset?: number;
     /** Maximum references returned. Defaults to 25; hard cap 200. */
     limit?: number;
-    /** Add compact name/column/role annotations below contextual source lines. */
-    list_symbols?: boolean;
+    /** Add compact annotations for the selected roles below contextual source lines. */
+    list_symbols?: SymbolRole[];
 }
 
 const DEFAULT_REFERENCE_LIMIT = 25;
@@ -119,7 +119,7 @@ function validatePagination(params: ReferencesParams): { offset: number; limit: 
     if (params.context !== undefined && !["none", "syntax", "enclosing"].includes(params.context)) {
         throw new Error('context must be one of: "none", "syntax", "enclosing"');
     }
-    if (params.list_symbols && params.context === "none") {
+    if (params.list_symbols?.length && params.context === "none") {
         throw new Error('list_symbols requires context "syntax" or "enclosing"');
     }
     return { offset, limit };
@@ -130,6 +130,7 @@ async function symbolsForRenderedSource(
     lang: TsLang,
     text: string,
     numberedSource: string,
+    symbolRoles: SymbolRole[],
 ): Promise<SymbolEntry[]> {
     const rows = numberedSource
         .split("\n")
@@ -151,7 +152,7 @@ async function symbolsForRenderedSource(
                     text,
                     startLine: range.start,
                     endLine: range.end,
-                    roles: ALL_SYMBOL_ROLES,
+                    roles: symbolRoles,
                 }),
             ),
         )
@@ -229,12 +230,13 @@ export async function references(
                         ? `enclosing: ${ast.enclosing.name}  ${refPath}:${ast.enclosing.line}:${ast.enclosing.column}\n`
                         : "";
                     let renderedSource = ast.source;
-                    if (params.list_symbols) {
+                    if (params.list_symbols?.length) {
                         try {
                             const entries = await symbolsForRenderedSource(
                                 tsLang,
                                 sourceText,
                                 ast.source,
+                                params.list_symbols,
                             );
                             renderedSource = annotateNumberedSource(
                                 ast.source,

@@ -571,7 +571,7 @@ test("include fan-out: single match with [definition, hover] retains both reques
                 query: "foo",
                 language: "typescript",
                 include: ["definition", "hover"],
-                list_symbols: true,
+                list_symbols: ["type", "call", "member", "import", "var"],
             },
             dir,
             mockClientOfRich(dir, { cannedSyms: canned, docSymsByPath, hoverTextByPath }),
@@ -714,7 +714,7 @@ test("info fan-out: references capped at 25 with a (N of M, use code_references)
     }
 });
 
-test("include fan-out forwards list_symbols to references", async () => {
+test("include fan-out forwards selected list_symbols roles to references", async () => {
     const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-ref-symbols-"));
     try {
@@ -748,17 +748,14 @@ test("include fan-out forwards list_symbols to references", async () => {
                 query: "foo",
                 language: "typescript",
                 include: ["references"],
-                list_symbols: true,
+                list_symbols: ["call"],
             },
             dir,
             mockClientOfRich(dir, { cannedSyms: canned, docSymsByPath, refsByPath }),
         );
         assert.match(out, /--- references ---/);
-        assert.match(
-            out,
-            /symbols: y@7 var, foo@11 call/,
-            `reference symbol metadata missing:\n${out}`,
-        );
+        assert.match(out, /symbols: foo@11 call/, `reference symbol metadata missing:\n${out}`);
+        assert.doesNotMatch(out, /y@7 var/, `unrequested var metadata should be absent:\n${out}`);
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }

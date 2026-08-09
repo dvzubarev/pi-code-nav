@@ -147,10 +147,11 @@ the tool on bash polish.
 
 ## Definition/reference integration — `list_symbols`
 
-`code_definition` and `code_references` expose optional `list_symbols?: boolean`
-(default `false`). They run the same `parseSymbols` over rendered source with
-all roles enabled and place compact `name@column role` metadata directly below
-each relevant numbered source line. Every occurrence is retained, so each line
+`code_definition` and `code_references` expose optional
+`list_symbols?: SymbolRole[]`. When present, they run the same `parseSymbols`
+over rendered source with only the selected roles and place compact
+`name@column role` metadata directly below each relevant numbered source line.
+Every matching occurrence is retained, so each line
 is independently navigable. Source remains unchanged, while its gutter line
 plus `@column` forms a reusable code_* position.
 

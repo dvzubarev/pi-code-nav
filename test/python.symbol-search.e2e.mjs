@@ -52,7 +52,7 @@ pythonScenario("code_search_symbol includes all detail sections and symbol metad
                 query: "calculate_invoice",
                 language: "python",
                 include: ["definition", "hover", "references"],
-                list_symbols: true,
+                list_symbols: ["type", "call", "member", "import", "var"],
             },
             root,
             clientOf,

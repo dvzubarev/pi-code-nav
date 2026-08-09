@@ -8,7 +8,12 @@ pythonScenario("code_references adds Python roles, source, and enclosing symbols
     when: async ({ root, clientOf }) => ({
         direct: await nav.references({ path: "second.py", line: 10, column: 7 }, root, clientOf),
         annotated: await nav.references(
-            { path: "second.py", line: 10, column: 7, list_symbols: true },
+            {
+                path: "second.py",
+                line: 10,
+                column: 7,
+                list_symbols: ["type", "call", "member", "import", "var"],
+            },
             root,
             clientOf,
         ),

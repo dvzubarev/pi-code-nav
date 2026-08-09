@@ -77,7 +77,7 @@ bashScenario("code_search_symbol includes Bash definition, hover, and references
                 query: "deploy_release",
                 language: "bash",
                 include: ["definition", "hover", "references"],
-                list_symbols: true,
+                list_symbols: ["type", "call", "member", "import", "var"],
             },
             root,
             clientOf,

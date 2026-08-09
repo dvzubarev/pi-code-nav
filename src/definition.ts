@@ -4,7 +4,7 @@
  *
  *   <defPath>:<sl>-<el>
  *   <line> | <source code>
- *          | symbols: <name>@<column> <role>, ...  (when list_symbols=true)
+ *          | symbols: <name>@<column> <role>, ...  (when list_symbols selects the role)
  *
  * A position may resolve to MULTIPLE definition sites (overloads,
  * multi-definition symbols, header-vs-source in C++, re-exports); the tool
@@ -35,11 +35,11 @@ import {
     uriToPath,
 } from "./render";
 import {
-    ALL_SYMBOL_ROLES,
     findEnclosingDefWithDoc,
     parseSymbols,
     renderNumberedSource,
     type SymbolEntry,
+    type SymbolRole,
     tsLangForFile,
 } from "./tree-sitter-parse";
 
@@ -47,7 +47,7 @@ export interface DefinitionParams {
     path: string;
     line: number; // 1-based
     column: number; // 1-based
-    list_symbols?: boolean;
+    list_symbols?: SymbolRole[];
 }
 
 export async function definition(
@@ -123,7 +123,7 @@ export async function definition(
                 // Cursor is on a body-bearing symbol in this file → it IS the
                 // definition. Render it directly; skip textDocument/definition
                 // (which would bounce to the declaration for ccls).
-                return renderSnippetBlock(client, abs, sl, el, text, params.list_symbols ?? false);
+                return renderSnippetBlock(client, abs, sl, el, text, params.list_symbols);
             }
             // Declaration (no body): remember it for the empty-locs fallback.
             declInInput = { sl, el };
@@ -152,7 +152,7 @@ export async function definition(
                 declInInput.sl,
                 declInInput.el,
                 text,
-                params.list_symbols ?? false,
+                params.list_symbols,
                 { line: params.line, column: params.column },
             );
         }
@@ -196,7 +196,7 @@ export async function definition(
                 declInInput.sl,
                 declInInput.el,
                 text,
-                params.list_symbols ?? false,
+                params.list_symbols,
                 { line: params.line, column: params.column },
             );
         }
@@ -214,7 +214,7 @@ export async function definition(
     // and can pick the one it meant.
     const blocks: string[] = [];
     for (const loc of locs) {
-        const block = await renderDefinitionBlock(client, loc, params.list_symbols ?? false);
+        const block = await renderDefinitionBlock(client, loc, params.list_symbols);
         blocks.push(block);
     }
     // Single site: no separator, no count — byte-identical to the old contract.
@@ -228,7 +228,7 @@ export async function definition(
 
 /**
  * Render a definition snippet as a range header followed by numbered source.
- * With list_symbols, compact navigation metadata is inserted below each
+ * With selected list_symbols roles, compact navigation metadata is inserted below each
  * source line; the source itself remains unchanged.
  *
  * Shared by the documentSymbol fast path (step 0, which already has the
@@ -257,7 +257,7 @@ async function renderSnippetBlock(
     sl: number,
     el: number,
     src: string,
-    listSymbols: boolean,
+    symbolRoles: SymbolRole[] | undefined,
     docAnchor?: { line: number; column: number }, // 1-based, inside the declaration
 ): Promise<string> {
     const srcLines = src.split(/\r?\n/);
@@ -298,7 +298,7 @@ async function renderSnippetBlock(
     let entries: SymbolEntry[] = [];
     // Optional tree-sitter symbol discovery over the snippet. The entries are
     // rendered beside their source line rather than in a detached table.
-    if (listSymbols) {
+    if (symbolRoles?.length) {
         const tsLang = tsLangForFile(defPath);
         if (tsLang) {
             try {
@@ -307,7 +307,7 @@ async function renderSnippetBlock(
                         text: src,
                         startLine: renderSl + 1,
                         endLine: el + 1,
-                        roles: ALL_SYMBOL_ROLES,
+                        roles: symbolRoles,
                     })) ?? [];
             } catch (e) {
                 throw new Error(
@@ -336,7 +336,7 @@ async function renderSnippetBlock(
 async function renderDefinitionBlock(
     client: LspClient,
     loc: Location,
-    listSymbols: boolean,
+    symbolRoles: SymbolRole[] | undefined,
 ): Promise<string> {
     const defPath = uriToPath(loc.uri);
     let src: string;
@@ -364,7 +364,7 @@ async function renderDefinitionBlock(
         body.startLine,
         body.endLine,
         src,
-        listSymbols,
+        symbolRoles,
         // Anchor the doc-comment lookup at the definition's identifier
         // position (1-based) so tree-sitter walks up from the right token.
         { line: body.startLine + 1, column: (loc.range?.start?.character ?? 0) + 1 },

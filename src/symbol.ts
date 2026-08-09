@@ -18,14 +18,15 @@ import { definition } from "./definition";
 import { hover } from "./hover";
 import { references } from "./references";
 import { renderSymbolInfo, resolveSymbolSelStart, symbolKindFromName, uriToPath } from "./render";
+import type { SymbolRole } from "./tree-sitter-parse";
 
 export interface SymbolParams {
     query: string;
     language?: string;
     /** Public agent interface: details to retrieve for each exact match. */
     include?: ("definition" | "hover" | "references")[];
-    /** Add line-local symbol metadata to included definitions and references. */
-    list_symbols?: boolean;
+    /** Add line-local metadata for selected roles to included definitions and references. */
+    list_symbols?: SymbolRole[];
     /** Public agent interface: LSP symbol kinds to retain. */
     kinds?: string[];
     /** Public agent interface: case-insensitive regexp over rendered names. */
@@ -888,7 +889,7 @@ export async function symbol(
                 params.query,
                 cwd,
                 clientOf,
-                params.list_symbols ?? false,
+                params.list_symbols,
                 publicInclude,
             );
         }
@@ -958,7 +959,7 @@ async function renderSymbolFanOut(
     query: string,
     cwd: string,
     clientOf: ClientProvider,
-    listSymbols: boolean,
+    symbolRoles: SymbolRole[] | undefined,
     publicInclude?: ("definition" | "hover" | "references")[],
 ): Promise<string> {
     const n = matches.length;
@@ -984,9 +985,9 @@ async function renderSymbolFanOut(
         if (wantCode) {
             // Without symbol metadata, render declaration-only kinds directly:
             // their source declaration is all the definition can add. With
-            // listSymbols, use the normal definition path below so identifiers
+            // selected symbol roles, use the normal definition path below so identifiers
             // in the declaration receive reusable positions.
-            if (isDeclarationOnlyKind(sym.kind ?? 0) && !listSymbols) {
+            if (isDeclarationOnlyKind(sym.kind ?? 0) && !symbolRoles?.length) {
                 // For declaration-only kinds, show the verbatim source line
                 // from the file (not ccls's fully-qualified `name`, which
                 // differs from what the user wrote — e.g. ccls renders
@@ -1014,7 +1015,7 @@ async function renderSymbolFanOut(
                           codeBudget,
                           cwd,
                           clientOf,
-                          listSymbols,
+                          symbolRoles,
                       )
                     : `(no position to resolve definition)`;
                 const heading = publicInclude ? "definition" : "code";
@@ -1029,7 +1030,7 @@ async function renderSymbolFanOut(
         }
         if (wantRefs) {
             const section = start
-                ? await renderFanOutRefsSection(path, line1, col1, cwd, clientOf, listSymbols)
+                ? await renderFanOutRefsSection(path, line1, col1, cwd, clientOf, symbolRoles)
                 : `(no position)`;
             matchBlocks.push(`--- references ---\n${section}`);
         }
@@ -1075,11 +1076,11 @@ async function renderFanOutCodeSection(
     budget: number,
     cwd: string,
     clientOf: ClientProvider,
-    listSymbols: boolean,
+    symbolRoles: SymbolRole[] | undefined,
 ): Promise<string> {
     try {
         const out = await definition(
-            { path, line, column, list_symbols: listSymbols },
+            { path, line, column, list_symbols: symbolRoles },
             cwd,
             clientOf,
         );
@@ -1130,7 +1131,7 @@ async function renderFanOutRefsSection(
     column: number,
     cwd: string,
     clientOf: ClientProvider,
-    listSymbols: boolean,
+    symbolRoles: SymbolRole[] | undefined,
 ): Promise<string> {
     try {
         const out = await references(
@@ -1141,7 +1142,7 @@ async function renderFanOutRefsSection(
                 context: "syntax",
                 offset: 1,
                 limit: SYMBOL_FANOUT_REFS_CAP,
-                list_symbols: listSymbols,
+                list_symbols: symbolRoles,
             },
             cwd,
             clientOf,

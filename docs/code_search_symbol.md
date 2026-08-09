@@ -217,8 +217,9 @@ would inflate the match count past the cap. Only exact matches fan out.
   standalone tool. See `code_references.md`. A compatibility note directs the
   agent to `code_references` when more results remain.
 
-When `list_symbols: true`, included definitions and references both add compact
-line-local `name@column role` metadata for every occurrence, including `var`.
+When `list_symbols` contains one or more roles, included definitions and
+references add line-local `name@column role` metadata for every occurrence of
+those roles. Available roles are `type`, `call`, `member`, `import`, and `var`.
 Each rendered line is independently navigable through follow-up tools. The
 option has no effect on hover sections or plain row-list results.
 

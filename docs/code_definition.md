@@ -11,14 +11,14 @@ src/build.cpp:43-45
 45 | }
 ```
 
-The gutter is metadata; source text after `| ` retains its original formatting. `list_symbols: true` adds compact line-local navigation metadata without modifying source:
+The gutter is metadata; source text after `| ` retains its original formatting. `list_symbols: ["call"]` adds compact line-local navigation metadata for the selected roles without modifying source:
 
 ```text
 44 |     return run(config);
    | symbols: run@12 call
 ```
 
-Each `@column` is 1-based and combines with the path and source-line number for direct use with `code_hover`, `code_definition`, or `code_references`. All `type|call|member|import|var` roles are included, and every occurrence is retained so each source line is independently navigable. Multiple definition sites are blank-line-separated and followed by a count.
+Each `@column` is 1-based and combines with the path and source-line number for direct use with `code_hover`, `code_definition`, or `code_references`. Available roles are `type|call|member|import|var`; every occurrence of each selected role is retained so each source line is independently navigable. Omit `list_symbols` for no metadata. Multiple definition sites are blank-line-separated and followed by a count.
 
 ## ccls bounce + cold-cache race
 

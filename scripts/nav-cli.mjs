@@ -160,13 +160,14 @@ async function main() {
         // numbered source body of one symbol (no batching). --list-symbols is
         // optional and adds compact metadata below relevant source lines.
         const listSymbols = rest.includes("--list-symbols");
+        const symbolRoles = ["type", "call", "member", "import", "var"];
         const positional = rest.filter((a) => a !== "--list-symbols");
         if (positional.length !== 3) usage();
         const params = {
             path: positional[0],
             line: parseInt(positional[1], 10),
             column: parseInt(positional[2], 10),
-            list_symbols: listSymbols,
+            list_symbols: listSymbols ? symbolRoles : undefined,
         };
         console.log(await nav.definition(params, ROOT, clientOf));
     } else if (cmd === "rename") {

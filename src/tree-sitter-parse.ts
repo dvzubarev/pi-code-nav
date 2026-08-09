@@ -402,8 +402,6 @@ function classifyRole(node: TSNode, lang: TsLang): SymbolRole | null {
  * primary entry points for third-party discovery (the whole reason this tool
  * exists). Callers wanting locals pass `roles` including `var`.
  */
-export const ALL_SYMBOL_ROLES: readonly SymbolRole[] = ["type", "call", "member", "import", "var"];
-
 export const DEFAULT_SYMBOL_ROLES: readonly SymbolRole[] = ["type", "call", "member", "import"];
 
 // ---------------------------------------------------------------------------

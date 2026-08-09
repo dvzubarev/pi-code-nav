@@ -339,13 +339,12 @@ register("code_search_symbol C++ scenarios", () => {
             query: "Vec3",
             language: "cpp",
             include: ["definition"],
-            list_symbols: true,
+            list_symbols: ["type", "call", "member", "import", "var"],
         });
         const withoutSymbols = await search({
             query: "Vec3",
             language: "cpp",
             include: ["definition"],
-            list_symbols: false,
         });
         matches(/--- definition ---/, "definition section missing")(withSymbols);
         matches(/symbols: Vec3@8 type/, "definition symbol metadata missing")(withSymbols);
@@ -357,13 +356,12 @@ register("code_search_symbol C++ scenarios", () => {
             query: "Vec3",
             language: "cpp",
             include: ["references"],
-            list_symbols: true,
+            list_symbols: ["type", "call", "member", "import", "var"],
         });
         const withoutSymbols = await search({
             query: "Vec3",
             language: "cpp",
             include: ["references"],
-            list_symbols: false,
         });
         matches(/--- references ---/, "references section missing")(withSymbols);
         matches(
