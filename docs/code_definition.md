@@ -1,5 +1,11 @@
 # code_definition
 
+## Input position
+
+Supply `path` and a 1-based `line`, plus exactly one of `column` or `symbol`.
+`symbol` selects its first exact identifier occurrence on that line; `column`
+remains available for precise or ambiguous positions.
+
 ## Output
 
 Each definition site starts with `<path>:<startLine>-<endLine>`, followed by source lines in the shared absolute-line-number format:
@@ -11,14 +17,14 @@ src/build.cpp:43-45
 45 | }
 ```
 
-The gutter is metadata; source text after `| ` retains its original formatting. `list_symbols: ["call"]` adds compact line-local navigation metadata for the selected roles without modifying source:
+The gutter is metadata; source text after `| ` retains its original formatting. Usually chain from this source with the detail tools' `symbol` selector. The advanced `list_symbols: ["call"]` option adds exact-column role annotations when roles or repeated same-named occurrences must be distinguished:
 
 ```text
 44 |     return run(config);
    | symbols: run@12 call
 ```
 
-Each `@column` is 1-based and combines with the path and source-line number for direct use with `code_hover`, `code_definition`, or `code_references`. Available roles are `type|call|member|import|var`; every occurrence of each selected role is retained so each source line is independently navigable. Omit `list_symbols` for no metadata. Multiple definition sites are blank-line-separated and followed by a count.
+Each `@column` is 1-based. Available roles are `type|call|member|import|var`; every occurrence of each selected role is retained. Usually omit `list_symbols` to keep output compact. Multiple definition sites are blank-line-separated and followed by a count.
 
 ## ccls bounce + cold-cache race
 

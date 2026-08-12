@@ -10,7 +10,7 @@
  *                            members (one array, many call sites — adding a
  *                            language can't silently miss one).
  *   - `UnknownLanguageError` — hard failure for single-file tools.
- *   - `validatePosition` — runtime validation for CLI and direct nav callers.
+ *   - position-selector validation/resolution for detail tools called directly.
  *   - `awaitReadyForQuery` — openDocument + project-readiness wait before a
  *                            per-file LSP query, deduplicated across tools.
  *
@@ -62,15 +62,68 @@ export async function awaitReadyForQuery(
 // Input validation
 // ---------------------------------------------------------------------------
 
+/** A detail-tool target is either a precise 1-based column or the first exact
+ * occurrence of a symbol on the supplied line. */
+export type PositionSelector =
+    | { column: number; symbol?: never }
+    | { column?: never; symbol: string };
+
 /** Validate an agent-facing 1-based symbol position. Tool schemas enforce this
  * too; runtime validation protects the CLI and tests that call nav.* directly. */
-export function validatePosition(line: number, column: number): void {
+export function validateLine(line: number): void {
     if (!Number.isInteger(line) || line < 1) {
         throw new Error(`line (${line}) must be a positive integer`);
     }
+}
+
+export function validatePosition(line: number, column: number): void {
+    validateLine(line);
     if (!Number.isInteger(column) || column < 1) {
         throw new Error(`column (${column}) must be a positive integer`);
     }
+}
+
+/** Resolve a mutually-exclusive column/symbol selector to a 1-based UTF-16
+ * column. JavaScript string offsets are UTF-16, matching LSP coordinates. */
+export function resolvePositionColumn(
+    params: { line: number; column?: number; symbol?: string },
+    text: string,
+): number {
+    validateLine(params.line);
+    const hasColumn = params.column !== undefined;
+    const hasSymbol = params.symbol !== undefined;
+    if (hasColumn === hasSymbol) {
+        throw new Error("exactly one of column or symbol must be provided");
+    }
+    if (hasColumn) {
+        validatePosition(params.line, params.column!);
+        return params.column!;
+    }
+
+    const symbol = params.symbol!;
+    if (symbol.length === 0) throw new Error("symbol must not be empty");
+    const lines = text.split(/\r?\n/);
+    const lineText = lines[params.line - 1];
+    if (lineText === undefined) {
+        throw new Error(`line (${params.line}) is outside the file (${lines.length} lines)`);
+    }
+
+    // Require identifier boundaries when the corresponding edge of `symbol`
+    // is identifier-like, so `parse` does not silently select `parseResult`.
+    const identifierChar = /[\p{ID_Continue}$]/u;
+    let from = 0;
+    while (from <= lineText.length - symbol.length) {
+        const index = lineText.indexOf(symbol, from);
+        if (index < 0) break;
+        const before = index > 0 ? lineText[index - 1] : "";
+        const after = lineText[index + symbol.length] ?? "";
+        const leftOk = !identifierChar.test(symbol[0]) || !identifierChar.test(before);
+        const rightOk =
+            !identifierChar.test(symbol[symbol.length - 1]) || !identifierChar.test(after);
+        if (leftOk && rightOk) return index + 1;
+        from = index + 1;
+    }
+    throw new Error(`symbol ${JSON.stringify(symbol)} not found on line ${params.line}`);
 }
 
 // ---------------------------------------------------------------------------

@@ -50,18 +50,18 @@ every session). Do not move it into `registerTools()` — the handler must be
 registered at load so it's present before the first turn after `/code-nav`.
 
 # API impl
-## Scalar `(path, line, column)` input — no `positions` array
+## Scalar position input — no `positions` array
 
-`code_definition`, `code_hover`, and `code_references` each take a **scalar**
-`(path, line, column)` — one symbol per call. There is NO `positions` array
-form (the earlier batching design was dropped: one body/result per call
-keeps the output clean and the schema simple — no XOR validation between a
-scalar triple and an array). (The logic lives in `nav.ts`; both `index.ts`
-and `scripts/nav-cli.mjs` call it.)
+`code_definition`, `code_hover`, and `code_references` each take one `path` and
+1-based `line`, plus exactly one of `column` or `symbol`. `column` is the precise
+form; `symbol` selects its first exact identifier occurrence on that source
+line and is resolved to a UTF-16 LSP column before the query. There is NO
+`positions` array: one body/result per call keeps output and schemas compact.
+Runtime validation mirrors the schema for CLI/tests that call `nav.*` directly.
 
-`code_outline`, `code_search_symbol`, and `code_rename` are inherently
-single-symbol-per-call and also take scalar params (rename is destructive;
-outline/symbol are already list-shaped).
+`code_rename` deliberately remains column-only because an accidental first
+same-named occurrence is consequential. `code_outline` and
+`code_search_symbol` are already list-shaped.
 
 ## Error handling
 
@@ -83,9 +83,8 @@ found" is a HARD failure there (no source code to return).
 
 ### Per-tool output contracts (scalar input — one symbol per call)
 
-`hover`, `definition`, and `references` each take a **single** `(file line
-col)` triple — one symbol per call (no batching; see `DESIGN.md` "Scalar
-input"). `definition` returns the source body of the symbol: a header line
+`hover`, `definition`, and `references` each take a **single** file/line target
+with exactly one of column or symbol — one symbol per call (no batching). `definition` returns the source body of the symbol: a header line
 `<defPath>:<sl>-<el>` (1-based inclusive line range of the body), then source
 lines prefixed by their absolute line-number gutter (no code fence). The source
 text after `| ` is unchanged. Optional `list_symbols` adds compact

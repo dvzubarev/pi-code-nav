@@ -11,7 +11,7 @@
  *                         with signatures, body line ranges, and doc snippets
  *   code_search_symbol  — ranked workspace-wide symbol lookup by name
  *
- *   POSITION-BASED TOOLS (consume path + 1-based line + column):
+ *   POSITION-BASED TOOLS (consume path + line + column, or line + symbol):
  *   code_definition     — location + full source body of a symbol's definition
  *   code_references     — list of references for a symbol
  *   code_hover          — hover/documentation for a symbol
@@ -42,6 +42,22 @@ import * as nav from "./src/nav";
 import { ALL_LANGS } from "./src/nav";
 
 const SYMBOL_ROLES = ["type", "call", "member", "import", "var"] as const;
+
+/** Detail tools accept exactly one position selector. `Never` on the opposite
+ * property keeps the XOR valid even when JSON Schema allows extra properties. */
+const POSITION_SELECTOR_SCHEMA = Type.Union([
+    Type.Object({
+        column: Type.Integer({ minimum: 1, description: "1-based column number of the symbol" }),
+        symbol: Type.Optional(Type.Never()),
+    }),
+    Type.Object({
+        symbol: Type.String({
+            minLength: 1,
+            description: "Exact symbol to find; the first occurrence on the line is used",
+        }),
+        column: Type.Optional(Type.Never()),
+    }),
+]);
 
 /** File extension → language (re-exported from src/render.ts for status reporting). */
 // EXT_LANG and langForFile now live in src/render.ts; index.ts imports them.
@@ -190,27 +206,26 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_definition",
         label: "Code Definition",
         description:
-            "Return the source code for the definition of the symbol at a 1-based file position. For functions, methods, and classes, the result includes the complete source body. Multiple definition sites are returned as separate blocks. Each block starts with `<defPath>:<startLine>-<endLine>` followed by source lines prefixed with their absolute line number.",
+            "Return source for a symbol selected by path + 1-based line and exactly one of column or symbol. The symbol form selects its first exact occurrence on the line. For functions, methods, and classes, the result includes the complete source body. Multiple definition sites are returned as separate blocks.",
         promptSnippet: "Return the source code for a symbol's definition",
         promptGuidelines: [
             "Use code_definition after a discovery tool to retrieve semantic source rather than locating it with grep and read.",
         ],
-        parameters: Type.Object({
-            path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-            line: Type.Integer({ minimum: 1, description: "1-based line number of the symbol" }),
-            column: Type.Integer({
-                minimum: 1,
-                description: "1-based column number of the symbol",
+        parameters: Type.Intersect([
+            Type.Object({
+                path: Type.String({ description: "File path (absolute or relative to cwd)" }),
+                line: Type.Integer({ minimum: 1, description: "1-based line number of the symbol" }),
+                list_symbols: Type.Optional(
+                    Type.Array(StringEnum(SYMBOL_ROLES), {
+                        minItems: 1,
+                        uniqueItems: true,
+                        description:
+                            "Advanced: annotate selected syntactic roles with exact columns. Usually omit and use a detail tool's `symbol` selector instead; request this only when you need roles or must distinguish repeated same-named occurrences. Source text is not modified.",
+                    }),
+                ),
             }),
-            list_symbols: Type.Optional(
-                Type.Array(StringEnum(SYMBOL_ROLES), {
-                    minItems: 1,
-                    uniqueItems: true,
-                    description:
-                        "Roles to add as compact `name@column role` metadata below each source line. Omit for no metadata. Source text is not modified.",
-                }),
-            ),
-        }),
+            POSITION_SELECTOR_SCHEMA,
+        ]),
         async execute(_id, params, _signal, _onUpdate, ctx) {
             // nav.definition now throws on ANY failure (no fallbacks, no
             // soft-failure rows) — the tool's contract is "verbatim source
@@ -231,46 +246,45 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_references",
         label: "Code References",
         description:
-            "Find semantic references/usages, including declarations. Results are paginated (default 25) and include AST-aware source context, syntactic role, and enclosing symbol metadata. Use context='none' for compact locations.",
+            "Find semantic references/usages for a symbol selected by path + 1-based line and exactly one of column or symbol; symbol selects its first exact occurrence on the line. Results are paginated (default 25) with AST-aware context. Use context='none' for compact locations.",
         promptSnippet: "Find all references and usages of a symbol",
         promptGuidelines: [
             "Use code_references after a discovery tool to find semantic usages rather than text matches from grep or rg.",
         ],
-        parameters: Type.Object({
-            path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-            line: Type.Integer({ minimum: 1, description: "1-based line number of the symbol" }),
-            column: Type.Integer({
-                minimum: 1,
-                description: "1-based column number of the symbol",
+        parameters: Type.Intersect([
+            Type.Object({
+                path: Type.String({ description: "File path (absolute or relative to cwd)" }),
+                line: Type.Integer({ minimum: 1, description: "1-based line number of the symbol" }),
+                context: Type.Optional(
+                    StringEnum(["none", "syntax", "enclosing"] as const, {
+                        description:
+                            "Context mode (default: syntax). none returns locations only; syntax returns the smallest useful AST construct; enclosing returns its containing statement/control construct.",
+                    }),
+                ),
+                offset: Type.Optional(
+                    Type.Integer({
+                        minimum: 1,
+                        description: "1-based start reference for pagination. Default 1.",
+                    }),
+                ),
+                limit: Type.Optional(
+                    Type.Integer({
+                        minimum: 1,
+                        maximum: 200,
+                        description: "Maximum references per page (default 25, hard cap 200).",
+                    }),
+                ),
+                list_symbols: Type.Optional(
+                    Type.Array(StringEnum(SYMBOL_ROLES), {
+                        minItems: 1,
+                        uniqueItems: true,
+                        description:
+                            "Advanced: annotate selected syntactic roles with exact columns. Usually omit and use a detail tool's `symbol` selector instead; request this only when you need roles or must distinguish repeated same-named occurrences. Not valid with context='none'.",
+                    }),
+                ),
             }),
-            context: Type.Optional(
-                StringEnum(["none", "syntax", "enclosing"] as const, {
-                    description:
-                        "Context mode (default: syntax). none returns locations only; syntax returns the smallest useful AST construct; enclosing returns its containing statement/control construct.",
-                }),
-            ),
-            offset: Type.Optional(
-                Type.Integer({
-                    minimum: 1,
-                    description: "1-based start reference for pagination. Default 1.",
-                }),
-            ),
-            limit: Type.Optional(
-                Type.Integer({
-                    minimum: 1,
-                    maximum: 200,
-                    description: "Maximum references per page (default 25, hard cap 200).",
-                }),
-            ),
-            list_symbols: Type.Optional(
-                Type.Array(StringEnum(SYMBOL_ROLES), {
-                    minItems: 1,
-                    uniqueItems: true,
-                    description:
-                        "Roles to add as compact `name@column role` metadata below contextual source lines. Omit for no metadata. Not valid with context='none'.",
-                }),
-            ),
-        }),
+            POSITION_SELECTOR_SCHEMA,
+        ]),
         async execute(_id, params, _signal, _onUpdate, ctx) {
             try {
                 return text_result(
@@ -315,7 +329,7 @@ function registerTools(pi: ExtensionAPI, state: State): void {
                     minItems: 1,
                     uniqueItems: true,
                     description:
-                        "Roles to add as line-local metadata in included definitions and references for follow-up navigation calls. Omit for no metadata.",
+                        "Advanced: annotate selected syntactic roles with exact columns in included definitions/references. Usually omit and use a detail tool's `symbol` selector instead; request this only when you need roles or must distinguish repeated same-named occurrences.",
                 }),
             ),
             kinds: Type.Optional(
@@ -407,19 +421,18 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         name: "code_hover",
         label: "Code Hover / Docs",
         description:
-            "Show the signature, inferred type information, and documentation provided by the language server for the symbol at a 1-based file position. When available, a collapsed one-line `signature:` is followed by the remaining non-duplicate hover content.",
+            "Show signature, inferred type information, and documentation for a symbol selected by path + 1-based line and exactly one of column or symbol; symbol selects its first exact occurrence on the line. When available, a collapsed `signature:` line precedes the remaining hover content.",
         promptSnippet: "Show a symbol's signature, type information, and documentation",
         promptGuidelines: [
             "Use code_hover after a discovery tool when you need a symbol's signature, inferred type, or documentation.",
         ],
-        parameters: Type.Object({
-            path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-            line: Type.Integer({ minimum: 1, description: "1-based line number of the symbol" }),
-            column: Type.Integer({
-                minimum: 1,
-                description: "1-based column number of the symbol",
+        parameters: Type.Intersect([
+            Type.Object({
+                path: Type.String({ description: "File path (absolute or relative to cwd)" }),
+                line: Type.Integer({ minimum: 1, description: "1-based line number of the symbol" }),
             }),
-        }),
+            POSITION_SELECTOR_SCHEMA,
+        ]),
         async execute(_id, params, _signal, _onUpdate, ctx) {
             try {
                 return text_result(
@@ -598,24 +611,25 @@ directly to a position-based tool.
 
 DISCOVERY TOOLS (produce positions):
 - code_search_symbol — search workspace and indexed third-party symbols by bare
-  or qualified name; use include to retrieve details in the same call;
-  list_symbols selects roles for chainable positions in definitions/references
+  or qualified name; use include to retrieve details in the same call
 - code_outline — show a file's classes/functions/methods with signatures,
   documentation summaries, identifier positions, and body ranges
 
-POSITION-BASED TOOLS (consume path + line + column):
+POSITION-BASED TOOLS:
+- code_definition, code_hover, and code_references consume path + line plus
+  exactly one of column or symbol; symbol selects its first exact occurrence
+  on the line
 - code_definition — source code for a symbol's definition
 - code_hover — signature, inferred type, and documentation
 - code_references — paginated semantic usages with syntax context, role, and
   enclosing symbol metadata; context="none" gives compact locations
-- code_rename — semantic workspace rename, applied directly to disk
+- code_rename — semantic workspace rename, applied directly to disk; requires column
 
 FILE-ANALYSIS TOOL:
 - code_diagnostics — current errors, warnings, and hints for a source file
 
 code_search_symbol examples:
-  code_search_symbol(query="parse", include=["definition","references"],
-                     list_symbols=["type", "call"])
+  code_search_symbol(query="parse", include=["definition","references"])
   code_search_symbol(query="cbor2.loads", include=["definition","hover"])
   code_search_symbol(query="vector::push_back", kinds=["method"],
                      name_pattern="int", include=["definition"])

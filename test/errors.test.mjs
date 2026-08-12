@@ -218,6 +218,29 @@ test("nav.diagnostics treats an empty push notification as a clean result", asyn
     }
 });
 
+test("detail tools resolve the first exact symbol occurrence on a line", async () => {
+    const { resolvePositionColumn } = await load("./src/nav-core.ts");
+    const text = "const parseResult = parse(value) + parse(value);\n";
+    assert.equal(resolvePositionColumn({ line: 1, symbol: "parse" }, text), 21);
+    assert.equal(resolvePositionColumn({ line: 1, column: 7 }, text), 7);
+    assert.throws(
+        () => resolvePositionColumn({ line: 1, symbol: "missing" }, text),
+        /symbol "missing" not found on line 1/,
+    );
+});
+
+test("detail position selector requires exactly one of column or symbol", async () => {
+    const { resolvePositionColumn } = await load("./src/nav-core.ts");
+    assert.throws(
+        () => resolvePositionColumn({ line: 1 }, "const x = 1;\n"),
+        /exactly one of column or symbol/,
+    );
+    assert.throws(
+        () => resolvePositionColumn({ line: 1, column: 7, symbol: "x" }, "const x = 1;\n"),
+        /exactly one of column or symbol/,
+    );
+});
+
 test("position-based tools reject non-positive coordinates", async () => {
     const { definition, hover, references, rename } = await load("./src/nav.ts");
     for (const fn of [definition, hover, references, rename]) {
@@ -370,6 +393,51 @@ test("nav.definition multiple sites: returns one block per site + trailing count
         assert.match(out, /# 2 definitions for svc\.ts:1:7$/, `trailing count missing:\n${out}`);
         // NOT a hard error — no throw, no isError. (If it had thrown, this
         // test would reject before reaching the asserts above.)
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
+test("detail tools accept symbol and pass its first occurrence to LSP", async () => {
+    const { definition, hover, references } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symbol-pos-"));
+    try {
+        await writeFile(resolve(dir, "svc.ts"), "const longName = longName + 1;\n", "utf8");
+        const seen = [];
+        const client = {
+            openDocument: async () => {},
+            documentSymbols: async () => [],
+            definition: async (_path, _line, column) => {
+                seen.push(["definition", column]);
+                return [];
+            },
+            hover: async (_path, _line, column) => {
+                seen.push(["hover", column]);
+                return null;
+            },
+            references: async (_path, _line, column) => {
+                seen.push(["references", column]);
+                return [];
+            },
+        };
+        const clientOf = async () => client;
+        await assert.rejects(
+            definition({ path: "svc.ts", line: 1, symbol: "longName" }, dir, clientOf),
+            /No definition found for svc\.ts:1:7/,
+        );
+        assert.equal(
+            await hover({ path: "svc.ts", line: 1, symbol: "longName" }, dir, clientOf),
+            "(no hover information)",
+        );
+        assert.match(
+            await references({ path: "svc.ts", line: 1, symbol: "longName" }, dir, clientOf),
+            /svc\.ts:1:7/,
+        );
+        assert.deepEqual(seen, [
+            ["definition", 6],
+            ["hover", 6],
+            ["references", 6],
+        ]);
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
     }

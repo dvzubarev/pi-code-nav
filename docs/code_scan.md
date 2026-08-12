@@ -238,9 +238,12 @@ loader pi uses). `Parser.init()` must be called once before constructing a
   parse. If ever revisited, the honest upgrade is **additive**: an optional
   enrichment layer on top of tree-sitter, gated on `supports()` and server
   availability — never a replacement.
-- **No overload of `code_hover`/`code_definition` to accept a name instead of
-  a column.** Considered; rejected because it forks the coordinate contract
-  and `code_scan` already returns the column for the agent to pass verbatim.
+- **Detail-tool `symbol` selector (implemented).** `code_hover`,
+  `code_definition`, and `code_references` accept a line plus either a precise
+  column or a symbol name. The name form selects its first exact identifier
+  occurrence and makes ordinary rendered source chainable without requesting
+  `list_symbols`; the internal scan remains useful when roles or all positions
+  in a range are needed.
 - **No hover in the default path.** Hover is opt-in (`include_docs`); the
   symbol table is correct without it. Default = zero LSP calls.
 

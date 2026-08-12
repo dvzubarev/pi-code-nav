@@ -151,9 +151,9 @@ the per-tool output contracts are documented in `IMPL.md`. CLI subcommands
 
 ```
   outline <file> [offset:1-based] [limit]
-  hover <file> <line:1> <col:1>
-  definition <file> <line:1> <col:1> [--list-symbols]
-  references <file> <line:1> <col:1> [--context none|syntax|enclosing] [--offset N] [--limit N] [--list-symbols]
+  hover <file> <line:1> <column|symbol>
+  definition <file> <line:1> <column|symbol> [--list-symbols]
+  references <file> <line:1> <column|symbol> [--context none|syntax|enclosing] [--offset N] [--limit N] [--list-symbols]
   rename <file> <line:1> <col:1> <newName>
   symbol <query> [python|cpp|bash|typescript] [--include definition,hover,references] [--kinds function,method] [--name-pattern <regexp>]
   scan <file> [<startLine:1> <endLine:1>] [--pattern <re>] [--docs] [--roles ...]

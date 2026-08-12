@@ -8,7 +8,8 @@
 {
   path: string;
   line: number;       // 1-based
-  column: number;     // 1-based
+  column?: number;    // 1-based; exactly one of column or symbol
+  symbol?: string;    // first exact identifier occurrence on the line
   context?: "none" | "syntax" | "enclosing"; // default "syntax"
   offset?: number;    // 1-based reference index, default 1
   limit?: number;     // default 25, hard cap 200
@@ -16,6 +17,10 @@
                          // selected metadata roles; requires contextual output
 }
 ```
+
+Exactly one of `column` or `symbol` is required. `symbol` avoids column metadata
+when chaining from rendered source; the first exact identifier occurrence on
+the line is used. `column` remains the precise fallback.
 
 - `none` returns compact `path:line:column` rows.
 - `syntax` returns the smallest useful complete expression or statement. Calls and members expand through containing expressions so a nested reference renders its consumer (`player.addCard(deck.drawCard());`, not merely `deck.drawCard()`). Plain reads similarly expand to their nearest complete expression (and, when needed, their containing statement). Every selected range renders complete physical source lines, retaining indentation, attributes, control-flow keywords, and terminators; multiline expressions retain all of their lines.
@@ -34,7 +39,7 @@ kind: call
 1575 |     data_file);
 ```
 
-Source keeps its original formatting and absolute line numbers. With `list_symbols: ["type", "call"]`, each relevant source line is followed by compact `name@column role` metadata for those roles. The source line itself is not modified; its absolute line plus each 1-based column can be passed directly to `code_hover`, `code_definition`, or `code_references`. Available roles are `type|call|member|import|var`, and every occurrence of each selected role is included, making each rendered line independently navigable. Omit `list_symbols` for no metadata. `list_symbols` is invalid with `context: "none"` because that mode intentionally returns no source.
+Source keeps its original formatting and absolute line numbers. Usually chain from it with the detail tools' `symbol` selector. The advanced `list_symbols: ["type", "call"]` option adds compact `name@column role` metadata when roles or exact columns are needed to distinguish repeated same-named occurrences. Available roles are `type|call|member|import|var`, and every occurrence of each selected role is included. Usually omit it to keep output compact. `list_symbols` is invalid with `context: "none"` because that mode intentionally returns no source.
 
 Syntax contexts are capped at 80 lines and 12,000 characters. Enclosing skeletons apply separate limits to structural signatures, referenced bodies, and closing sections; gaps are explicit and the referenced source line is always retained. A 36,000-character page budget is then divided across the requested results so several pathological expressions cannot trigger pi's whole-output truncation; affected blocks carry an explicit marker while preserving the reference line. A generated, deleted, unreadable, or unsupported result file falls back to its LSP location rather than failing the whole page.
 

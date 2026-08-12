@@ -23,8 +23,10 @@ import type { LspClient } from "./lsp-client";
 import {
     awaitReadyForQuery,
     ClientProvider,
+    type PositionSelector,
+    resolvePositionColumn,
     UnknownLanguageError,
-    validatePosition,
+    validateLine,
 } from "./nav-core";
 import {
     findDocSymbolBySelStart,
@@ -43,19 +45,18 @@ import {
     tsLangForFile,
 } from "./tree-sitter-parse";
 
-export interface DefinitionParams {
+export type DefinitionParams = {
     path: string;
     line: number; // 1-based
-    column: number; // 1-based
     list_symbols?: SymbolRole[];
-}
+} & PositionSelector;
 
 export async function definition(
     params: DefinitionParams,
     cwd: string,
     clientOf: ClientProvider,
 ): Promise<string> {
-    validatePosition(params.line, params.column);
+    validateLine(params.line);
     const lang = langForFile(params.path);
     if (lang === null) throw new UnknownLanguageError(params.path);
     const abs = toAbs(params.path, cwd);
@@ -67,6 +68,7 @@ export async function definition(
         // sets isError: true — no fallback, no partial result.
         throw new Error(`Cannot read ${abs}: ${e}`);
     }
+    const column = resolvePositionColumn(params, text);
     let client: LspClient;
     try {
         client = await clientOf(lang);
@@ -100,7 +102,7 @@ export async function definition(
     // textDocument/definition, which correctly jumps declaration→definition.
     // If the cursor isn't on any symbol in this file (e.g. a call site, or
     // whitespace), also fall through to textDocument/definition.
-    const cursor = { line: params.line - 1, character: params.column - 1 };
+    const cursor = { line: params.line - 1, character: column - 1 };
     // When step 0 finds a DECLARATION (no body) at the cursor, remember its
     // range in the input file. If textDocument/definition then returns empty
     // (ccls only resolves use→def, never decl→decl — so a cursor ON a
@@ -133,7 +135,7 @@ export async function definition(
         // header — deferred to a future session's tree-sitter fallback).
         // Fall through to textDocument/definition.
     }
-    const def = await client.definition(abs, params.line - 1, params.column - 1, text);
+    const def = await client.definition(abs, params.line - 1, column - 1, text);
     const locs = (Array.isArray(def) ? def : def ? [def] : []) as Location[];
     if (locs.length === 0) {
         // ccls's textDocument/definition only resolves use→def, never
@@ -153,7 +155,7 @@ export async function definition(
                 declInInput.el,
                 text,
                 params.list_symbols,
-                { line: params.line, column: params.column },
+                { line: params.line, column },
             );
         }
         // Hard failure: no definition found and the cursor isn't on a
@@ -163,7 +165,7 @@ export async function definition(
         // parenthesized-note fallback — throw so the agent knows it got
         // nothing reusable and can try another approach (code_hover,
         // code_search_symbol, etc.).
-        throw new Error(`No definition found for ${params.path}:${params.line}:${params.column}`);
+        throw new Error(`No definition found for ${params.path}:${params.line}:${column}`);
     }
     // ccls enclosing-parent scope guard: when the cursor is on a C++
     // declaration that has no out-of-line definition (e.g. a constructor
@@ -197,7 +199,7 @@ export async function definition(
                 declInInput.el,
                 text,
                 params.list_symbols,
-                { line: params.line, column: params.column },
+                { line: params.line, column },
             );
         }
     }
@@ -222,7 +224,7 @@ export async function definition(
     if (blocks.length === 1) return blocks[0];
     return (
         blocks.join("\n\n") +
-        `\n# ${blocks.length} definitions for ${params.path}:${params.line}:${params.column}`
+        `\n# ${blocks.length} definitions for ${params.path}:${params.line}:${column}`
     );
 }
 

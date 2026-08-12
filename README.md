@@ -15,7 +15,9 @@ typescript-language-server:
 | `code_diagnostics` | pull first, push fallback | Current errors, warnings, and hints |
 
 `code_definition`, `code_hover`, and `code_references` each take a **scalar**
-`(path, line, column)` — one symbol per call (no batching). `code_definition`
+`path` + 1-based `line` and exactly one of `column` or `symbol` — one symbol per
+call (no batching). `symbol` selects its first exact occurrence on the line,
+so ordinary source output is chainable without `list_symbols`. `code_definition`
 returns the verbatim source body of the symbol: a header line
 `<defPath>:<sl>-<el>` followed by the raw source lines (no code fence), ready
 to copy straight into an edit. A position may resolve to **multiple**
@@ -32,12 +34,11 @@ location-only output, or `context: "enclosing"` for the containing statement.
 Use `offset` and `limit` to paginate. `code_search_symbol(include=["references"])`
 uses the same contextual format.
 
-`code_definition`, `code_references`, and `code_search_symbol` also accept an
-optional `list_symbols` role list. Available roles are `type`, `call`, `member`,
-`import`, and `var`; symbol search applies the selection to included definitions
-and references. Matching occurrences become compact line-local metadata, so
-each source line has identifier coordinates ready for `code_hover`/
-`code_definition`/`code_references`. Omit the parameter for no metadata.
+`code_definition`, `code_references`, and `code_search_symbol` also retain an
+advanced `list_symbols` role list. Usually omit it and chain with a detail
+tool's `symbol` selector. Request `list_symbols` only when syntactic roles or
+exact columns are needed to distinguish repeated same-named occurrences.
+Available roles are `type`, `call`, `member`, `import`, and `var`.
 
 All tool inputs and outputs use **1-based** positions. Discovery results print
 the identifier position—not merely the enclosing range—so a printed
@@ -54,7 +55,8 @@ symbol's body range.
 | `code_search_symbol` | You know a bare or qualified symbol name |
 | `code_outline` | You want a file's classes/functions/methods, signatures, docs, and ranges |
 
-**Position-based tools** consume `path` + 1-based `line` + `column`:
+**Position-based tools** consume `path` + 1-based `line` and either `column` or
+`symbol` (`code_rename` remains column-only):
 
 | Tool | Returns |
 | --- | --- |
@@ -104,8 +106,7 @@ Use `include` to expand up to five exact matches in the same call:
 ```text
 code_search_symbol(query="cbor2.loads", include=["definition", "hover"])
 code_search_symbol(query="vector::push_back", kinds=["method"],
-                   name_pattern="int", include=["definition", "references"],
-                   list_symbols=["type", "call", "member"])
+                   name_pattern="int", include=["definition", "references"])
 ```
 
 ### Internal `code_scan` implementation

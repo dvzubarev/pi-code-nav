@@ -49,10 +49,11 @@ the same rule.
 
 ## 1-based ↔ 0-based coordinate translation (and 1-based SymbolKind)
 
-LSP lines/columns are **0-based**. All tool parameters exposed to the agent
-are **1-based** (the agent and pi's `read`/`edit` tools think in 1-based
-lines). Every tool does `params.line - 1` / `params.column - 1` before calling
-the LSP client. **Tool output is uniformly 1-based** — `renderDocSymbol`,
+LSP lines/columns are **0-based**. All numeric tool parameters exposed to the
+agent are **1-based** (the agent and pi's `read`/`edit` tools think in 1-based
+lines). Detail tools either subtract one from the supplied column or resolve
+`symbol` to its first exact occurrence on the line, then subtract one before
+calling the LSP client. JavaScript string offsets are UTF-16, matching LSP. **Tool output is uniformly 1-based** — `renderDocSymbol`,
 `renderSymbolInfo`, and `renderLocation` all add 1 to the 0-based coords the
 server returns, so a position printed by one tool can be fed directly back
 into another tool's `line`/`column` params with no manual conversion.

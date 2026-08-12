@@ -1,6 +1,6 @@
 /**
  * code_references — all semantic references/usages of the symbol at
- * (path, line, column), including its declaration. By default each paginated
+ * (path, line, column-or-symbol), including its declaration. By default each paginated
  * result includes AST-aware source context, its syntactic role, and the
  * enclosing symbol's reusable position. `context: "none"` preserves the
  * compact location-only survey format. A clean empty result is not an error;
@@ -12,8 +12,10 @@ import type { LspClient } from "./lsp-client";
 import {
     awaitReadyForQuery,
     ClientProvider,
+    type PositionSelector,
+    resolvePositionColumn,
     UnknownLanguageError,
-    validatePosition,
+    validateLine,
 } from "./nav-core";
 import { langForFile, renderLocation, toAbs, uriToPath } from "./render";
 import {
@@ -27,10 +29,9 @@ import {
     tsLangForFile,
 } from "./tree-sitter-parse";
 
-export interface ReferencesParams {
+export type ReferencesParams = {
     path: string;
     line: number; // 1-based
-    column: number; // 1-based
     /** Source context mode. Defaults to "syntax". */
     context?: "none" | ReferenceContextMode;
     /** 1-based reference offset. Defaults to 1. */
@@ -39,7 +40,7 @@ export interface ReferencesParams {
     limit?: number;
     /** Add compact annotations for the selected roles below contextual source lines. */
     list_symbols?: SymbolRole[];
-}
+} & PositionSelector;
 
 const DEFAULT_REFERENCE_LIMIT = 25;
 const MAX_REFERENCE_LIMIT = 200;
@@ -165,7 +166,7 @@ export async function references(
     cwd: string,
     clientOf: ClientProvider,
 ): Promise<string> {
-    validatePosition(params.line, params.column);
+    validateLine(params.line);
     const { offset, limit } = validatePagination(params);
     const context = params.context ?? "syntax";
     const lang = langForFile(params.path);
@@ -183,17 +184,18 @@ export async function references(
     } catch (e) {
         throw new Error(`Cannot read ${abs}: ${e}`);
     }
+    const column = resolvePositionColumn(params, text);
     // Wait for ccls to finish indexing this TU before querying references.
     // On a cold cache, cross-TU usages can be missing until indexing finishes.
     await awaitReadyForQuery(lang, client, abs, text);
-    const refs = await client.references(abs, params.line - 1, params.column - 1, text);
+    const refs = await client.references(abs, params.line - 1, column - 1, text);
     if (refs.length === 0) {
         // Clean empty result (the symbol has no references) — NOT a failure.
         // Kept as a parenthesized note (matching outline/diagnostics/scan's
         // empty-result convention) rather than an ERROR row, so an agent
         // checking the leading token doesn't mistake a legitimate "unused
         // symbol" for a failure.
-        return `(no references found for ${params.path}:${params.line}:${params.column})`;
+        return `(no references found for ${params.path}:${params.line}:${column})`;
     }
     const page = refs.slice(offset - 1, offset - 1 + limit);
     if (page.length === 0) {
