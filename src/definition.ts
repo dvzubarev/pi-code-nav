@@ -40,10 +40,9 @@ import {
     findEnclosingDefWithDoc,
     parseSymbols,
     renderNumberedSource,
-    type SymbolEntry,
-    type SymbolRole,
     tsLangForFile,
 } from "./tree-sitter-parse";
+import type { SymbolEntry, SymbolRole } from "./syntax/types";
 
 export type DefinitionParams = {
     path: string;

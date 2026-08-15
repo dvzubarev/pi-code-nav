@@ -19,7 +19,7 @@ import { definition } from "./definition";
 import { hover } from "./hover";
 import { references } from "./references";
 import { renderSymbolInfo, resolveSymbolSelStart, symbolKindFromName, uriToPath } from "./render";
-import type { SymbolRole } from "./tree-sitter-parse";
+import type { SymbolRole } from "./syntax/types";
 
 export interface SymbolParams {
     query: string;

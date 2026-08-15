@@ -43,31 +43,8 @@ import { Parser, Language, Node } from "web-tree-sitter";
 import { getWasmPath } from "tree-sitter-wasm";
 import { readFile } from "node:fs/promises";
 import type { Lang } from "./languages/types";
-
-/**
- * The syntactic role assigned to a discovered identifier.
- *
- * - `type`   — a type name (Python annotation, C++ type_identifier).
- * - `call`    — a function/method being called.
- * - `member`  — a field/attribute access (`.push_back`, `.encode`).
- * - `import` — a name brought into scope by an import (Python module /
- *   imported symbol). Separated from `var` so that "drop the noisy locals"
- *   does not also drop the third-party entry points imports represent.
- * - `var`    — a local variable, parameter, or assignment target. Hoverable
- *   but noisy in broad scans, so excluded from the scan default and included
- *   by the explicitly requested `list_symbols` integrations.
- */
-export type SymbolRole = "type" | "call" | "member" | "import" | "var";
-
-/** One row of the symbol table returned by parseSymbols. */
-export interface SymbolEntry {
-    role: SymbolRole;
-    name: string;
-    /** Absolute 1-based line (startLine + tree-relative 0-based row). */
-    line: number;
-    /** Absolute 1-based column (0-based tree column + 1). */
-    column: number;
-}
+import { classifierFor } from "./syntax";
+import type { SymbolEntry, SymbolRole, TSNode } from "./syntax/types";
 
 /**
  * Languages we can parse. Mirrors the LSP `Lang` set, but kept independent so
@@ -182,216 +159,28 @@ async function getLanguage(lang: TsLang): Promise<Language> {
 }
 
 // ---------------------------------------------------------------------------
-// Role classification — the heart of the module.
+// Role classification.
 //
-// Each grammar names its identifier-class nodes differently and encodes role
-// via parent type + field name. We use field names (fieldNameForChild) where
-// the grammar provides them (robust across grammar versions) and fall back to
-// parent type otherwise. Field-name lookup MUST compare via node.id (not
-// reference equality): web-tree-sitter returns a fresh proxy wrapper per
-// .child() call, so `parent.child(i) === node` is always false. This was a
-// real bug during development; do not "simplify" it back to ===.
+// Per-language rules live in `src/syntax/classifiers/*.ts`, keyed by grammar
+// in `src/syntax/index.ts`. Each grammar names its identifier-class nodes
+// differently and encodes role via parent type + field name. We use field
+// names (fieldNameForChild) where the grammar provides them (robust across
+// grammar versions) and fall back to parent type otherwise. Field-name lookup
+// MUST compare via node.id (not reference equality): web-tree-sitter returns a
+// fresh proxy wrapper per .child() call, so `parent.child(i) === node` is
+// always false. This was a real bug during development; do not "simplify" it
+// back to ===.
+//
+// Returns null for: keywords (they are statement nodes, not identifiers),
+// punctuation, comments, strings, namespace qualifiers (the `std` in
+// `std::sort` — the meaningful name is the `identifier` child), the
+// `identifier` child of a python `type` annotation (the `type` node itself is
+// the entry), and bare bash `word` arguments.
 // ---------------------------------------------------------------------------
 
-/** Look up the field name a node has within its parent (or null). */
-function fieldOf(node: TSNode): string | null {
-    const parent = node.parent;
-    if (!parent) return null;
-    for (let i = 0; i < parent.childCount; i++) {
-        const child = parent.child(i);
-        if (child && child.id === node.id) return parent.fieldNameForChild(i);
-    }
-    return null;
-}
-
-/** Minimal structural view of a web-tree-sitter Node (decouples from the lib's types). */
-interface TSNode {
-    type: string;
-    text: string;
-    id: number;
-    startPosition: { row: number; column: number };
-    endPosition: { row: number; column: number };
-    parent: TSNode | null;
-    childCount: number;
-    child(index: number): TSNode | null;
-    children: TSNode[];
-    fieldNameForChild(index: number): string | null;
-    /** Return the smallest node covering the span [start, end] (inclusive). */
-    descendantForPosition(
-        start: { row: number; column: number },
-        end: { row: number; column: number },
-    ): TSNode | null;
-}
-
-/**
- * Classify a tree-sitter node into a SymbolRole, or null to skip it.
- *
- * Returns null for: keywords (they are statement nodes, not identifiers),
- * punctuation, comments, strings, namespace qualifiers (the `std` in
- * `std::sort` — the meaningful name is the `identifier` child), the
- * `identifier` child of a python `type` annotation (the `type` node itself is
- * the entry), and bare bash `word` arguments.
- */
+/** Resolve a node's role via the per-language classifier dispatch (src/syntax/). */
 function classifyRole(node: TSNode, lang: TsLang): SymbolRole | null {
-    const t = node.type;
-    const parent = node.parent;
-    const pt = parent?.type ?? null;
-    const gp = parent?.parent?.type ?? null;
-    const field = fieldOf(node);
-
-    if (lang === "python") {
-        // `type` is the annotation node (e.g. `int` in `y: int = ...`); its child
-        // `identifier` is the same text — emit the `type` node, skip the child.
-        //
-        // A `type` node can be nested inside another type construct: Python's
-        // grammar wraps every annotation in a `type` node, and generics / unions
-        // spawn child `type` nodes for each component, e.g.
-        //   Callable[[CBOREncoder, Any], None] | None
-        // parses as type(union_type(type(generic_type(Callable, type_parameter(
-        // type([CBOREncoder, Any]), type(None)))), type(None))) — four `type`
-        // nodes for ONE annotation. Emitting all of them floods the table with
-        // subtypes the agent did not ask for. So emit only the OUTERMOST `type`
-        // node: skip a `type` whose parent is itself a type-context node (`type`,
-        // `union_type`, or `type_parameter`). The inner identifiers (Callable,
-        // CBOREncoder, Any) are still emitted individually below as `var`.
-        if (t === "type") {
-            if (pt === "type" || pt === "union_type" || pt === "type_parameter") return null; // nested subtype — covered by the outer `type` node
-            return "type";
-        }
-        if (t === "identifier") {
-            if (pt === "type") return null; // covered by the `type` node above
-            // Names brought into scope by imports (module names, imported symbols,
-            // aliases) get their own `import` role — distinct from local `var` —
-            // so the default "drop the noisy locals" filter does not also drop the
-            // third-party entry points imports represent. In the grammar, import
-            // identifiers sit inside `dotted_name` (parent) under an import/aliased
-            // statement (grandparent), or directly under `aliased_import` (alias).
-            // `dotted_name` also appears in expressions as `os.path`, but there the
-            // parent is `attribute`, not `dotted_name`, so no false match.
-            if (pt === "aliased_import") return "import"; // the alias name (np, CE)
-            if (
-                pt === "dotted_name" &&
-                (gp === "import_statement" ||
-                    gp === "import_from_statement" ||
-                    gp === "aliased_import")
-            )
-                return "import";
-            if (pt === "attribute") {
-                // `cbor2.load`: field "attribute" = the member; field "object" = base.
-                return field === "attribute" ? "member" : "var";
-            }
-            if (pt === "call") return "call"; // bare-name call: `compute(...)`
-            return "var"; // assignment target, argument, etc.
-        }
-        return null;
-    }
-
-    if (lang === "cpp") {
-        if (t === "type_identifier") return "type";
-        if (t === "field_identifier") return "member"; // `data.begin` → `begin`
-        if (t === "namespace_identifier") return null; // `std` — skip; name is the identifier child
-        if (t === "identifier") {
-            // Base object of a field_expression: `data` in `data.begin`.
-            if (pt === "field_expression") {
-                return field === "argument" ? "var" : null;
-            }
-            // Right-hand side of `::` in a qualified_identifier: `sort` in `std::sort`.
-            // Role depends on whether the qualified_identifier is being called.
-            if (pt === "qualified_identifier" && field === "name") {
-                return gp === "call_expression" ? "call" : "type";
-            }
-            // Bare identifier called directly: `foo(...)`.
-            if (pt === "call_expression") return "call";
-            // Declaration / parameter names.
-            if (
-                pt === "declaration" ||
-                pt === "init_declarator" ||
-                pt === "parameter_declaration" ||
-                pt === "parameter_list"
-            )
-                return "var";
-            // An identifier passed as an argument.
-            if (pt === "argument_list") return "var";
-            return "var";
-        }
-        return null;
-    }
-
-    // bash — conservative: variable_name → var, command (the word inside
-    // command_name) → call, everything else (bare word arguments, strings) →
-    // skip. Bare words are mostly arguments/literals and too noisy; the design
-    // doc explicitly deferred bash polish.
-    if (lang === "bash") {
-        if (t === "variable_name") return "var";
-        if (t === "word" && pt === "command_name") return "call";
-        return null;
-    }
-
-    // TypeScript / TSX — the two grammars share the node-type vocabulary for
-    // everything except JSX, so one branch covers both.
-    //
-    // Node types of interest:
-    //   type_identifier        — a type occurrence (class name, interface,
-    //                             type alias, generic type, type annotation).
-    //                             NOT the definition site only — every use is a
-    //                             `type` so the agent can hover any of them.
-    //   property_identifier     — the right of `.` in `obj.prop`, a class
-    //                             field/method name, an interface member, an
-    //                             enum member, a JSX attribute. → `member`.
-    //   identifier              — everything else: the imported name, the called
-    //                             name, the constructed class, the base of a
-    //                             member expression, a declaration / parameter /
-    //                             local. Classified by parent + field below.
-    if (lang === "typescript" || lang === "tsx") {
-        if (t === "type_identifier") return "type";
-        // Primitive type annotations (number, string, boolean, void, any, ...) are
-        // `predefined_type` nodes, not `type_identifier`. Treat them as `type` so
-        // hover/definition works on them too — they are real type references.
-        if (t === "predefined_type") return "type";
-        if (t === "property_identifier" || t === "shorthand_property_identifier") {
-            return "member";
-        }
-        if (t === "identifier") {
-            // Imports — the names brought into scope. The TS grammar puts every
-            // imported/aliased identifier under an import/export construct; these
-            // are the third-party entry points `code_scan` exists to find.
-            //   import { readFile } from "..."   → import_specifier (field name)
-            //   import * as fs from "..."         → namespace_import
-            //   import foo from "..."             → import_clause (default)
-            //   export { bar } from "..."         → export_specifier (re-export)
-            //   import type { Lang } from "..."   → same import_specifier path
-            if (
-                pt === "import_specifier" ||
-                pt === "namespace_import" ||
-                pt === "import_clause" ||
-                pt === "export_specifier" ||
-                pt === "aliased_export" ||
-                pt === "aliased_import"
-            ) {
-                return "import";
-            }
-            // A name being called: `compute(...)`. field `function` of a
-            // call_expression. Also covers `obj.method()` because the callee is
-            // the whole member_expression (its property_identifier child becomes
-            // a `member` above); the bare-identifier call path is just `f()`.
-            if (pt === "call_expression" && field === "function") return "call";
-            // `new Foo()` — Foo is a constructor reference; treat as a call site.
-            if (pt === "new_expression" && field === "constructor") return "call";
-            // Right of `.` in a member_expression is a property_identifier (above).
-            // The LEFT (field `object`) is the base — a local/var like `obj`, or
-            // another member_expression in a chain (`a.b.c`): the outer base is a
-            // member_expression whose own property_identifier is emitted as
-            // `member`, so this `identifier` base is just `var`.
-            if (pt === "member_expression" && field === "object") return "var";
-            // Everything else is a declaration name, parameter, or local. Match
-            // Python's convention (def name → var) so declaration names are
-            // omitted from the default role set and don't clutter the table.
-            return "var";
-        }
-        return null;
-    }
-
-    return null;
+    return classifierFor(lang)(node);
 }
 
 // ---------------------------------------------------------------------------

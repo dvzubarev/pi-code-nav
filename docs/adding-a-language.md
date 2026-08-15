@@ -82,11 +82,14 @@ auto-detection, and `resolveConfig` live in `src/lsp/server-config.ts`.
    (no `--listen`/`--socket`); the extension owns the child process. Do not
    add a socket client.
 
-## 2. tree-sitter — `tree-sitter-parse.ts`
+## 2. tree-sitter — `src/syntax/` + `tree-sitter-parse.ts`
 
-This module has **no dependency on `lsp-client.ts`** (it makes zero LSP
-calls). Keep it that way — import the neutral `Lang` from
-`./languages/types`, never from the LSP module.
+`tree-sitter-parse.ts` has **no dependency on `lsp-client.ts`** (it makes
+zero LSP calls). Keep it that way — import the neutral `Lang` from
+`./languages/types`, never from the LSP module. The per-language role
+classifiers live in `src/syntax/classifiers/*.ts`, dispatched by the
+`TsLang → RoleClassifier` table in `src/syntax/index.ts` (shared `TSNode` /
+`fieldOf()` / `SymbolRole` / `SymbolEntry` types in `src/syntax/types.ts`).
 
 6. **Add the grammar to `TsLang` and `tsLangForFile`.** Confirm the grammar
    ships in `tree-sitter-wasm`'s `out/<lang>/` (check `manifest.json`). If one
@@ -98,7 +101,10 @@ calls). Keep it that way — import the neutral `Lang` from
    here and export an `LspLang` type. If `TsLang == Lang` (one grammar per
    server), this helper stays a trivial identity and no callers need it.
 
-8. **Add a branch to `classifyRole`.** This is the heart of the work. For
+8. **Add a classifier file under `src/syntax/classifiers/`** (e.g.
+   `rust.ts`) and one line in `src/syntax/index.ts`'s dispatch table
+   (`classifierFor`) — the host module (`tree-sitter-parse.ts`) needs no
+   edits. This is the heart of the work. For
    each node type the grammar uses for identifiers, decide the `SymbolRole`
    (`type` / `call` / `member` / `import` / `var`) from the node's **parent
    type + field name**, not from the node text. Rules of thumb:
@@ -172,7 +178,7 @@ calls). Keep it that way — import the neutral `Lang` from
 
 ## 5. Tests — `test/`
 
-14. Add `test/<lang>.test.mjs` pinning the `classifyRole` contract. Use
+14. Add `test/<lang>.test.mjs` pinning the new classifier's contract. Use
     `test/cpp.test.mjs` / `test/typescript.test.mjs` as templates. Assert
     every role branch (type / call / member / import / var) with
     `assertEntry` at exact 1-based positions, plus `assertNoEntry` for the
@@ -230,7 +236,7 @@ calls). Keep it that way — import the neutral `Lang` from
 
 ## Appendix: probing a tree-sitter grammar
 
-Before writing `classifyRole` rules, dump the tree of a representative
+Before writing classifier rules, dump the tree of a representative
 snippet to learn the grammar's node types and field names:
 
 ```js

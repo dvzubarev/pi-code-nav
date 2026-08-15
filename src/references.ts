@@ -23,11 +23,10 @@ import {
     parseSymbols,
     referenceSyntaxContext,
     ReferenceContextMode,
-    type SymbolEntry,
-    type SymbolRole,
     type TsLang,
     tsLangForFile,
 } from "./tree-sitter-parse";
+import type { SymbolEntry, SymbolRole } from "./syntax/types";
 
 export type ReferencesParams = {
     path: string;

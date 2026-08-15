@@ -1,7 +1,7 @@
 // TypeScript / TSX parseSymbols behavior.
 //
-// Asserts the role classification rules from tree-sitter-parse.ts
-// (classifyRole, lang === "typescript" || lang === "tsx"):
+// Asserts the role classification rules from src/syntax/classifiers/typescript.ts
+// (classifyTypeScriptRole, lang === "typescript" || lang === "tsx"):
 //   - `type_identifier` → "type" (class name, interface, type alias, generic,
 //     type annotation — every occurrence is hoverable, not just the def site)
 //   - `property_identifier` / `shorthand_property_identifier` → "member"

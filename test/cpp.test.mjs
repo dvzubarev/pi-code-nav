@@ -1,7 +1,7 @@
 // C++ parseSymbols behavior.
 //
-// Asserts the role classification rules from tree-sitter-parse.ts
-// (classifyRole, lang === "cpp") and the cpp row of the node-types table in
+// Asserts the role classification rules from src/syntax/classifiers/cpp.ts
+// (classifyCppRole, lang === "cpp") and the cpp row of the node-types table in
 // code_scan.md:
 //   - `type_identifier` → "type"
 //   - `field_identifier` → "member"

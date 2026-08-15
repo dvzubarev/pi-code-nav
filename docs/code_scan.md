@@ -102,8 +102,9 @@ the agent asks for docs.
 | bash | `variable_name` / `word` (in `command_name`) | n/a | — (subscript skipped) | `command_name` (the `word` child) |
 | typescript | `identifier` | `type_identifier` + `predefined_type` | `property_identifier` / `shorthand_property_identifier` | `call_expression` field `function`; `new_expression` field `constructor` |
 
-**`classifyRole` decides the role from the node's parent type + field name,
-not from the node text.** Use `fieldOf(node)` (not `===`) to compare node
+**The role classifiers (`src/syntax/classifiers/*.ts`, dispatched by
+`src/syntax/index.ts`) decide the role from the node's parent type + field
+name, not from the node text.** Use `fieldOf(node)` (not `===`) to compare node
 identity — web-tree-sitter returns a fresh proxy per `.child()`, so
 reference equality is always false. This was a real bug; do not "simplify"
 it back. **Probe the grammar first** before writing rules: parse a
@@ -118,7 +119,7 @@ Python's grammar wraps **every** annotation in a `type` node, and
 generics/unions spawn child `type` nodes for each component — a single
 annotation like `Callable[[CBOREncoder, Any], None] | None` parses as four
 nested `type` nodes. Emitting all four floods the table with subtypes the
-agent didn't ask for. So `classifyRole` emits only the **outermost** `type`
+agent didn't ask for. So the python classifier emits only the **outermost** `type`
 and skips a `type` whose parent is itself a type-context node (`type`,
 `union_type`, `type_parameter`). The inner identifiers (`Callable`,
 `CBOREncoder`, `Any`) are still emitted individually as `var`, so the agent
@@ -250,11 +251,12 @@ loader pi uses). `Parser.init()` must be called once before constructing a
 ## Testing
 
 - **Unit tests** (`npm test`, `test/*.test.mjs`): pure tree-sitter, no
-  servers. Pin `classifyRole` per language, the default role set, occurrence
-  preservation, position math, and the `renderSymbolTable`/`hoverFirstLine` formats. They
-  load `tree-sitter-parse.ts` through jiti (same loader as production).
-  When you change `classifyRole`, `renderSymbolTable`, or `hoverFirstLine`,
-  update or add tests there.
+  servers. Pin each per-language classifier (`src/syntax/classifiers/*.ts`),
+  the default role set, occurrence preservation, position math, and the
+  `renderSymbolTable`/`hoverFirstLine` formats. They load
+  `tree-sitter-parse.ts` through jiti (same loader as production). When you
+  change a classifier, `renderSymbolTable`, or `hoverFirstLine`, update or
+  add tests there.
 - **CLI**: `scan <file> [<startLine> <endLine>] [--pattern <re>] [--docs]
   [--roles type,call,...]` in `scripts/nav-cli.mjs` calls the same
   `nav.scan` — no separate formatting to keep in sync. `definition ...

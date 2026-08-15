@@ -1,7 +1,7 @@
 // Python parseSymbols behavior.
 //
-// Asserts the role classification rules from tree-sitter-parse.ts
-// (classifyRole, lang === "python") and the node-types table in
+// Asserts the role classification rules from src/syntax/classifiers/python.ts
+// (classifyPythonRole, lang === "python") and the node-types table in
 // code_scan.md:
 //   - `type` annotation node (outermost only) → role "type"
 //   - `identifier` under `type` → skipped (covered by the type node)

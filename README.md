@@ -318,9 +318,10 @@ ship as prebuilt WASM — no native compilation, no peer-dependency conflicts.
 
 ## Testing
 
-Unit tests for `tree-sitter-parse.ts` (the `code_scan` backing module)
-live in `test/*.test.mjs` and run with no LSP servers and no pi — pure
-tree-sitter:
+Unit tests for the tree-sitter parsing + classification layer
+(`src/tree-sitter-parse.ts` + `src/syntax/`, the `code_scan` backing
+modules) live in `test/*.test.mjs` and run with no LSP servers and no pi —
+pure tree-sitter:
 
 ```
 npm test            # run all unit tests (node --test test/*.test.mjs)
@@ -353,7 +354,8 @@ occurrence, absolute 1-based position math, the `renderSymbolTable` / `hoverFirs
 output formats, and the load-bearing guarantees: snippet fragments parse
 without wrapping, and comment/string noise is excluded. See `test/core.test.mjs`
 for cross-cutting behavior and `test/{python,cpp,bash}.test.mjs` for per-language
-contracts. Add tests there when changing `classifyRole` or rendering.
+contracts. Add tests there when changing the role classifiers
+(`src/syntax/classifiers/`) or rendering.
 
 Integration tests for `lsp-client.ts` and the tool layer (`nav.ts`) **are
 included** as `test/*.e2e.mjs` (run `npm run test:e2e`). For manual checks,
