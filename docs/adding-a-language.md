@@ -86,16 +86,23 @@ auto-detection, and `resolveConfig` live in `src/lsp/server-config.ts`.
    (no `--listen`/`--socket`); the extension owns the child process. Do not
    add a socket client.
 
-## 2. tree-sitter — `src/syntax/` + `tree-sitter-parse.ts`
+## 2. tree-sitter — `src/syntax/`
 
-`tree-sitter-parse.ts` has **no dependency on `lsp-client.ts`** (it makes
-zero LSP calls). Keep it that way — import the neutral `Lang` from
-`./languages/types`, never from the LSP module. The per-language role
-classifiers live in `src/syntax/classifiers/*.ts`, dispatched by the
-`TsLang → RoleClassifier` table in `src/syntax/index.ts` (shared `TSNode` /
-`fieldOf()` / `SymbolRole` / `SymbolEntry` types in `src/syntax/types.ts`).
+The tree-sitter support is split by capability under `src/syntax/`:
+`runtime.ts` (grammar lifecycle/cache + `TsLang`/`tsLangForFile`/
+`tsLangToLspLang`), `symbol-scan.ts` (`parseSymbols`), `reference-context.ts`
+(`referenceSyntaxContext`), `definition-context.ts` (`findEnclosingDefWithDoc`),
+and `source-render.ts` (rendering). `src/tree-sitter-parse.ts` is now a
+compatibility barrel re-exporting their public surface. The whole layer has
+**no dependency on `lsp-client.ts`** (it makes zero LSP calls). Keep it that
+way — import the neutral `Lang` from `./languages/types`, never from the LSP
+module. The per-language role classifiers live in
+`src/syntax/classifiers/*.ts`, dispatched by the `TsLang → RoleClassifier`
+table in `src/syntax/index.ts` (shared `TSNode` / `fieldOf()` / `SymbolRole` /
+`SymbolEntry` types in `src/syntax/types.ts`).
 
-6. **Add the grammar to `TsLang` and `tsLangForFile`.** Confirm the grammar
+6. **Add the grammar to `TsLang` and `tsLangForFile`** (both in
+   `src/syntax/runtime.ts`). Confirm the grammar
    ships in `tree-sitter-wasm`'s `out/<lang>/` (check `manifest.json`). If one
    logical language needs **two** grammars (e.g. plain vs. JSX dialects), add
    both to `TsLang` — `TsLang` is allowed to be a **superset** of `Lang`.
@@ -107,8 +114,7 @@ classifiers live in `src/syntax/classifiers/*.ts`, dispatched by the
 
 8. **Add a classifier file under `src/syntax/classifiers/`** (e.g.
    `rust.ts`) and one line in `src/syntax/index.ts`'s dispatch table
-   (`classifierFor`) — the host module (`tree-sitter-parse.ts`) needs no
-   edits. This is the heart of the work. For
+   (`classifierFor`) — this is enough for `parseSymbols`. For
    each node type the grammar uses for identifiers, decide the `SymbolRole`
    (`type` / `call` / `member` / `import` / `var`) from the node's **parent
    type + field name**, not from the node text. Rules of thumb:
@@ -141,6 +147,28 @@ classifiers live in `src/syntax/classifiers/*.ts`, dispatched by the
     `node.parent.type`, and the field name — see the snippet at the end of
     this doc. The node-type names and field structure vary per grammar; do not
     guess from another language's grammar.
+
+    **Then audit the shared node-type supersets.** The classifier covers only
+    `parseSymbols`. `referenceSyntaxContext` and `findEnclosingDefWithDoc`
+    still gate on hand-maintained, language-agnostic node-type sets:
+
+    - `src/syntax/reference-context.ts`: `CALL_NODE_TYPES`, `IMPORT_NODE_TYPES`,
+      `MEMBER_NODE_TYPES`, `TYPE_NODE_TYPES`, `DEFINITION_NODE_TYPES`,
+      `EXPRESSION_NODE_TYPES`, `STATEMENT_NODE_TYPES`, `STRUCTURAL_NODE_TYPES`,
+      `BLOCK_NODE_TYPES`, `COMPLETE_STATEMENT_NODE_TYPES`.
+    - `src/syntax/definition-context.ts`: `DEF_NODE_TYPES`, `DEF_BODY_NODE_TYPES`.
+
+    A node type that is not in the relevant set means that capability silently
+    degrades: a missing definition-node type skips `enclosing` metadata, a
+    missing call-expression type falls back to a passable-but-worse `read`
+    context, and a missing `DEF_NODE_TYPES` entry makes `code_definition`'s
+    tree-sitter resolver return null (the caller then falls back to LSP).
+    Probe the new grammar for these constructs and add them.
+
+    These supersets are collision-prone as grammars accumulate — a later
+    `SyntaxLanguage` per-grammar profile will replace them. Until it lands, do
+    not rely on `parseSymbols` working as evidence that the reference and
+    definition support also work.
 
 ## 3. Tool layer — `index.ts`
 
@@ -175,7 +203,7 @@ classifiers live in `src/syntax/classifiers/*.ts`, dispatched by the
 13. Nothing to mirror anymore. The CLI is a thin argv-parser around `nav.ts`
     (which `index.ts` also imports); the render helpers live in `render.ts`.
     Adding a language to the catalog (step 0) and `tsLangToLspLang`
-    (in `tree-sitter-parse.ts`) is enough — both the extension and the CLI
+    (in `src/syntax/runtime.ts`) is enough — both the extension and the CLI
     pick it up automatically. The only thing to verify is that the CLI's
     `symbol` subcommand (which passes `language` through to `nav.symbol`)
     accepts the new language name.
@@ -282,7 +310,7 @@ Run it through the extension's jiti loader (same as the tests) so
 node --input-type=module -e '
 import { createJiti } from "/home/denin/.npm-local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs";
 const jiti = createJiti(process.cwd(), { cache: false, interopDefault: true });
-const { parseSymbols } = await jiti.import("./tree-sitter-parse.ts");
+const { parseSymbols } = await jiti.import("./tree-sitter-parse.ts"); // barrel → src/syntax/symbol-scan.ts
 const entries = await parseSymbols("<lang>", { text: code, startLine: 1, endLine: 1, roles: ["type","call","member","import","var"] });
 for (const e of entries) console.log(`${e.role}\t${e.name}\t${e.line}:${e.column}`);
 '

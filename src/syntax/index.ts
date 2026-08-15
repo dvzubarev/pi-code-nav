@@ -1,12 +1,16 @@
 /**
  * The syntax layer's public surface: type + grammar dispatch table.
  *
- * To add a language: drop a classifier in `classifiers/` and add one line to
- * `classifiers` below. Everything else in the extension (parseSymbols,
- * code_scan, the definition/reference `list_symbols` integration) picks the
- * classifier up through `classifierFor`.
+ * To add a language's SYMBOL-SCAN role mapping: drop a classifier in
+ * `classifiers/` and add one line to `classifiers` below. Everything that
+ * routes through `classifierFor` (`parseSymbols`, code_scan, the
+ * definition/reference `list_symbols` integration) picks the classifier up
+ * automatically. This covers symbol scanning only — the reference/definition
+ * support has its own language-sensitive node-type sets
+ * (`reference-context.ts` / `definition-context.ts`), which are NOT
+ * reachable through this table. See adding-a-language.md step 8.
  */
-import type { TsLang } from "../tree-sitter-parse";
+import type { TsLang } from "./runtime";
 import type { RoleClassifier } from "./types";
 import { classifyPythonRole } from "./classifiers/python";
 import { classifyCppRole } from "./classifiers/cpp";

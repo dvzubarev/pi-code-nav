@@ -250,7 +250,7 @@ project-load timeout. The Bash policy's state and handler do not touch the
 TypeScript/ty work-done tracker or the ccls pipeline poll.
 
 **Tree-sitter for `.tsx`/`.jsx` uses the `tsx` grammar, not `typescript`.**
-See `code_scan.md`. `tsLangForFile` maps `.tsx`/`.jsx` → `tsx` and
+See `code_scan.md`. `tsLangForFile` (in `src/syntax/runtime.ts`) maps `.tsx`/`.jsx` → `tsx` and
 `.ts`/`.js`/`.mts`/`.mjs`/`.cts`/`.cjs` → `typescript`. Because `tsx` is in
 `TsLang` but not `Lang` (there is only one TS LSP server), `TsLang` is a
 **superset** of `Lang`; `tsLangToLspLang` maps `tsx` → `typescript` so

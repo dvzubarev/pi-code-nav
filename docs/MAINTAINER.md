@@ -103,7 +103,8 @@
 - `src/<tool>.ts` — one file per implementation: `outline.ts`,
   `definition.ts`, `references.ts`, `symbol.ts`, `rename.ts`, `hover.ts`,
   `scan.ts`, `diagnostics.ts`. Reference context extraction lives in
-  `tree-sitter-parse.ts`; its output contract is in `code_references.md`.
+  `src/syntax/reference-context.ts`; its output contract is in
+  `code_references.md`.
   Each tool exports a plain async function
   `(params, cwd, clientOf) => text` and its `*Params` interface. No pi
   dependency; takes a `ClientProvider` (`(lang) => LspClient`) instead of
@@ -124,18 +125,30 @@
   `roots/python.ts`. `types.ts` holds the `SymbolSearchStrategy` interface
   and the per-language registry (`strategyFor`); `symbol.ts` calls through
   it and contains NO per-language ranking branches.
-- `src/syntax/` — the tree-sitter role-classification layer, split by
-  language: `types.ts` (the `TSNode` view of a web-tree-sitter `Node`,
-  `RoleClassifier`, `SymbolRole`, `SymbolEntry`, `fieldOf()`) and
-  `classifiers/*.ts` (one classifier per grammar: python, cpp, bash,
-  typescript — tsx reuses the typescript classifier). `index.ts` holds the
-  `TsLang → RoleClassifier` dispatch table (`classifierFor`). Adding a
-  language = one classifier file + one registry line; no edits to the host
-  module.
-- `src/tree-sitter-parse.ts` — `parseSymbols()` parses a line range with WASM
-  tree-sitter and returns every symbol occurrence, delegating role
-  classification to `src/syntax/`. No pi or LSP dependency.
-  See `code_scan.md`.
+- `src/syntax/` — the tree-sitter support layer, split by capability:
+  `runtime.ts` (grammar lifecycle/cache + `TsLang`/`tsLangForFile`/
+  `tsLangToLspLang`), `symbol-scan.ts` (`parseSymbols`), `reference-context.ts`
+  (`referenceSyntaxContext`), `definition-context.ts` (`findEnclosingDefWithDoc`),
+  `source-render.ts` (`renderNumberedSource`/`annotateNumberedSource`/
+  `renderSymbolTable`/`hoverFirstLine`), `types.ts` (the `TSNode` view of a
+  web-tree-sitter `Node`, `RoleClassifier`, `SymbolRole`, `SymbolEntry`,
+  `fieldOf()`), and `classifiers/*.ts` (one classifier per grammar: python,
+  cpp, bash, typescript — tsx reuses the typescript classifier). `index.ts`
+  holds the `TsLang → RoleClassifier` dispatch table (`classifierFor`).
+  Adding a language = one classifier file + one registry line for the scope
+  `parseSymbols` covers, PLUS auditing the shared node-type supersets in
+  `reference-context.ts` (its `*_NODE_TYPES` sets) and
+  `definition-context.ts` (`DEF_NODE_TYPES`, `DEF_BODY_NODE_TYPES`) —
+  `referenceSyntaxContext` and `findEnclosingDefWithDoc` still gate on those,
+  so a new grammar's node types can pass symbol scanning while silently
+  degrading reference/definition support. A later per-grammar
+  `SyntaxLanguage` profile is intended to replace these supersets; until it
+  lands, they must be hand-maintained per grammar.
+- `src/tree-sitter-parse.ts` — compatibility barrel re-exporting the public
+  surface of `src/syntax/` (grammar lifecycle, `parseSymbols`,
+  `referenceSyntaxContext`, `findEnclosingDefWithDoc`, source/table
+  rendering). New code imports directly from `src/syntax/<capability>.ts`.
+  No pi or LSP dependency. See `code_scan.md`.
 - `test/` — unit tests for the tree-sitter parsing + classification (pure
   tree-sitter, no servers, `*.test.mjs`) + end-to-end tests for the nav tools
   (real language servers, `*.e2e.mjs`). Run `npm test` (unit) /
@@ -150,7 +163,8 @@
   no servers, no pi. Pin each per-language classifier
   (`src/syntax/classifiers/*.ts`), the default role set, occurrence
   preservation, position math, and the `renderSymbolTable` / `hoverFirstLine`
-  formats. Load `tree-sitter-parse.ts` through jiti.
+  formats. Load through jiti (the tests still import the
+  `tree-sitter-parse.ts` barrel).
 - **End-to-end tests** (`npm run test:e2e`, `test/*.e2e.mjs`): real language
   servers. Call the `nav.*` tool implementations through real `LspClient`s
   scoped to a temp workspace with fixture files — the EXACT code path
@@ -245,7 +259,7 @@ the per-tool output contracts are documented in `IMPL.md`. CLI subcommands
   (see `lsp.md`). A 3.19+ release might fix the overloads; even so, string
   calls are fine.
 - `web-tree-sitter@^0.26.10` — the WASM tree-sitter runtime, used by
-  `code_scan` (via `src/tree-sitter-parse.ts`). Bump deliberately; see
+  `code_scan` (via `src/syntax/runtime.ts`). Bump deliberately; see
   `code_scan.md`.
 - `tree-sitter-wasm@^1.1.2` — prebuilt grammar WASMs
   (`out/{python,cpp,bash,typescript,tsx}/`). Must stay ABI-compatible with

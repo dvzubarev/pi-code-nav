@@ -4,9 +4,12 @@
  * The per-language role classifiers (`classifiers/*.ts`) consume the minimal
  * structural view of a web-tree-sitter `Node` (`TSNode`) and the shared
  * `fieldOf()` helper, and produce a `SymbolRole` classification. Keeping these
- * here (rather than in `tree-sitter-parse.ts`) lets a new language be added by
- * dropping one classifier file next to the existing ones, with no edits to
- * the host module.
+ * here (rather than in the symbol-scan/reference/definition modules) lets a
+ * new language register its `parseSymbols` role mapping by dropping one
+ * classifier file next to the existing ones, with no edits to the modules
+ * that dispatch through `classifierFor`. (This is scoped to symbol scanning
+ * only; reference/definition support has its own language-sensitive node-type
+ * sets — see adding-a-language.md step 8.)
  */
 
 /**

@@ -1,8 +1,10 @@
 # `code_scan` — identifier scan via tree-sitter
 
 > Implementation notes for the tree-sitter-backed symbol-discovery tool
-> (`tree-sitter-parse.ts` + `nav.ts` `scan()` + `code_definition`'s
-> `list_symbols` integration). Read before touching the tree-sitter path.
+> (`src/syntax/runtime.ts` + `src/syntax/symbol-scan.ts` + `nav.ts` `scan()` +
+> `code_definition`'s `list_symbols` integration). `src/tree-sitter-parse.ts`
+> is the compatibility barrel re-exporting these. Read before touching the
+> tree-sitter path.
 
 ## What it solves
 
@@ -187,7 +189,7 @@ the cases that motivated tree-sitter over regex.
 **jiti resolution verified.** Both `web-tree-sitter` and `tree-sitter-wasm`
 are ESM using `import.meta.url`; they load correctly under jiti (the same
 loader pi uses). `Parser.init()` must be called once before constructing a
-`Parser`; `tree-sitter-parse.ts` caches the init promise and per-language
+`Parser`; `src/syntax/runtime.ts` caches the init promise and per-language
 `Language` objects.
 
 **`.tsx`/`.jsx` MUST use the `tsx` grammar**, not `typescript` — the
@@ -254,7 +256,8 @@ loader pi uses). `Parser.init()` must be called once before constructing a
   servers. Pin each per-language classifier (`src/syntax/classifiers/*.ts`),
   the default role set, occurrence preservation, position math, and the
   `renderSymbolTable`/`hoverFirstLine` formats. They load
-  `tree-sitter-parse.ts` through jiti (same loader as production). When you
+  `src/tree-sitter-parse.ts` (the barrel) through jiti (same loader as
+  production). When you
   change a classifier, `renderSymbolTable`, or `hoverFirstLine`, update or
   add tests there.
 - **CLI**: `scan <file> [<startLine> <endLine>] [--pattern <re>] [--docs]

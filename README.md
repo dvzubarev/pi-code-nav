@@ -319,9 +319,9 @@ ship as prebuilt WASM — no native compilation, no peer-dependency conflicts.
 ## Testing
 
 Unit tests for the tree-sitter parsing + classification layer
-(`src/tree-sitter-parse.ts` + `src/syntax/`, the `code_scan` backing
-modules) live in `test/*.test.mjs` and run with no LSP servers and no pi —
-pure tree-sitter:
+(`src/syntax/`, the `code_scan` backing modules; `src/tree-sitter-parse.ts`
+is the compatibility barrel) live in `test/*.test.mjs` and run with no LSP
+servers and no pi — pure tree-sitter:
 
 ```
 npm test            # run all unit tests (node --test test/*.test.mjs)
