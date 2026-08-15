@@ -183,7 +183,13 @@ test("Python project loading waits for ty workspace-diagnostic progress", async 
 
 test("Bash project loading waits for BackgroundAnalysis completion log", async () => {
     const root = await mkdtemp(resolve(tmpdir(), "code-nav-fake-"));
-    const c = new LspClient("bash", root, fakeConfig("bash-index-log"));
+    // The fake speaks the bash-language-server protocol, so identify it by
+    // the built-in server kind it emulates — the readiness policy is selected
+    // by serverKind, and "custom" would select the no-op policy instead.
+    const c = new LspClient("bash", root, {
+        ...fakeConfig("bash-index-log"),
+        serverKind: "bash-language-server",
+    });
     try {
         await c.ensureProjectLoaded();
         const syms = await c.workspaceSymbol("raw_resp_line_iter");

@@ -278,9 +278,9 @@ let docVersion = 0;
 
 function waitForIndexEnd(timeoutMs = 15000) {
     // Subscribe to $/progress on the "index" token. Resolve when "end" arrives
-    // or after timeout. This is the same signal LspClient.waitForIndexingComplete
-    // gates on. If the progress events already fired before this subscribe,
-    // we'll just hit the timeout.
+    // or after timeout. This is the same signal the cpp readiness policy
+    // (`CppProjectReadiness`) observes alongside `$ccls/info`. If the progress
+    // events already fired before this subscribe, we'll just hit the timeout.
     return new Promise((resolve) => {
         const t = Date.now();
         let started = false;
@@ -321,7 +321,7 @@ async function doOpen(filePath) {
             text,
         },
     });
-    // Wait for $/progress "end" or timeout — mirrors LspClient.ensureProjectLoaded.
+    // Wait for $/progress "end" or timeout — mirrors the readiness barrier.
     await waitForIndexEnd(15000);
 }
 

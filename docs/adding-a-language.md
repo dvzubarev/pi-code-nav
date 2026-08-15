@@ -69,14 +69,18 @@ auto-detection, and `resolveConfig` live in `src/lsp/server-config.ts`.
    (e.g. `.ts`→`typescript`, `.tsx`→`typescriptreact`).
 
 4. **Project readiness — only when the server can answer before project work
-   is complete.** Standard work-done servers use `WorkDoneProgress` in
-   `project-progress.ts`. Add a language-specific `ProjectProgress`
-   implementation when completion is nonstandard (Bash log messages, ccls
-   `$ccls/info`). A server may also need a trigger in its tracker/readiness path:
-   tsserver needs a bootstrap `didOpen`; ty needs `workspace/diagnostic` in
-   workspace mode. `findFirstSourceFile` + `SOURCE_EXTS` (from the catalog) are
-   the bootstrap scanning helpers. Document whether the barrier applies to
-   workspace-only queries or every per-file action via `awaitReadyForQuery`.
+   is complete.** Standard work-done servers reuse `WorkDoneProgress` (the
+   shared `$/progress` tracker) from `project-progress.ts`. Implement a
+   language-specific `ProjectReadiness` policy when completion is nonstandard
+   (Bash log messages, ccls `$ccls/info`) or needs a trigger: tsserver needs a
+   bootstrap `didOpen`; ty needs `workspace/diagnostic` in workspace mode. The
+   policy drives the generic `ProjectHost` (`hasOpenDocuments`,
+   `findBootstrapFile(extensions)`, `openDocument`, `request`) — pass
+   `SOURCE_EXTS[lang]` (from the catalog) to `findBootstrapFile`. Register it
+   in `createProjectReadiness(serverKind)` (selection is by server identity,
+   not language: a replacement command resolves to `custom` and gets the no-op
+   policy). Document whether the barrier applies to workspace-only queries or
+   every per-file action via `ensureWorkspaceReady` / `ensureDocumentReady`.
 
 5. **Verify the server is stdio-only.** All supported servers are stdio-only
    (no `--listen`/`--socket`); the extension owns the child process. Do not

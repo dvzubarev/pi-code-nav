@@ -102,12 +102,19 @@ leading empty string. Verified against ty's raw output: `greet`=`kind:12`,
 - `LspClient.ensureReady()` is idempotent — it stores the ready promise and
   returns it on repeat calls. `start()` is only ever run once per client.
 - Project-readiness tracking lives in `src/project-progress.ts`, behind the
-  `ProjectProgress` interface. `WorkDoneProgress` is the standard `$/progress`
-  implementation; TypeScript uses it directly and `TyProjectProgress` extends
-  it with ty's workspace-diagnostic trigger. `BashProjectProgress` interprets
-  BackgroundAnalysis log messages, and `CppProjectProgress` polls ccls's
-  authoritative `$ccls/info` counters.
-  `LspClient` owns protocol wiring and delegates notification state/policy.
+  `ProjectReadiness` policy interface. `WorkDoneProgress` is the shared
+  standard `$/progress` token tracker; each language/server pair has a policy:
+  `TypeScriptProjectReadiness` (bootstrap didOpen + work-done begin/end),
+  `CppProjectReadiness` (bootstrap didOpen + `$ccls/info` pipeline polling),
+  `BashProjectReadiness` (BackgroundAnalysis log messages), and
+  `TyProjectReadiness` (workspace/diagnostic + work-done end); a no-op policy
+  covers pyright/custom servers. Selection is by resolved `serverKind`
+  (`createProjectReadiness(serverKind)`) — a replacement command resolves to
+  `custom` and thus never inherits a built-in server's quirks. Policies drive
+  operations through the generic `ProjectHost` (`hasOpenDocuments`,
+  `findBootstrapFile`, `openDocument`, `request`); `LspClient` constructs a
+  host, wires protocol events into the selected policy, and delegates
+  `ensureProjectLoaded`/`ensureDocumentReady` with no language branches.
 - On server process exit (the `proc.on("exit")` handler), the client resets
   `ready = null` so a subsequent tool call will re-spawn. This matters: ccls
   can crash on malformed `compile_commands.json`, and the extension should
@@ -165,7 +172,8 @@ indexer. Its whole-project operation is the standard `workspace/diagnostic`
 request when `diagnosticMode: "workspace"`; while checking every project file,
 ty reports standard work-done `$/progress` (`begin`, periodic `report`, `end`)
 on the request's `workDoneToken`. The default ty config enables workspace
-mode. Before the first Python action, `TyProjectProgress` sends one
+mode. Before the first Python action, `TyProjectReadiness` (selected at
+`LspClient` construction from the resolved `serverKind`) sends one
 `workspace/diagnostic` request and waits for either its work-done `end` or a
 normal response. This populates ty's Salsa query cache before navigation.
 
@@ -191,10 +199,11 @@ the right id is what makes tsserver apply JSX rules for `.tsx`.
 workspace eagerly on `initialize`, tsserver does not load a project until the
 first `didOpen` of a file in that project. `workspace/symbol` (tsserver's
 `navto`) throws `"No Project."` if called before then. `code_search_symbol`
-works around this with `LspClient.ensureProjectLoaded()`: if no document has
-been opened yet, it scans the workspace root (skipping `node_modules`,
+works around this with `LspClient.ensureProjectLoaded()`, which delegates to
+`TypeScriptProjectReadiness`: if no document has been opened yet, it asks the
+`ProjectHost` to scan the workspace root (skipping `node_modules`,
 `build`, `dist`, `.git`, hidden dirs) for the first source file of the
-server's language and opens it.
+server's language and open it.
 
 `didOpen` alone is NOT a completion barrier: it is an LSP notification, and a
 cold `workspace/symbol` sent immediately afterward can run while tsserver is
@@ -202,16 +211,17 @@ still loading the `tsconfig`, returning only symbols from the opened file (or
 none). typescript-language-server translates tsserver's
 `projectLoadingStart`/`projectLoadingFinish` events into standard LSP
 work-done progress: a server-created UUID token followed by `$/progress`
-`begin`/`end`. `ensureProjectLoaded()` records the generic progress revision
-before the bootstrap open, waits briefly for that interval to start, then
-waits for its end before allowing `workspace/symbol`. The generic token
+`begin`/`end`. `TypeScriptProjectReadiness` records the work-done tracker
+revision before the bootstrap open, waits briefly for that interval to start,
+then waits for its end before allowing `workspace/symbol`. The generic token
 tracker is shared transport machinery with ccls, but completion policy is
 server-specific: TypeScript trusts the matching work-done `end`; ccls still
 polls authoritative `$ccls/info` counters because it can omit progress for a
 one-TU batch.
 
-The warm-up is a no-op for other servers (they return true immediately when
-`openDocs.size > 0` or when `lang !== "typescript"`). `code_outline`/
+The warm-up is a no-op for other policies (the no-op policy returns true
+immediately, and the Ty/Bash policies carry their own workspace barriers).
+`code_outline`/
 `code_hover`/`code_definition`/`code_references`/`code_rename` all open the
 target document first, so they load the project naturally and don't need the
 cold workspace-search barrier.
@@ -231,14 +241,13 @@ It does not expose the scan through work-done progress. Its only
 server-originated completion signal is the standard `window/logMessage`
 notification whose message contains `BackgroundAnalysis: Completed`.
 
-`LspClient` registers a language-gated log-message handler before initialize
-and `ensureProjectLoaded()` waits for that completion before Bash
-`workspace/symbol`. The start wait is bounded because a user-selected server
-log level can suppress info messages; once the start message is observed, a
-missing completion is a hard project-load timeout. This state and handler are
-encapsulated by `BashProjectProgress`; they do not alter the generic
-TypeScript/ty work-done barrier or `CppProjectProgress`'s
-pipeline polling.
+`LspClient` always registers a log-message handler before initialize, and
+`BashProjectReadiness` is the only policy that observes it; `ensureProjectLoaded()`
+waits for the completion log before Bash `workspace/symbol`. The start wait
+is bounded because a user-selected server log level can suppress info
+messages; once the start message is observed, a missing completion is a hard
+project-load timeout. The Bash policy's state and handler do not touch the
+TypeScript/ty work-done tracker or the ccls pipeline poll.
 
 **Tree-sitter for `.tsx`/`.jsx` uses the `tsx` grammar, not `typescript`.**
 See `code_scan.md`. `tsLangForFile` maps `.tsx`/`.jsx` → `tsx` and

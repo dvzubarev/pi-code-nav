@@ -11,8 +11,8 @@
  *                            where `LANGUAGES` is the single source of truth).
  *   - `UnknownLanguageError` — hard failure for single-file tools.
  *   - position-selector validation/resolution for detail tools called directly.
- *   - `awaitReadyForQuery` — openDocument + project-readiness wait before a
- *                            per-file LSP query, deduplicated across tools.
+ *   - `awaitReadyForQuery` — openDocument + per-document readiness wait before
+ *                            a per-file LSP query, deduplicated across tools.
  *
  * Per-tool implementations live in their own files; `nav.ts` is the barrel that
  * re-exports everything `index.ts` and the tests consume as `nav.*`.
@@ -40,15 +40,14 @@ export interface ClientProvider {
 // ---------------------------------------------------------------------------
 
 /**
- * Open `abs` and establish the language-specific project barrier before a
- * per-file query. ccls waits for its indexing pipeline; ty performs one
- * whole-workspace diagnostic check and waits for standard work-done progress.
- * This avoids plausible but stale/incomplete navigation results on cold,
- * large projects.
+ * Open `abs` and establish the per-document readiness barrier before a
+ * per-file query. The barrier itself is language-neutral — each language's
+ * policy decides whether per-file queries need one (ccls re-polls its
+ * indexing pipeline; ty reuses its workspace check; the rest are no-ops).
  *
- * The operation is idempotent: document opens are deduplicated, ccls caches
- * its established idle state, and ty memoizes its first workspace check for
- * the server lifetime. Timeouts are surfaced rather than returning stale data.
+ * The operation is idempotent: document opens are deduplicated, and each
+ * policy memoizes its own barrier for the server lifetime. Timeouts are
+ * surfaced rather than returning stale data.
  */
 export async function awaitReadyForQuery(
     lang: Lang,
@@ -57,7 +56,7 @@ export async function awaitReadyForQuery(
     text: string,
 ): Promise<void> {
     await client.openDocument(abs, text);
-    if (lang === "cpp" || lang === "python") await client.ensureProjectLoaded();
+    await client.ensureDocumentReady(abs);
 }
 
 // ---------------------------------------------------------------------------

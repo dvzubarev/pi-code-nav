@@ -48,9 +48,10 @@ our code. Two causes, two fixes:
 2. **Indexing wait before LSP queries** (`nav.ts` `definition()`). On a cold
    ccls cache, `documentSymbol` returns stale `{0:0}` ranges and
    `textDocument/definition` bounces because ccls's preamble session for the
-   file isn't ready yet. Added `openDocument` + `waitForIndexingComplete()`
-   (cpp only, best-effort) before the query — mirrors `diagnostics()`. The wait
-   is event-driven (`$/progress` "end"), ~60s cold / instant warm.
+   file isn't ready yet. Added `openDocument` +
+   `awaitReadyForQuery`/`ensureDocumentReady` (delegating to the cpp readiness
+   policy, best-effort) before the query — mirrors `diagnostics()`. The wait
+   is the ccls pipeline poll (`$ccls/info`), ~60s cold / instant warm.
 
 ### Tests pinning the fix
 
@@ -63,4 +64,4 @@ our code. Two causes, two fixes:
   call-site tests pin that step 0 does NOT short-circuit on a use (only on a
   def).
 - `test/errors.test.mjs` — mocks updated to add `openDocument` /
-  `waitForIndexingComplete` to the mock client (the new pre-query calls).
+  `ensureDocumentReady` to the mock client (the new pre-query calls).

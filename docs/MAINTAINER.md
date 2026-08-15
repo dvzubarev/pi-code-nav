@@ -65,17 +65,30 @@
   `index.ts` and the tests/CLI import the tools via `./src/nav` so they don't
   need to know about the per-tool file split.
 - `src/nav-core.ts` — shared core for every tool: `ClientProvider`,
-  `UnknownLanguageError`, and `awaitReadyForQuery` (openDocument + project
-  readiness wait, deduplicated across tools). `ALL_LANGS` is re-exported from
-  the neutral catalog (`src/languages/catalog.ts`) to keep `nav.ts`'s public
-  surface stable; the source of truth lives in the catalog.
-- `src/project-progress.ts` — project-readiness abstraction. `ProjectProgress`
-  is the transport-facing API; `WorkDoneProgress` handles standard
-  `$/progress`, while `BashProjectProgress` and `CppProjectProgress` implement
-  the servers' nonstandard completion policies. `TyProjectProgress` triggers
-  ty's workspace-diagnostic check (selected by the resolved `serverKind`, see
-  `server-config.ts`). `lsp-client.ts` only wires protocol events and request
-  callbacks into the selected implementation.
+  `UnknownLanguageError`, and `awaitReadyForQuery` (openDocument + per-document
+  readiness wait via `client.ensureDocumentReady`, deduplicated across tools —
+  language-agnostic: each readiness policy decides whether per-file queries
+  need a barrier). `ALL_LANGS` is re-exported from the neutral catalog
+  (`src/languages/catalog.ts`) to keep `nav.ts`'s public surface stable; the
+  source of truth lives in the catalog.
+- `src/project-progress.ts` — project-readiness policies. `ProjectReadiness`
+  is the transport-facing API (`onWorkDoneCreate` / `onProgress` /
+  `onLogMessage` / `onDocumentSynced` / `ensureWorkspaceReady` /
+  `ensureDocumentReady` / `reset`) plus two supporting types: `ProjectHost`
+  (generic host operations the policy drives — `hasOpenDocuments`,
+  `findBootstrapFile`, `openDocument`, `request`) and `WorkDoneProgress` (the
+  shared standard `$/progress` token tracker). One policy per language/
+  server pair: no-op (pyright/custom), `TypeScriptProjectReadiness`
+  (bootstrap didOpen + work-done begin/end), `CppProjectReadiness` (bootstrap
+  didOpen + `$ccls/info` polling), `BashProjectReadiness` (window/logMessage
+  BackgroundAnalysis), `TyProjectReadiness` (workspace/diagnostic + work-done
+  end). `createProjectReadiness(serverKind)` selects the policy at
+  construction BY SERVER IDENTITY (ccls/ty/pyright/bash-language-server/
+  typescript-language-server/custom), never by language: a replacement command
+  resolves to `custom` (server-config.ts) and gets the no-op policy, while a
+  built-in server behind an explicit `serverKind` escape hatch keeps its own.
+  `lsp-client.ts` only wires protocol events into it and delegates
+  `ensureProjectLoaded`/`ensureDocumentReady` through a `ProjectHost`.
 - `src/lsp/server-config.ts` — the built-in server configuration: the
   `ServerConfig` shape, the `DEFAULTS` table, Python auto-detection
   (ty preferred, pyright fallback), and `resolveConfig`. Returns a

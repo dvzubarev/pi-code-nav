@@ -11,7 +11,11 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { readdir, readFile, unlink } from "node:fs/promises";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { resolve, join } from "node:path";
-import { createProjectProgress, type ProjectProgress } from "./project-progress";
+import {
+    createProjectReadiness,
+    type ProjectReadiness,
+    type ProjectHost,
+} from "./project-progress";
 // Server config now lives in src/lsp (see src/lsp/server-config.ts and
 // docs/lsp.md); LspClient consumes an already-resolved config + stable
 // server identity and never knows WHY a particular server was selected.
@@ -21,7 +25,6 @@ import type { Lang } from "./languages/types";
 // existing consumers importing it from lsp-client keep working while new code
 // should import the neutral type from ./languages/types.
 export type { Lang };
-import { SOURCE_EXTS } from "./languages/catalog";
 import {
     createMessageConnection,
     StreamMessageReader,
@@ -94,45 +97,6 @@ function languageIdFor(absPath: string, lang: Lang): string {
     }
     if (lang === "cpp") return "cpp";
     return lang; // python, bash
-}
-
-/**
- * Recursively find the first source file of `lang` under `rootUri`, skipping
- * node_modules, .git, build/, dist/, and hidden directories. Depth-first,
- * shallow — returns on the first match (we only need one file to trigger
- * tsserver project loading). Returns an absolute path or null.
- */
-async function findFirstSourceFile(rootUri: string, lang: Lang): Promise<string | null> {
-    let rootPath: string;
-    try {
-        rootPath = fileURLToPath(rootUri);
-    } catch {
-        return null;
-    }
-    const exts = SOURCE_EXTS[lang];
-    const SKIP = new Set(["node_modules", ".git", ".", "build", "dist", "out", ".next", ".cache"]);
-    async function scan(dir: string): Promise<string | null> {
-        let entries;
-        try {
-            entries = await readdir(dir, { withFileTypes: true });
-        } catch {
-            return null;
-        }
-        for (const e of entries) {
-            if (e.isDirectory()) {
-                if (SKIP.has(e.name)) continue;
-                const found = await scan(resolve(dir, e.name));
-                if (found) return found;
-            } else if (e.isFile()) {
-                const dot = e.name.lastIndexOf(".");
-                if (dot >= 0 && exts.includes(e.name.slice(dot).toLowerCase())) {
-                    return resolve(dir, e.name);
-                }
-            }
-        }
-        return null;
-    }
-    return scan(rootPath);
 }
 
 /** Minimal stderr logger — server diagnostics go here, not the agent. */
@@ -300,7 +264,7 @@ export class LspClient {
      */
     private diagnosticWaiters = new Map<string, Set<(diags: Diagnostic[] | undefined) => void>>();
     /** Project-readiness policy and notification state; see project-progress.ts. */
-    private readonly projectProgress: ProjectProgress;
+    private readonly readiness: ProjectReadiness;
 
     constructor(lang: Lang, rootPath: string, cfg: ResolvedServerConfig, logDir?: string) {
         this.lang = lang;
@@ -308,28 +272,12 @@ export class LspClient {
         this.rootUri = pathToFileURL(rootPath).href;
         this.cfg = cfg;
         this.logDir = logDir;
-        this.projectProgress = createProjectProgress(
-            lang,
-            async (method, params, timeoutMs) => {
-                const conn = this.conn;
-                if (!conn) throw new Error("LSP server is not connected");
-                const timeout = Math.min(
-                    resolveRequestTimeoutMs(),
-                    timeoutMs ?? resolveRequestTimeoutMs(),
-                );
-                return requestWithTimeout(conn, method, params, timeout);
-            },
-            (method, params) => {
-                const conn = this.conn;
-                if (!conn) return Promise.reject(new Error("LSP server is not connected"));
-                return conn.sendRequest(method, params);
-            },
-            // Stable server identity (from resolveConfig), not a command-path
-            // regex: ty is recognized by its resolved serverKind, so a user
-            // who points Python at a symlink/basedpyright is not misclassified
-            // as ty just because their command path ends in "/ty".
-            lang === "python" && cfg.serverKind === "ty",
-        );
+        // Policy is selected by resolved server identity, never by language
+        // or command path: a replacement command resolves to "custom"
+        // (server-config.ts) so it does NOT inherit a built-in server's
+        // quirks, while a built-in server behind an explicit `serverKind`
+        // escape hatch keeps its policy.
+        this.readiness = createProjectReadiness(cfg.serverKind);
     }
 
     private cfg: ResolvedServerConfig;
@@ -563,28 +511,28 @@ export class LspClient {
             },
         );
         // Work-done progress is used by ccls, typescript-language-server, and
-        // ty. The generic tracker handles token lifetimes for TypeScript and
-        // ty; CppProjectProgress observes ccls progress but verifies completion
-        // through `$ccls/info`. Register BEFORE initialize so
-        // no early server-created token is missed. String method names per the
+        // ty. The readiness policy is always notified (a no-op for policies
+        // that do not track work-done progress); each policy discards tokens
+        // it does not understand. Register BEFORE initialize so no early
+        // server-created token is missed. String method names per the
         // protocol-package compatibility rule in docs/lsp.md.
         conn.onRequest("window/workDoneProgress/create", (params: { token?: string | number }) => {
-            this.projectProgress.handleWorkDoneCreate(params?.token);
+            this.readiness.onWorkDoneCreate(params?.token);
             return null;
         });
         conn.onNotification(
             "$/progress",
             (params: { token?: string | number; value?: { kind?: string } }) => {
-                this.projectProgress.handleProgress(params);
+                this.readiness.onProgress(params);
             },
         );
         // bash-language-server does not use work-done progress for its eager
         // workspace scan. Its only completion signal is an info-level standard
-        // window/logMessage notification. The handler is language-gated and
-        // registered before initialize, so it is inert for every other server
-        // and cannot miss a fast Bash scan.
+        // window/logMessage notification. The handler is registered for every
+        // server and observed only by the readiness policy that cares, so it
+        // can never miss a fast Bash scan.
         conn.onNotification("window/logMessage", (params: { message?: string }) =>
-            this.projectProgress.handleLogMessage(params?.message),
+            this.readiness.onLogMessage(params?.message),
         );
         // If the transport closes without the process exiting (reader hits
         // EOF / writer error), vscode-jsonrpc fires onClose. dispose() there
@@ -764,9 +712,9 @@ export class LspClient {
                 textDocument: { uri, version },
                 contentChanges: [{ text }],
             });
-            // Language-specific trackers may need to re-establish readiness
-            // after a document change (notably ccls's indexing pipeline).
-            this.projectProgress.invalidate();
+            // The readiness policy may need to re-establish its barrier after
+            // a document change (notably ccls's indexing pipeline).
+            this.readiness.onDocumentSynced(absPath);
             this.openDocs.set(uri, { version, text });
             return;
         }
@@ -789,7 +737,7 @@ export class LspClient {
             textDocument: doc,
         });
         // didOpen can enqueue fresh language-specific project work.
-        this.projectProgress.invalidate();
+        this.readiness.onDocumentSynced(absPath);
         this.openDocs.set(uri, { version, text });
     }
 
@@ -803,79 +751,118 @@ export class LspClient {
     }
 
     /**
+     * The generic host the readiness policy drives. LspClient stays a pure
+     * transport: it owns the connection, the document table, and the bootstrap
+     * scan, but the policy owns ALL readiness decisions (which languages need
+     * a bootstrap file, what completion signal to trust, when ty's workspace
+     * check runs).
+     */
+    private projectHost(): ProjectHost {
+        return {
+            hasOpenDocuments: () => this.openDocs.size > 0,
+            findBootstrapFile: async (extensions) => {
+                let rootPath: string;
+                try {
+                    rootPath = fileURLToPath(this.rootUri);
+                } catch {
+                    return null;
+                }
+                const SKIP = new Set([
+                    "node_modules",
+                    ".git",
+                    ".",
+                    "build",
+                    "dist",
+                    "out",
+                    ".next",
+                    ".cache",
+                ]);
+                const scan = async (dir: string): Promise<string | null> => {
+                    let entries;
+                    try {
+                        entries = await readdir(dir, { withFileTypes: true });
+                    } catch {
+                        return null;
+                    }
+                    for (const e of entries) {
+                        if (e.isDirectory()) {
+                            if (SKIP.has(e.name)) continue;
+                            const found = await scan(resolve(dir, e.name));
+                            if (found) return found;
+                        } else if (e.isFile()) {
+                            const dot = e.name.lastIndexOf(".");
+                            if (dot >= 0 && extensions.includes(e.name.slice(dot).toLowerCase())) {
+                                return resolve(dir, e.name);
+                            }
+                        }
+                    }
+                    return null;
+                };
+                return scan(rootPath);
+            },
+            openDocument: async (path) => {
+                const text = await readFile(path, "utf8");
+                await this.openDocument(path, text);
+            },
+            request: async (method, params, timeoutMs) => {
+                const conn = this.conn;
+                if (!conn) throw new Error("LSP server is not connected");
+                // Omitting `timeoutMs` means "no client-imposed deadline"
+                // (e.g. ty's no-change workspace/diagnostic intentionally
+                // long-polls). Supplying one caps BELOW the default so a
+                // waiter (like ccls's pipeline poll) never exceeds the
+                // request deadline. requestWithTimeout's `undefined`
+                // argument makes vscode-jsonrpc omit params from the wire.
+                if (timeoutMs !== undefined) {
+                    return requestWithTimeout(
+                        conn,
+                        method,
+                        params,
+                        Math.min(resolveRequestTimeoutMs(), timeoutMs),
+                    );
+                }
+                // Same params-omission rule as requestWithTimeout: call with
+                // NO params argument when undefined so strict servers (ty,
+                // serde) do not receive a wrapped `params: [null]` sequence.
+                return params === undefined
+                    ? conn.sendRequest(method)
+                    : conn.sendRequest(method, params);
+            },
+        };
+    }
+
+    /**
      * Ensure the language server has loaded a project (index) before a request
-     * that requires one. Every non-pyright default server has a readiness policy:
-     *   - tsserver loads its project lazily on the first didOpen of a file in
-     *     that project; `workspace/symbol` (navto) throws "No Project." before
-     *     then and can return a partial project while loading. The standard
-     *     work-done begin/end interval is the completion barrier.
-     *   - ccls populates its `workspace/symbol` index by parsing ALL the
-     *     translation units listed in compile_commands.json. On a COLD cache
-     *     this takes several seconds; until it finishes, workspace/symbol sees
-     *     symbols from only a subset of TUs. waitForIndexingComplete polls
-     *     ccls's own pipeline counters, so warm caches return immediately and
-     *     cold caches wait for all queued work regardless of project size.
-     *   - bash-language-server starts BackgroundAnalysis asynchronously from
-     *     `initialized`; workspace/symbol can otherwise race it and return [].
-     *     It reports completion only through window/logMessage.
-     *   - ty checks the entire workspace only when workspace/diagnostic is
-     *     requested and reports that check through standard work-done progress.
-     * pyright and unknown user-selected Python servers need no warm-up.
-     *
-     * Implementation: if no document has been opened yet, find one source file
-     * of this server's language under the workspace root and open it (the file
-     * stays open for the session — matching the no-close-until-shutdown
-     * policy); then delegate to the standard or language-specific tracker.
-     * ty instead triggers one workspace-diagnostic check (recognized from the
-     * resolved serverKind). Returns true if a project is
-     * known to be loaded; false if no matching source file could be found.
+     * that requires one. Set up the server BEFORE consulting readiness so a
+     * policy can open a bootstrap document or bump an LSP request against the
+     * live connection. All language-specific knowledge (bootstrap targets,
+     * completion signals, ty's pre-flight workspace check recognized at
+     * construction) lives in the readiness policy; this method is pure
+     * delegation with no language fences.
      */
     async ensureProjectLoaded(): Promise<boolean> {
         await this.ensureReady();
-
-        if (this.lang === "python") {
-            await this.projectProgress.waitUntilReady();
-            return true;
-        }
-        if (this.lang === "bash") {
-            await this.projectProgress.waitUntilReady();
-            return true;
-        }
-        if (this.lang !== "typescript" && this.lang !== "cpp") return true;
-
-        let progressBeforeOpen: number | undefined;
-        if (this.openDocs.size === 0) {
-            try {
-                const file = await findFirstSourceFile(this.rootUri, this.lang);
-                if (!file) return false;
-                const text = await readFile(file, "utf8");
-                if (this.lang === "typescript")
-                    progressBeforeOpen = this.projectProgress.revision();
-                await this.openDocument(file, text);
-            } catch {
-                return false;
-            }
-        }
-        if (this.lang === "typescript") {
-            if (progressBeforeOpen !== undefined) {
-                await this.projectProgress.waitForWorkDoneSince(progressBeforeOpen);
-            } else if (this.projectProgress.hasPendingWork()) {
-                await this.projectProgress.waitUntilReady();
-            }
-        } else {
-            await this.projectProgress.waitUntilReady();
-        }
-        return true;
+        return this.readiness.ensureWorkspaceReady(this.projectHost());
     }
 
-    /** Compatibility wrapper used by the shared per-file query path. */
-    async waitForIndexingComplete(endMs = 60_000): Promise<void> {
-        await this.projectProgress.waitUntilReady(endMs);
+    /**
+     * Establish readiness for ONE document (already opened by the caller
+     * through openDocument) before a per-file query. Delegated so the policy
+     * may perform a per-file barrier (e.g. ccls's pipeline wait); policies with
+     * no per-file barrier are no-ops.
+     */
+    async ensureDocumentReady(absPath: string): Promise<void> {
+        await this.readiness.ensureDocumentReady(this.projectHost(), absPath);
     }
 
-    /** Drop project-progress state on shutdown, exit, or spawn failure. */
+    /** Compatibility wrapper retained for the lsp-trace tooling. */
+    async waitForIndexingComplete(): Promise<void> {
+        await this.readiness.ensureWorkspaceReady(this.projectHost());
+    }
+
+    /** Drop project-readiness state on shutdown, exit, or spawn failure. */
     private resetIndexingState(): void {
-        this.projectProgress.reset();
+        this.readiness.reset();
     }
 
     /**

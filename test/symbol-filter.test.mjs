@@ -304,7 +304,7 @@ function mockClientOfRich(
         hover: async (path, line, char) => hoverTextByPath.get(path) ?? null,
         references: async (path, line, char) => refsByPath.get(path) ?? [],
         openDocument: async () => {},
-        waitForIndexingComplete: async () => {},
+        ensureDocumentReady: async () => {},
     };
     return async () => client;
 }

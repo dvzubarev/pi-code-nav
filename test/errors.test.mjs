@@ -180,6 +180,7 @@ test("nav.diagnostics uses a 60-second push deadline and reports an unavailable 
         await writeFile(resolve(dir, "svc.ts"), "const x = 1;\n", "utf8");
         const client = {
             openDocument: async () => {},
+            ensureDocumentReady: async () => {},
             pullDiagnostics: async () => {
                 throw new Error("Unhandled method textDocument/diagnostic");
             },
@@ -204,6 +205,7 @@ test("nav.diagnostics treats an empty push notification as a clean result", asyn
         await writeFile(resolve(dir, "svc.ts"), "const x = 1;\n", "utf8");
         const client = {
             openDocument: async () => {},
+            ensureDocumentReady: async () => {},
             pullDiagnostics: async () => {
                 throw new Error("Unhandled method textDocument/diagnostic");
             },
@@ -320,7 +322,7 @@ function emptyResultClientOf() {
         // tool falls through to textDocument/definition (which also returns
         // empty) → "No definition found" hard error.
         openDocument: async () => {},
-        waitForIndexingComplete: async () => {},
+        ensureDocumentReady: async () => {},
         documentSymbols: async () => [],
         definition: async () => [],
         references: async () => [],
@@ -365,7 +367,7 @@ test("nav.definition multiple sites: returns one block per site + trailing count
         const idStart = { line: 0, character: 6 };
         const makeClient = () => ({
             openDocument: async () => {},
-            waitForIndexingComplete: async () => {},
+            ensureDocumentReady: async () => {},
             definition: async () => [
                 { uri: `file://${resolve(dir, "a.ts")}`, range: { start: idStart, end: idStart } },
                 { uri: `file://${resolve(dir, "b.ts")}`, range: { start: idStart, end: idStart } },
@@ -406,6 +408,7 @@ test("detail tools accept symbol and pass its first occurrence to LSP", async ()
         const seen = [];
         const client = {
             openDocument: async () => {},
+            ensureDocumentReady: async () => {},
             documentSymbols: async () => [],
             definition: async (_path, _line, column) => {
                 seen.push(["definition", column]);

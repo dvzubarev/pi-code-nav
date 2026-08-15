@@ -35,7 +35,8 @@ export interface LanguageInfo {
     /**
      * File extensions that count as source files for this language. Leading
      * dot, lowercase. This is both the LSP "which server" routing key and the
-     * bootstrap source-scan set (findFirstSourceFile + project detection).
+     * bootstrap source-scan set (ProjectHost.findBootstrapFile + project
+     * detection).
      */
     sourceExts: readonly string[];
     /**

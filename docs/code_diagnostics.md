@@ -27,7 +27,8 @@ The pull model is the natural fit for the synchronous contract — but only
 pyright/ty answer the pull request (see table below). For servers that
 reject the pull request (tsserver, bash-language-server, ccls), the tool
 falls back to an **event-driven** wait on the push model: `openDocument` →
-(for cpp) `waitForIndexingComplete()` → `LspClient.waitForPushedDiagnostics()`.
+(for cpp, via `ensureDocumentReady`) the ccls pipeline poll →
+`LspClient.waitForPushedDiagnostics()`.
 It resolves when the server pushes `textDocument/publishDiagnostics` for that
 URI, with a generous **60-second deadline**. It also resolves if the language
 server exits or shuts down, preventing a dead or live-but-silent process from
@@ -54,7 +55,8 @@ cpp: textDocument/diagnostic request failed: unknown request textDocument/diagno
 
 The new flow waits on ccls's authoritative pipeline state and then on the diagnostic notification:
 
-1. **Indexing done** — `waitForIndexingComplete()` polls ccls's `$ccls/info`
+1. **Indexing done** — the cpp readiness policy (`ensureDocumentReady`
+   delegating to `CppProjectReadiness`) polls ccls's `$ccls/info`
    request, whose `pipeline.completed` and `pipeline.enqueued` counters expose
    the actual indexing queue. It requires two stable idle samples so the final
    queued database update reaches ccls's query database. This is deliberately

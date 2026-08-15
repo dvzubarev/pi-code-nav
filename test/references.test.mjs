@@ -19,6 +19,7 @@ function clientWithReferences(file) {
     const uri = pathToFileURL(file).href;
     return {
         openDocument: async () => {},
+        ensureDocumentReady: async () => {},
         references: async () => [
             { uri, range: { start: { line: 0, character: 6 }, end: { line: 0, character: 12 } } },
             { uri, range: { start: { line: 2, character: 11 }, end: { line: 2, character: 19 } } },
