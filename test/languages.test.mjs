@@ -30,10 +30,7 @@ test("SOURCE_EXTS and EXT_LANG are exhaustive and mutually consistent", async ()
     const { ALL_LANGS, SOURCE_EXTS, EXT_LANG } = await loadCatalog();
     // Every language has a non-empty source-extension list.
     for (const lang of ALL_LANGS) {
-        assert.ok(
-            Array.isArray(SOURCE_EXTS[lang]),
-            `SOURCE_EXTS missing entry for ${lang}`,
-        );
+        assert.ok(Array.isArray(SOURCE_EXTS[lang]), `SOURCE_EXTS missing entry for ${lang}`);
         assert.ok(SOURCE_EXTS[lang].length > 0, `SOURCE_EXTS[${lang}] is empty`);
     }
     // Every EXT_LANG extension maps to a language whose SOURCE_EXTS contains it,
@@ -81,10 +78,7 @@ test("langForFile is case-insensitive and returns null for unknown/extensionless
 test("ROOT_MARKERS is exhaustive for every language (empty allowed)", async () => {
     const { ALL_LANGS, ROOT_MARKERS } = await loadCatalog();
     for (const lang of ALL_LANGS) {
-        assert.ok(
-            Array.isArray(ROOT_MARKERS[lang]),
-            `ROOT_MARKERS missing entry for ${lang}`,
-        );
+        assert.ok(Array.isArray(ROOT_MARKERS[lang]), `ROOT_MARKERS missing entry for ${lang}`);
         // A language with no reliable root-level project marker is allowed:
         // the source-extension scan is the detection fallback. The registry
         // must still HAVE the key (empty array) so detection is exhaustive.

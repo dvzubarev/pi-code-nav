@@ -67,8 +67,7 @@ export async function awaitReadyForQuery(
 /** A detail-tool target is either a precise 1-based column or the first exact
  * occurrence of a symbol on the supplied line. */
 export type PositionSelector =
-    | { column: number; symbol?: never }
-    | { column?: never; symbol: string };
+    { column: number; symbol?: never } | { column?: never; symbol: string };
 
 /** Validate an agent-facing 1-based symbol position. Tool schemas enforce this
  * too; runtime validation protects the CLI and tests that call nav.* directly. */

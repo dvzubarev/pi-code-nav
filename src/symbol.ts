@@ -16,7 +16,11 @@ import type { Lang } from "./languages/types";
 import { detectProjectLanguages } from "./detect";
 import { ALL_LANGS, ClientProvider } from "./nav-core";
 import { renderSymbolInfo, resolveSymbolSelStart, symbolKindFromName, uriToPath } from "./render";
-import { SYMBOL_FANOUT_MAX_MATCHES, renderSymbolFanOut, type FanOutMatch } from "./symbol-search/fanout";
+import {
+    SYMBOL_FANOUT_MAX_MATCHES,
+    renderSymbolFanOut,
+    type FanOutMatch,
+} from "./symbol-search/fanout";
 import type { SymbolRole } from "./syntax/types";
 
 export interface SymbolParams {
@@ -883,4 +887,3 @@ export async function symbol(
     if (out.length === 0) return `(no symbols matching "${params.query}")`;
     return out.join("\n");
 }
-
