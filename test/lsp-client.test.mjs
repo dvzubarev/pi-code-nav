@@ -43,6 +43,10 @@ function fakeConfig(mode) {
         command: process.execPath,
         args: [FIXTURE, mode],
         initOptions: {},
+        // The fake server is not a known built-in: `serverKind` is part of the
+        // resolved-config contract (ResolvedServerConfig), so declare it
+        // explicitly instead of relying on JS to hide the TS requirement.
+        serverKind: "custom",
     };
 }
 
@@ -157,11 +161,18 @@ test("Python project loading waits for ty workspace-diagnostic progress", async 
         command: tyCommand,
         args: [FIXTURE, "ty-workspace-progress"],
         initOptions: { diagnosticMode: "workspace" },
+        // LspClient recognizes ty via the resolved server identity, not a
+        // command-path regex — so this READINESS test must declare it.
+        serverKind: "ty",
     });
     try {
         await c.ensureProjectLoaded();
         const syms = await c.workspaceSymbol("raw_resp_line_iter");
-        assert.equal(syms.length, 1, "workspace/symbol ran before ty finished checking the project");
+        assert.equal(
+            syms.length,
+            1,
+            "workspace/symbol ran before ty finished checking the project",
+        );
     } finally {
         try {
             await c.shutdown();
@@ -225,6 +236,7 @@ test(
             command: "definitely-missing-language-server-xyz",
             args: ["start"],
             initOptions: {},
+            serverKind: "custom",
         });
         try {
             await assert.rejects(c.ensureReady(), (err) => {

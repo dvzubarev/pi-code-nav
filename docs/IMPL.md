@@ -124,6 +124,6 @@ These are not arbitrary defaults; they mirror:
 (setq lsp-pyright-multi-root nil
       lsp-pyright-use-library-code-for-types t)
 ```
-If the user updates their Emacs config, update `DEFAULTS` in `lsp-client.ts`
+If the user updates their Emacs config, update `DEFAULTS` in `src/lsp/server-config.ts`
 to match, and note it here. The `$HOME` in the ccls cache dir is resolved at
 spawn time (`process.env.HOME`) — keep that dynamic, don't hardcode.

@@ -6,12 +6,16 @@
  * extension closes the pool (session_shutdown or /code-nav:off).
  */
 
-import { spawn, execSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { readdir, readFile, unlink } from "node:fs/promises";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { resolve, join } from "node:path";
 import { createProjectProgress, type ProjectProgress } from "./project-progress";
+// Server config now lives in src/lsp (see src/lsp/server-config.ts and
+// docs/lsp.md); LspClient consumes an already-resolved config + stable
+// server identity and never knows WHY a particular server was selected.
+import { commandExists, type ResolvedServerConfig } from "./lsp/server-config";
 import type { Lang } from "./languages/types";
 // Back-compat: `Lang` lived here historically; keep re-exporting it so
 // existing consumers importing it from lsp-client keep working while new code
@@ -44,97 +48,31 @@ import {
 // Importing from the /node subpath auto-installs the jsonrpc Node RAL
 // as a side effect of module load (see vscode-jsonrpc/lib/node/main.js).
 
-/** Command + args + init options for one language. */
-export interface ServerConfig {
-    command: string;
-    args: string[];
-    /** Passed as `initializationOptions` in the LSP initialize request. */
-    initOptions: Record<string, unknown>;
-}
-
-/** Per-language defaults. C++ and bash match the user's Emacs config. */
-const CCLS_CONFIG: ServerConfig = {
-    command: "ccls",
-    args: [],
-    initOptions: {
-        cache: { directory: `${process.env.HOME}/.cache/ccls-pi` },
-        compilationDatabaseDirectory: "build",
-    },
-};
-
-/** Python: pyright (matches the user's Emacs config). */
-const PYRIGHT_CONFIG: ServerConfig = {
-    command: "pyright-langserver",
-    args: ["--stdio"],
-    initOptions: {
-        multiRoot: false,
-        useLibraryCodeForTypes: true,
-    },
-};
+/**
+ * Command + args + init options for one language, plus the stable identity
+ * of the server that produced it. Defined in src/lsp/server-config.ts; kept
+ * as a type re-export here purely for back-compat with existing consumers
+ * that imported ServerConfig/resolveConfig from lsp-client. New code should
+ * import from src/lsp/server-config directly.
+ */
+export type { ServerConfig } from "./lsp/server-config";
 
 /**
- * Python: ty (Astral) — preferred when available because it implements
- * workspace/symbol (pyright does not) and reports standard LSP SymbolKind.
- * No init options needed; ty discovers pyproject.toml / .venv from the root.
+ * Back-compat: these lived here historically. They now live in
+ * src/lsp/server-config.ts (see docs/lsp.md); re-exported so existing
+ * consumers keep working while new code picks the new path.
  */
-const TY_CONFIG: ServerConfig = {
-    command: "ty",
-    args: ["server"],
-    // ty reports whole-workspace checking progress from workspace/diagnostic
-    // only in workspace diagnostic mode. LspClient uses that request as the
-    // cold-project readiness barrier before the first Python query.
-    initOptions: { diagnosticMode: "workspace" },
-};
-
-const BASH_CONFIG: ServerConfig = {
-    command: "bash-language-server",
-    args: ["start"],
-    initOptions: {},
-};
-
-/**
- * TypeScript/JavaScript: typescript-language-server wrapping tsserver. One
- * server covers both .ts and .tsx — the languageId sent in didOpen
- * distinguishes them ("typescript"/"typescriptreact"). The server implements
- * workspace/symbol, hover, definition, references, rename, and the pull
- * diagnostic model.
- */
-const TYPESCRIPT_CONFIG: ServerConfig = {
-    command: "typescript-language-server",
-    args: ["--stdio"],
-    initOptions: {
-        // Let the server locate the local tsconfig.json / jsconfig.json and
-        // honor the project's compiler options.
-        hostInfo: "pi-code-nav",
-    },
-};
-
-const DEFAULTS: Record<Lang, ServerConfig> = {
-    cpp: CCLS_CONFIG,
-    python: PYRIGHT_CONFIG,
-    bash: BASH_CONFIG,
-    typescript: TYPESCRIPT_CONFIG,
-};
-
-/**
- * Memoized PATH lookup. Returns true if `cmd` is executable on PATH.
- * Uses `which` (POSIX, always present) to avoid a node_modules dep.
- */
-const cmdOnPathCache = new Map<string, boolean>();
-function commandExists(cmd: string): boolean {
-    const cached = cmdOnPathCache.get(cmd);
-    if (cached !== undefined) return cached;
-    try {
-        execSync(`command -v ${JSON.stringify(cmd)} >/dev/null 2>&1`, {
-            stdio: "ignore",
-        });
-        cmdOnPathCache.set(cmd, true);
-        return true;
-    } catch {
-        cmdOnPathCache.set(cmd, false);
-        return false;
-    }
-}
+export {
+    CCLS_CONFIG,
+    TY_CONFIG,
+    PYRIGHT_CONFIG,
+    BASH_CONFIG,
+    TYPESCRIPT_CONFIG,
+    resolveConfig,
+    type ServerKind,
+    type ServerOverride,
+    type ResolvedServerConfig,
+} from "./lsp/server-config";
 
 /**
  * Derive the LSP `languageId` for a document from its file extension.
@@ -157,8 +95,6 @@ function languageIdFor(absPath: string, lang: Lang): string {
     if (lang === "cpp") return "cpp";
     return lang; // python, bash
 }
-
-
 
 /**
  * Recursively find the first source file of `lang` under `rootUri`, skipping
@@ -197,46 +133,6 @@ async function findFirstSourceFile(rootUri: string, lang: Lang): Promise<string 
         return null;
     }
     return scan(rootPath);
-}
-
-/**
- * Resolve the effective config for a language.
- *
- * For Python: if the user explicitly set a `command` in .pi/lsp.json, use it
- * verbatim (their choice wins). Otherwise auto-detect: prefer `ty` when on
- * PATH (it implements workspace/symbol and standard SymbolKind), falling back
- * to `pyright-langserver`.
- */
-export function resolveConfig(
-    lang: Lang,
-    overrides?: Partial<Record<Lang, Partial<ServerConfig>>>,
-): ServerConfig {
-    if (lang === "python") {
-        const ov = overrides?.python;
-        // Explicit user command wins (e.g. force pyright, or pick basedpyright).
-        if (ov?.command) {
-            return {
-                command: ov.command,
-                args: ov.args ?? PYRIGHT_CONFIG.args,
-                initOptions: { ...PYRIGHT_CONFIG.initOptions, ...ov.initOptions },
-            };
-        }
-        const base = commandExists("ty") ? TY_CONFIG : PYRIGHT_CONFIG;
-        if (!ov) return base;
-        return {
-            command: base.command,
-            args: ov.args ?? base.args,
-            initOptions: { ...base.initOptions, ...ov.initOptions },
-        };
-    }
-    const base = DEFAULTS[lang];
-    const ov = overrides?.[lang];
-    if (!ov) return base;
-    return {
-        command: ov.command ?? base.command,
-        args: ov.args ?? base.args,
-        initOptions: { ...base.initOptions, ...ov.initOptions },
-    };
 }
 
 /** Minimal stderr logger — server diagnostics go here, not the agent. */
@@ -406,7 +302,7 @@ export class LspClient {
     /** Project-readiness policy and notification state; see project-progress.ts. */
     private readonly projectProgress: ProjectProgress;
 
-    constructor(lang: Lang, rootPath: string, cfg: ServerConfig, logDir?: string) {
+    constructor(lang: Lang, rootPath: string, cfg: ResolvedServerConfig, logDir?: string) {
         this.lang = lang;
         this.rootPath = rootPath;
         this.rootUri = pathToFileURL(rootPath).href;
@@ -428,11 +324,15 @@ export class LspClient {
                 if (!conn) return Promise.reject(new Error("LSP server is not connected"));
                 return conn.sendRequest(method, params);
             },
-            lang === "python" && /(^|[\\/])ty$/.test(cfg.command),
+            // Stable server identity (from resolveConfig), not a command-path
+            // regex: ty is recognized by its resolved serverKind, so a user
+            // who points Python at a symlink/basedpyright is not misclassified
+            // as ty just because their command path ends in "/ty".
+            lang === "python" && cfg.serverKind === "ty",
         );
     }
 
-    private cfg: ServerConfig;
+    private cfg: ResolvedServerConfig;
     /**
      * Optional directory for per-server log files. When set (the pi extension
      * passes ~/.pi/agent/logs/code-nav), each spawned server's stderr is teed
@@ -668,13 +568,10 @@ export class LspClient {
         // through `$ccls/info`. Register BEFORE initialize so
         // no early server-created token is missed. String method names per the
         // protocol-package compatibility rule in docs/lsp.md.
-        conn.onRequest(
-            "window/workDoneProgress/create",
-            (params: { token?: string | number }) => {
-                this.projectProgress.handleWorkDoneCreate(params?.token);
-                return null;
-            },
-        );
+        conn.onRequest("window/workDoneProgress/create", (params: { token?: string | number }) => {
+            this.projectProgress.handleWorkDoneCreate(params?.token);
+            return null;
+        });
         conn.onNotification(
             "$/progress",
             (params: { token?: string | number; value?: { kind?: string } }) => {
@@ -686,9 +583,8 @@ export class LspClient {
         // window/logMessage notification. The handler is language-gated and
         // registered before initialize, so it is inert for every other server
         // and cannot miss a fast Bash scan.
-        conn.onNotification(
-            "window/logMessage",
-            (params: { message?: string }) => this.projectProgress.handleLogMessage(params?.message),
+        conn.onNotification("window/logMessage", (params: { message?: string }) =>
+            this.projectProgress.handleLogMessage(params?.message),
         );
         // If the transport closes without the process exiting (reader hits
         // EOF / writer error), vscode-jsonrpc fires onClose. dispose() there
@@ -930,7 +826,8 @@ export class LspClient {
      * of this server's language under the workspace root and open it (the file
      * stays open for the session — matching the no-close-until-shutdown
      * policy); then delegate to the standard or language-specific tracker.
-     * ty instead triggers one workspace-diagnostic check. Returns true if a project is
+     * ty instead triggers one workspace-diagnostic check (recognized from the
+     * resolved serverKind). Returns true if a project is
      * known to be loaded; false if no matching source file could be found.
      */
     async ensureProjectLoaded(): Promise<boolean> {
@@ -952,7 +849,8 @@ export class LspClient {
                 const file = await findFirstSourceFile(this.rootUri, this.lang);
                 if (!file) return false;
                 const text = await readFile(file, "utf8");
-                if (this.lang === "typescript") progressBeforeOpen = this.projectProgress.revision();
+                if (this.lang === "typescript")
+                    progressBeforeOpen = this.projectProgress.revision();
                 await this.openDocument(file, text);
             } catch {
                 return false;

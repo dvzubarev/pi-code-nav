@@ -37,7 +37,8 @@ import { Type } from "typebox";
 import { readFile } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { LspClient, resolveConfig, type ServerConfig } from "./src/lsp-client";
+import { LspClient } from "./src/lsp-client";
+import { resolveConfig, type ServerOverride } from "./src/lsp/server-config";
 import type { Lang } from "./src/languages/types";
 import * as nav from "./src/nav";
 import { ALL_LANGS } from "./src/nav";
@@ -64,14 +65,12 @@ const POSITION_SELECTOR_SCHEMA = Type.Union([
 // EXT_LANG and langForFile now live in src/render.ts; index.ts imports them.
 
 /** Load .pi/lsp.json (project) then ~/.pi/lsp.json (global); merge per-lang. */
-async function loadConfig(
-    ctx: ExtensionContext,
-): Promise<Partial<Record<Lang, Partial<ServerConfig>>>> {
+async function loadConfig(ctx: ExtensionContext): Promise<Partial<Record<Lang, ServerOverride>>> {
     const candidates = [
         resolve(ctx.cwd, ".pi", "lsp.json"),
         resolve(process.env.HOME ?? "", ".pi", "lsp.json"),
     ];
-    const merged: Partial<Record<Lang, Partial<ServerConfig>>> = {};
+    const merged: Partial<Record<Lang, ServerOverride>> = {};
     for (const p of candidates) {
         if (!existsSync(p)) continue;
         try {
@@ -81,7 +80,7 @@ async function loadConfig(
                 for (const lang of ALL_LANGS) {
                     const ov = (data as Record<string, unknown>)[lang];
                     if (ov && typeof ov === "object") {
-                        merged[lang] = { ...merged[lang], ...(ov as Partial<ServerConfig>) };
+                        merged[lang] = { ...merged[lang], ...(ov as ServerOverride) };
                     }
                 }
             }
@@ -99,7 +98,8 @@ async function loadConfig(
 class ServerPool {
     private clients = new Map<Lang, LspClient>();
     private cwd: string;
-    private overrides: Partial<Record<Lang, Partial<ServerConfig>>>;
+    /** Per-language user overrides from .pi/lsp.json (read by code-nav:status). */
+    readonly overrides: Partial<Record<Lang, ServerOverride>>;
     private toolsEnabled = false;
     /**
      * Directory where per-server stderr log files are written (one file per
@@ -109,11 +109,7 @@ class ServerPool {
      */
     private logDir: string;
 
-    constructor(
-        cwd: string,
-        overrides: Partial<Record<Lang, Partial<ServerConfig>>>,
-        logDir: string,
-    ) {
+    constructor(cwd: string, overrides: Partial<Record<Lang, ServerOverride>>, logDir: string) {
         this.cwd = cwd;
         this.overrides = overrides;
         this.logDir = logDir;
@@ -215,7 +211,10 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         parameters: Type.Intersect([
             Type.Object({
                 path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-                line: Type.Integer({ minimum: 1, description: "1-based line number of the symbol" }),
+                line: Type.Integer({
+                    minimum: 1,
+                    description: "1-based line number of the symbol",
+                }),
                 list_symbols: Type.Optional(
                     Type.Array(StringEnum(SYMBOL_ROLES), {
                         minItems: 1,
@@ -255,7 +254,10 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         parameters: Type.Intersect([
             Type.Object({
                 path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-                line: Type.Integer({ minimum: 1, description: "1-based line number of the symbol" }),
+                line: Type.Integer({
+                    minimum: 1,
+                    description: "1-based line number of the symbol",
+                }),
                 context: Type.Optional(
                     StringEnum(["none", "syntax", "enclosing"] as const, {
                         description:
@@ -430,7 +432,10 @@ function registerTools(pi: ExtensionAPI, state: State): void {
         parameters: Type.Intersect([
             Type.Object({
                 path: Type.String({ description: "File path (absolute or relative to cwd)" }),
-                line: Type.Integer({ minimum: 1, description: "1-based line number of the symbol" }),
+                line: Type.Integer({
+                    minimum: 1,
+                    description: "1-based line number of the symbol",
+                }),
             }),
             POSITION_SELECTOR_SCHEMA,
         ]),
@@ -570,12 +575,7 @@ export default function codeNavExtension(pi: ExtensionAPI) {
             }
             const lines: string[] = [];
             for (const [lang, client] of clients) {
-                const cfg = resolveConfig(
-                    lang,
-                    state!.pool["overrides" as keyof typeof state.pool] as Partial<
-                        Record<Lang, Partial<ServerConfig>>
-                    >,
-                );
+                const cfg = resolveConfig(lang, state.pool.overrides);
                 lines.push(`${lang}: ${cfg.command} ${cfg.args.join(" ")}`.trim());
             }
             ctx.ui.notify(`code-nav servers:\n  - ${lines.join("\n  - ")}`, "info");

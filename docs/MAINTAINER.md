@@ -17,6 +17,10 @@
   (string method name, per `lsp.md`) populates `diagnosticsByUri` (latest-
   wins per URI); `getPushedDiagnostics(absPath)` reads a snapshot of it for the
   `code_diagnostics` push fallback. See `lsp.md` and `code_diagnostics.md`.
+  Built-in server config + the `resolveConfig`/`ServerConfig` surface now live
+  in `src/lsp/server-config.ts` (per-server defaults under `src/lsp/servers/`);
+  `lsp-client.ts` re-exports them purely for back-compat and consumes only a
+  `ResolvedServerConfig` (which carries a stable `serverKind`).
 - `index.ts` — `codeNavExtension(pi)`: registers the 3 slash commands + the
   `session_shutdown` hook + the `before_agent_start` system-prompt hook at
   load; `registerTools()` (called only by `/code-nav`) registers the 7 LLM
@@ -58,8 +62,16 @@
   is the transport-facing API; `WorkDoneProgress` handles standard
   `$/progress`, while `BashProjectProgress` and `CppProjectProgress` implement
   the servers' nonstandard completion policies. `TyProjectProgress` triggers
-  ty's workspace-diagnostic check. `lsp-client.ts` only wires protocol events
-  and request callbacks into the selected implementation.
+  ty's workspace-diagnostic check (selected by the resolved `serverKind`, see
+  `server-config.ts`). `lsp-client.ts` only wires protocol events and request
+  callbacks into the selected implementation.
+- `src/lsp/server-config.ts` — the built-in server configuration: the
+  `ServerConfig` shape, the `DEFAULTS` table, Python auto-detection
+  (ty preferred, pyright fallback), and `resolveConfig`. Returns a
+  `ResolvedServerConfig` carrying a stable `serverKind` so `LspClient` never
+  guesses a server from its command path. Per-server defaults live in
+  `src/lsp/servers/<server>.ts`; `lsp-client.ts` re-exports the old surface
+  for back-compat only.
 - `src/detect.ts` — project language detection (`detectProjectLanguages`,
   memoized per root; `clearDetectedLanguagesCache`) used by `code_search_symbol`
   so the per-language workspace/symbol loop only spawns servers that can find

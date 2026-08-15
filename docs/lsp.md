@@ -136,10 +136,10 @@ leading empty string. Verified against ty's raw output: `greet`=`kind:12`,
 
 ### Python server auto-detection (ty preferred, pyright fallback)
 
-`resolveConfig("python")` in `lsp-client.ts` does NOT use the `DEFAULTS`
+`resolveConfig("python")` in `src/lsp/server-config.ts` does NOT use the `DEFAULTS`
 table for Python the way cpp/bash do. It branches: if the user set an explicit
 `command` in `.pi/lsp.json`, that wins verbatim (so they can force pyright, or
-pick basedpyright, etc.). Otherwise it calls `commandExists("ty")` and picks
+pick basedpyright, etc.) and the config is marked `serverKind: "custom"`. Otherwise it calls `commandExists("ty")` and picks
 `TY_CONFIG` if true, else `PYRIGHT_CONFIG`. Only the `command` field is
 auto-detected; user `args`/`initOptions` overrides still merge over whichever
 base was chosen.
@@ -173,9 +173,9 @@ A no-change `workspace/diagnostic` request may deliberately remain open as a
 long poll after checking finishes. Therefore the response itself is not the
 only completion barrier: the progress `end` is authoritative, and the pending
 request is retained with a rejection handler until ty completes it on a later
-change or shutdown. This warm-up is ty-only (recognized from the configured
-server command); pyright and user-selected Python servers keep their previous
-behavior.
+change or shutdown. This warm-up is ty-only (recognized from the resolved `serverKind` in
+`src/lsp/server-config.ts`); pyright and user-selected Python servers keep
+their previous behavior.
 
 ### TypeScript server (typescript-language-server wrapping tsserver)
 

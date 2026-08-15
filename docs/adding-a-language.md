@@ -25,7 +25,15 @@ order but must land together.
    is only a type-only `Lang` re-export facade. The catalog must NOT import
    `lsp-client.ts`.
 
-## 1. LSP server — `lsp-client.ts`
+## 1. LSP server — `src/lsp/server-config.ts` (+ `src/lsp/servers/`)
+
+Server configuration no longer lives in `lsp-client.ts`: `LspClient` consumes
+an already-resolved `ResolvedServerConfig` (which carries a stable
+`serverKind`) and never knows why ty was selected over pyright. The built-in
+per-server defaults live in `src/lsp/servers/<server>.ts`; the `ServerConfig`
+/ `ServerKind` / `ResolvedServerConfig` shapes, the `DEFAULTS` table, Python
+auto-detection, and `resolveConfig` live in `src/lsp/server-config.ts`.
+`lsp-client.ts` re-exports the old surface purely for back-compat.
 
 1. **`Lang` is derived, not hand-written.** The union is derived from
    `LANGUAGES` in `src/languages/catalog.ts` and re-exported (type-only) by
@@ -34,13 +42,25 @@ order but must land together.
    `Record<Lang, ...>` and every `switch`/`if` on language downstream.
 
 2. **Add a `ServerConfig`.** Define `<LANG>_CONFIG` (`command`, `args`,
-   `initOptions`). Add it to `DEFAULTS`.
+   `initOptions`) in a new `src/lsp/servers/<server>.ts`. Add it to
+   `DEFAULTS` in `src/lsp/server-config.ts` with a matching `serverKind`
+   (extend the `ServerKind` union if this is a NEW server identity, not just
+   a new language reusing an existing server). `resolveConfig` returns a
+   `ResolvedServerConfig`, so any new server kind must be added to the
+   `ServerKind` union or the build breaks.
 
-   - Auto-detection (like Python's ty/pyright fallback) is the exception, not
-     the default. Only add it if there are two real servers for the language
-     and one is strictly better (see `resolveConfig`'s Python branch and the
-     "Python server auto-detection" section of `DESIGN.md`). Otherwise a
-     plain `DEFAULTS` entry is correct.
+    - Auto-detection (like Python's ty/pyright fallback) is the exception, not
+      the default. Only add it if there are two real servers for the language
+      and one is strictly better (see `resolveConfig`'s Python branch and the
+      "Python server auto-detection" section of `DESIGN.md`). Otherwise a
+      plain `DEFAULTS` entry is correct.
+
+    - `serverKind` is the stable identity `LspClient` uses to select
+      language-specific behavior (e.g. ty's workspace-diagnostic warm-up).
+      Canonical command names are classified exactly (`ty` → `"ty"`,
+      `pyright-langserver` → `"pyright"`); anything else resolves to
+      `"custom"` unless the user supplies an explicit `serverKind` in
+      `.pi/lsp.json` (the escape hatch for absolute paths).
 
 3. **`languageIdFor` — only if the LSP convention distinguishes file kinds.**
    Most languages have one `languageId` matching the `Lang` tag and need no
@@ -83,34 +103,34 @@ calls). Keep it that way — import the neutral `Lang` from
    (`type` / `call` / `member` / `import` / `var`) from the node's **parent
    type + field name**, not from the node text. Rules of thumb:
 
-   - **`type`** — every occurrence of a type name, not just the definition
-     site (the agent hovers any use). Include primitive/builtin type nodes
-     if the grammar distinguishes them (e.g. `predefined_type`).
-   - **`member`** — the right of `.`, and declared field/method/property
-     names (class fields, interface members, enum members, attributes).
-   - **`import`** — names brought into scope by import/Export constructs.
-     This role is the **whole reason `code_scan` exists** (third-party
-     discovery); get it right. Separated from `var` so the default "no var"
-     filter keeps imports.
-   - **`call`** — a name in call position (`call_expression`'s function
-     child, `new`'s constructor).
-   - **`var`** — declaration names, parameters, locals, the base of a
-     member expression. Noisy by design; filtered out of the default role
-     set. Match the other languages' convention: a function/variable
-     *declaration name* is `var`, not `call`.
-   - Return **`null`** to skip: keywords, punctuation, comments, strings,
-     namespace qualifiers whose meaningful name is a child node, and nodes
-     that would duplicate a parent's row.
+    - **`type`** — every occurrence of a type name, not just the definition
+      site (the agent hovers any use). Include primitive/builtin type nodes
+      if the grammar distinguishes them (e.g. `predefined_type`).
+    - **`member`** — the right of `.`, and declared field/method/property
+      names (class fields, interface members, enum members, attributes).
+    - **`import`** — names brought into scope by import/Export constructs.
+      This role is the **whole reason `code_scan` exists** (third-party
+      discovery); get it right. Separated from `var` so the default "no var"
+      filter keeps imports.
+    - **`call`** — a name in call position (`call_expression`'s function
+      child, `new`'s constructor).
+    - **`var`** — declaration names, parameters, locals, the base of a
+      member expression. Noisy by design; filtered out of the default role
+      set. Match the other languages' convention: a function/variable
+      _declaration name_ is `var`, not `call`.
+    - Return **`null`** to skip: keywords, punctuation, comments, strings,
+      namespace qualifiers whose meaningful name is a child node, and nodes
+      that would duplicate a parent's row.
 
-   Use `fieldOf(node)` (not `===`) to compare node identity — web-tree-sitter
-   returns a fresh proxy per `.child()`, so reference equality is always
-   false. This was a real bug; do not "simplify" it back.
+    Use `fieldOf(node)` (not `===`) to compare node identity — web-tree-sitter
+    returns a fresh proxy per `.child()`, so reference equality is always
+    false. This was a real bug; do not "simplify" it back.
 
-   **Probe the grammar first.** Before writing rules, parse a representative
-   snippet and walk the tree printing `node.type`, `node.text`,
-   `node.parent.type`, and the field name — see the snippet at the end of
-   this doc. The node-type names and field structure vary per grammar; do not
-   guess from another language's grammar.
+    **Probe the grammar first.** Before writing rules, parse a representative
+    snippet and walk the tree printing `node.type`, `node.text`,
+    `node.parent.type`, and the field name — see the snippet at the end of
+    this doc. The node-type names and field structure vary per grammar; do not
+    guess from another language's grammar.
 
 ## 3. Tool layer — `index.ts`
 
@@ -220,27 +240,28 @@ import { readFile } from "node:fs/promises";
 
 await Parser.init();
 const lang = await Language.load(await readFile(getWasmPath("<lang>")));
-const p = new Parser(); p.setLanguage(lang);
+const p = new Parser();
+p.setLanguage(lang);
 const code = `/* representative snippet: imports, types, calls, members */\n`;
 const tree = p.parse(code);
 (function walk(n, d = 0) {
-	if (!n) return;
-	const t = n.type;
-	if (/identifier|type|property|field/.test(t)) {
-		const field = n.parent
-			? (function () {
-					for (let i = 0; i < n.parent.childCount; i++) {
-						const c = n.parent.child(i);
-						if (c && c.id === n.id) return n.parent.fieldNameForChild(i);
-					}
-					return null;
-				})()
-			: null;
-		console.log(
-			`L${n.startPosition.row + 1} ${t} | ${n.text} | parent=${n.parent?.type} | gp=${n.parent?.parent?.type} | field=${field}`,
-		);
-	}
-	for (const c of n.children) walk(c, d + 1);
+    if (!n) return;
+    const t = n.type;
+    if (/identifier|type|property|field/.test(t)) {
+        const field = n.parent
+            ? (function () {
+                  for (let i = 0; i < n.parent.childCount; i++) {
+                      const c = n.parent.child(i);
+                      if (c && c.id === n.id) return n.parent.fieldNameForChild(i);
+                  }
+                  return null;
+              })()
+            : null;
+        console.log(
+            `L${n.startPosition.row + 1} ${t} | ${n.text} | parent=${n.parent?.type} | gp=${n.parent?.parent?.type} | field=${field}`,
+        );
+    }
+    for (const c of n.children) walk(c, d + 1);
 })(tree.rootNode);
 ```
 
