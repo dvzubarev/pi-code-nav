@@ -6,10 +6,18 @@
  * This helper adds AST context without trying to rediscover references. It is
  * intentionally best-effort: callers can fall back to the LSP location if a
  * grammar cannot parse an individual result file.
+ *
+ * The node-type taxonomies are PER-GRAMMAR now: each call resolves them from
+ * the language's `SyntaxLanguage.referenceNodes` profile
+ * (`./languages/<lang>.ts`), replacing the old shared supersets. A node type
+ * from one grammar can no longer fire for another, and each grammar's real
+ * structural names (e.g. cpp's `for_range_loop`) are included where the old
+ * shared set missed them.
  */
 
 import { Parser, Node } from "web-tree-sitter";
-import { getLanguage, TsLang } from "./runtime";
+import { syntaxLanguage, TsLang } from "./languages/index";
+import { getLanguage } from "./runtime";
 
 export type ReferenceContextMode = "syntax" | "enclosing";
 
@@ -21,87 +29,6 @@ export interface ReferenceSyntaxContext {
     source: string;
     enclosing?: { name: string; line: number; column: number };
 }
-
-const CALL_NODE_TYPES = new Set(["call", "call_expression", "new_expression"]);
-const IMPORT_NODE_TYPES = new Set([
-    "import_statement",
-    "import_from_statement",
-    "import_declaration",
-    "export_statement",
-    "using_declaration",
-]);
-const MEMBER_NODE_TYPES = new Set(["attribute", "field_expression", "member_expression"]);
-const TYPE_NODE_TYPES = new Set([
-    "type",
-    "type_identifier",
-    "generic_type",
-    "template_type",
-    "type_annotation",
-    "predefined_type",
-]);
-const DEFINITION_NODE_TYPES = new Set([
-    "function_definition",
-    "class_definition",
-    "function_declaration",
-    "generator_function_declaration",
-    "method_definition",
-    "class_declaration",
-    "abstract_class_declaration",
-    "interface_declaration",
-    "function_expression",
-    "arrow_function",
-    "class",
-    "class_specifier",
-    "struct_specifier",
-    "union_specifier",
-    "namespace_definition",
-    "lambda_expression",
-]);
-const EXPRESSION_NODE_TYPES = new Set([
-    // Calls are useful context even when the reference is an argument rather
-    // than the callee (`write(value)`). In that case the role remains `read`,
-    // but rendering only `value` throws away more context than grep would.
-    "call",
-    "call_expression",
-    "new_expression",
-    "attribute",
-    "field_expression",
-    "member_expression",
-    "subscript",
-    "subscript_expression",
-    "subscription",
-    "binary_expression",
-    "binary_operator",
-    "boolean_operator",
-    "comparison_operator",
-    "conditional_expression",
-    "ternary_expression",
-    "unary_expression",
-    "unary_operator",
-    "await_expression",
-    "cast_expression",
-    "parenthesized_expression",
-    // C++ wraps control-flow conditions separately from the expression. Keep
-    // the complete header when its condition spans physical lines.
-    "condition_clause",
-]);
-const STATEMENT_NODE_TYPES = new Set([
-    "expression_statement",
-    "return_statement",
-    "assignment",
-    "assignment_expression",
-    "augmented_assignment",
-    "declaration",
-    "lexical_declaration",
-    "variable_declaration",
-    "if_statement",
-    "for_statement",
-    "for_in_statement",
-    "while_statement",
-    "switch_statement",
-    "try_statement",
-    "with_statement",
-]);
 
 function containsNode(outer: Node, inner: Node): boolean {
     const a = outer.startIndex;
@@ -115,13 +42,17 @@ function ancestors(node: Node): Node[] {
     return out;
 }
 
-function nearest(nodes: Node[], types: Set<string>): Node | undefined {
+function nearest(nodes: Node[], types: ReadonlySet<string>): Node | undefined {
     return nodes.find((n) => types.has(n.type));
 }
 
-function callContainingCallee(nodes: Node[], selected: Node): Node | undefined {
+function callContainingCallee(
+    nodes: Node[],
+    selected: Node,
+    callNodeTypes: ReadonlySet<string>,
+): Node | undefined {
     for (const n of nodes) {
-        if (!CALL_NODE_TYPES.has(n.type)) continue;
+        if (!callNodeTypes.has(n.type)) continue;
         const callee =
             n.childForFieldName("function") ??
             n.childForFieldName("constructor") ??
@@ -149,20 +80,30 @@ function assignmentContainingLeft(nodes: Node[], selected: Node): Node | undefin
     return undefined;
 }
 
-function expressionContaining(nodes: Node[]): Node | undefined {
-    return nearest(nodes, EXPRESSION_NODE_TYPES);
+function expressionContaining(
+    nodes: Node[],
+    expressionNodeTypes: ReadonlySet<string>,
+): Node | undefined {
+    return nearest(nodes, expressionNodeTypes);
 }
 
 /** Select the outermost complete expression around an occurrence. This keeps
  * the consumer of a nested call/member visible (`use(make())`, not merely
  * `make()`) without crossing into a containing control-flow body or
  * definition. */
-function outermostExpressionContaining(nodes: Node[], fallback: Node): Node {
+function outermostExpressionContaining(
+    nodes: Node[],
+    fallback: Node,
+    completeStatementNodeTypes: ReadonlySet<string>,
+    structuralNodeTypes: ReadonlySet<string>,
+    blockNodeTypes: ReadonlySet<string>,
+    expressionNodeTypes: ReadonlySet<string>,
+): Node {
     let expression = fallback;
     for (const node of nodes) {
-        if (COMPLETE_STATEMENT_NODE_TYPES.has(node.type)) break;
-        if (STRUCTURAL_NODE_TYPES.has(node.type) || BLOCK_NODE_TYPES.has(node.type)) break;
-        if (EXPRESSION_NODE_TYPES.has(node.type)) expression = node;
+        if (completeStatementNodeTypes.has(node.type)) break;
+        if (structuralNodeTypes.has(node.type) || blockNodeTypes.has(node.type)) break;
+        if (expressionNodeTypes.has(node.type)) expression = node;
     }
     return expression;
 }
@@ -203,10 +144,11 @@ function terminalNameNode(node: Node): Node {
 
 function enclosingSymbol(
     nodes: Node[],
-    lang: TsLang,
+    definitionNodeTypes: ReadonlySet<string>,
+    qualifierSeparator: string,
     sourceLines: string[],
 ): ReferenceSyntaxContext["enclosing"] {
-    const defs = nodes.filter((n) => DEFINITION_NODE_TYPES.has(n.type));
+    const defs = nodes.filter((n) => definitionNodeTypes.has(n.type));
     if (defs.length === 0) return undefined;
     const named = defs
         .map((node) => ({ node, nameNode: definitionName(node) }))
@@ -219,9 +161,8 @@ function enclosingSymbol(
         .map((x) => x.nameNode.text.trim())
         .filter(Boolean);
     const inner = terminalNameNode(named[0].nameNode);
-    const sep = lang === "cpp" ? "::" : ".";
     return {
-        name: names.join(sep),
+        name: names.join(qualifierSeparator),
         line: inner.startPosition.row + 1,
         column:
             byteToStringColumn(
@@ -243,66 +184,29 @@ function byteToStringColumn(textLine: string, bytes: number): number {
 const MAX_CONTEXT_LINES = 80;
 const MAX_CONTEXT_CHARS = 12_000;
 
-/** Structural ancestors used by `context: "enclosing"`. Plain blocks and
- * `try` are intentionally absent: they say little about why a statement runs. */
-const STRUCTURAL_NODE_TYPES = new Set([
-    "if_statement",
-    "elif_clause",
-    "else_clause",
-    "conditional_statement",
-    "for_statement",
-    "for_in_statement",
-    "range_based_for_statement",
-    "while_statement",
-    "do_statement",
-    "switch_statement",
-    "case_statement",
-    "case_clause",
-    "switch_case",
-    "switch_default",
-    "match_statement",
-    "with_statement",
-    ...DEFINITION_NODE_TYPES,
-]);
-
-const BLOCK_NODE_TYPES = new Set([
-    "block",
-    "compound_statement",
-    "statement_block",
-    "class_body",
-    "declaration_list",
-]);
-
-/** Nodes which are complete executable/declaration statements rather than
- * expression fragments. Structural statements are handled separately. */
-const COMPLETE_STATEMENT_NODE_TYPES = new Set([
-    "expression_statement",
-    "return_statement",
-    "co_return_statement",
-    "throw_statement",
-    "raise_statement",
-    "break_statement",
-    "continue_statement",
-    "assignment",
-    "augmented_assignment",
-    "declaration",
-    "field_declaration",
-    "lexical_declaration",
-    "variable_declaration",
-    "using_declaration",
-    "import_statement",
-    "import_from_statement",
-    "import_declaration",
-    "export_statement",
-    "command",
-    "redirected_statement",
-]);
-
 const MAX_STRUCTURAL_SIGNATURE_LINES = 24;
 const MAX_STRUCTURAL_BODY_LINES = 80;
 const MAX_STRUCTURAL_FOOTER_LINES = 8;
 
-function containingBody(structure: Node, target: Node): Node | null {
+interface ContextNodeTypes {
+    call: ReadonlySet<string>;
+    import: ReadonlySet<string>;
+    member: ReadonlySet<string>;
+    type: ReadonlySet<string>;
+    definition: ReadonlySet<string>;
+    expression: ReadonlySet<string>;
+    statement: ReadonlySet<string>;
+    /** Control-flow ancestors + definition nodes (used by `enclosing`). */
+    structural: ReadonlySet<string>;
+    block: ReadonlySet<string>;
+    completeStatement: ReadonlySet<string>;
+}
+
+function containingBody(
+    structure: Node,
+    target: Node,
+    blockNodeTypes: ReadonlySet<string>,
+): Node | null {
     const fields = ["body", "consequence", "alternative"];
     for (const field of fields) {
         const child = structure.childForFieldName(field);
@@ -312,15 +216,20 @@ function containingBody(structure: Node, target: Node): Node | null {
     // containing block child is still unambiguous and keeps this best-effort.
     return (
         structure.namedChildren.find(
-            (child) => BLOCK_NODE_TYPES.has(child.type) && containsNode(child, target),
+            (child) => blockNodeTypes.has(child.type) && containsNode(child, target),
         ) ?? null
     );
 }
 
-function completeContainingStatement(syntaxNode: Node): Node {
+function completeContainingStatement(
+    syntaxNode: Node,
+    completeStatementNodeTypes: ReadonlySet<string>,
+    structuralNodeTypes: ReadonlySet<string>,
+    blockNodeTypes: ReadonlySet<string>,
+): Node {
     for (let node: Node | null = syntaxNode; node; node = node.parent) {
-        if (COMPLETE_STATEMENT_NODE_TYPES.has(node.type)) return node;
-        if (STRUCTURAL_NODE_TYPES.has(node.type) || BLOCK_NODE_TYPES.has(node.type)) break;
+        if (completeStatementNodeTypes.has(node.type)) return node;
+        if (structuralNodeTypes.has(node.type) || blockNodeTypes.has(node.type)) break;
     }
     return syntaxNode;
 }
@@ -384,11 +293,17 @@ function renderStructuralSkeleton(
     syntaxNode: Node,
     selected: Node,
     text: string,
+    types: ContextNodeTypes,
 ): string {
     const lines = text.split(/\r?\n/);
-    const statement = completeContainingStatement(syntaxNode);
+    const statement = completeContainingStatement(
+        syntaxNode,
+        types.completeStatement,
+        types.structural,
+        types.block,
+    );
     const comments = adjacentCommentRange(statement, text);
-    const body = containingBody(structure, statement);
+    const body = containingBody(structure, statement, types.block);
     const sections: LineSection[] = [];
 
     if (body) {
@@ -491,6 +406,27 @@ export async function referenceSyntaxContext(
 ): Promise<ReferenceSyntaxContext | null> {
     const sourceLines = text.split(/\r?\n/);
     if (line < 0 || line >= sourceLines.length) return null;
+
+    const profile = syntaxLanguage(lang);
+    const rn = profile.referenceNodes;
+    // `structural` = control-flow constructs LSP reference context renders
+    // plus the definition constructs (which provide the `enclosing` metadata's
+    // function/class/namespace scope). The profile keeps these separate; here
+    // we compose the full set used for the enclosing skeleton.
+    const structural: ReadonlySet<string> = new Set([...rn.structural, ...rn.definition]);
+    const types: ContextNodeTypes = {
+        call: rn.call,
+        import: rn.import,
+        member: rn.member,
+        type: rn.type,
+        definition: rn.definition,
+        expression: rn.expression,
+        statement: rn.statement,
+        structural,
+        block: rn.block,
+        completeStatement: rn.completeStatement,
+    };
+
     const language = await getLanguage(lang);
     const parser = new Parser();
     parser.setLanguage(language);
@@ -507,17 +443,17 @@ export async function referenceSyntaxContext(
         // at a qualifier boundary. Prefer the nearest named ancestor.
         while (selected && !selected.isNamed && selected.parent) selected = selected.parent;
         const chain = ancestors(selected);
-        const call = callContainingCallee(chain, selected);
-        const imported = nearest(chain, IMPORT_NODE_TYPES);
-        const member = nearest(chain, MEMBER_NODE_TYPES);
-        const typeNodes = chain.filter((n) => TYPE_NODE_TYPES.has(n.type));
+        const call = callContainingCallee(chain, selected, types.call);
+        const imported = nearest(chain, types.import);
+        const member = nearest(chain, types.member);
+        const typeNodes = chain.filter((n) => types.type.has(n.type));
         // The outer type node carries the complete expression (`list[Point]`,
         // `std::vector<T>`), while the innermost is often just one identifier.
         const typed = typeNodes.length > 0 ? typeNodes[typeNodes.length - 1] : undefined;
         const declaration = bindingDeclarationContaining(chain, selected);
         const assigned = assignmentContainingLeft(chain, selected);
         const definition = chain.find((n) => {
-            if (!DEFINITION_NODE_TYPES.has(n.type)) return false;
+            if (!types.definition.has(n.type)) return false;
             const name = definitionName(n);
             return !!name && containsNode(name, selected);
         });
@@ -526,7 +462,14 @@ export async function referenceSyntaxContext(
         let syntaxNode = selected;
         if (call) {
             kind = "call";
-            syntaxNode = outermostExpressionContaining(chain, call);
+            syntaxNode = outermostExpressionContaining(
+                chain,
+                call,
+                types.completeStatement,
+                types.structural,
+                types.block,
+                types.expression,
+            );
         } else if (imported) {
             kind = "import";
             syntaxNode = imported;
@@ -542,25 +485,34 @@ export async function referenceSyntaxContext(
             // write reference merely because its declarator is a left-hand
             // syntactic field (for example `int data[N]`).
             kind = "declaration";
-            syntaxNode = nearest(chain, STATEMENT_NODE_TYPES) ?? declaration;
+            syntaxNode = nearest(chain, types.statement) ?? declaration;
         } else if (assigned) {
             // Assignment wins over member/type shape: `obj.field = value` is
             // semantically a write, not merely a member occurrence.
             kind = "write";
-            syntaxNode = nearest(chain, STATEMENT_NODE_TYPES) ?? assigned;
+            syntaxNode = nearest(chain, types.statement) ?? assigned;
         } else if (typed) {
             kind = "type";
             syntaxNode = typed;
         } else if (member) {
             kind = "member";
-            syntaxNode = outermostExpressionContaining(chain, member);
+            syntaxNode = outermostExpressionContaining(
+                chain,
+                member,
+                types.completeStatement,
+                types.structural,
+                types.block,
+                types.expression,
+            );
         } else {
             // An identifier by itself is usually less useful than grep output.
             // Select the nearest complete expression (including a containing
             // call when this is a bare argument), and fall back to a statement
             // for constructs such as `return value`.
             syntaxNode =
-                expressionContaining(chain) ?? nearest(chain, STATEMENT_NODE_TYPES) ?? selected;
+                expressionContaining(chain, types.expression) ??
+                nearest(chain, types.statement) ??
+                selected;
         }
 
         let contextNode = syntaxNode;
@@ -569,12 +521,23 @@ export async function referenceSyntaxContext(
             // Select the nearest ancestor with control/scope meaning, skipping
             // plain blocks and try. Render a sparse AST-aware skeleton so a
             // huge function/loop does not hide the referenced statement.
-            const structure = chain.find((node) => STRUCTURAL_NODE_TYPES.has(node.type));
+            const structure = chain.find((node) => types.structural.has(node.type));
             if (structure) {
                 contextNode = structure;
-                renderedSource = renderStructuralSkeleton(structure, syntaxNode, selected, text);
+                renderedSource = renderStructuralSkeleton(
+                    structure,
+                    syntaxNode,
+                    selected,
+                    text,
+                    types,
+                );
             } else {
-                const statement = completeContainingStatement(syntaxNode);
+                const statement = completeContainingStatement(
+                    syntaxNode,
+                    types.completeStatement,
+                    types.structural,
+                    types.block,
+                );
                 contextNode = statement;
                 renderedSource = renderNodeSource(statement, text);
             }
@@ -586,7 +549,12 @@ export async function referenceSyntaxContext(
             startLine: contextNode.startPosition.row + 1,
             endLine: contextNode.endPosition.row + 1,
             source: renderedSource,
-            enclosing: enclosingSymbol(chain, lang, sourceLines),
+            enclosing: enclosingSymbol(
+                chain,
+                types.definition,
+                profile.qualifierSeparator,
+                sourceLines,
+            ),
         };
     } finally {
         tree.delete();

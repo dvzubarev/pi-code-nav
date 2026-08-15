@@ -89,35 +89,39 @@ auto-detection, and `resolveConfig` live in `src/lsp/server-config.ts`.
 ## 2. tree-sitter — `src/syntax/`
 
 The tree-sitter support is split by capability under `src/syntax/`:
-`runtime.ts` (grammar lifecycle/cache + `TsLang`/`tsLangForFile`/
-`tsLangToLspLang`), `symbol-scan.ts` (`parseSymbols`), `reference-context.ts`
-(`referenceSyntaxContext`), `definition-context.ts` (`findEnclosingDefWithDoc`),
-and `source-render.ts` (rendering). `src/tree-sitter-parse.ts` is now a
-compatibility barrel re-exporting their public surface. The whole layer has
-**no dependency on `lsp-client.ts`** (it makes zero LSP calls). Keep it that
-way — import the neutral `Lang` from `./languages/types`, never from the LSP
-module. The per-language role classifiers live in
-`src/syntax/classifiers/*.ts`, dispatched by the `TsLang → RoleClassifier`
-table in `src/syntax/index.ts` (shared `TSNode` / `fieldOf()` / `SymbolRole` /
-`SymbolEntry` types in `src/syntax/types.ts`).
+`runtime.ts` (grammar lifecycle/cache), `symbol-scan.ts` (`parseSymbols`),
+`reference-context.ts` (`referenceSyntaxContext`), `definition-context.ts`
+(`findEnclosingDefWithDoc`), and `source-render.ts` (rendering).
+`src/tree-sitter-parse.ts` is a compatibility barrel re-exporting their public
+surface. `src/syntax/languages/` contains the `SyntaxLanguage` profile for
+each grammar and its registry; it is the single source of truth for grammar
+routing, LSP routing, classifier dispatch, reference taxonomy, and definition
+policy. `TsLang`, `tsLangForFile`, `tsLangToLspLang`, and `classifierFor` are
+derived from it. The whole layer has **no dependency on `lsp-client.ts`** (it
+makes zero LSP calls). Keep it that way — import the neutral `Lang` from
+`./languages/types`, never from the LSP module. Shared `TSNode` / `fieldOf()` /
+`SymbolRole` / `SymbolEntry` types live in `src/syntax/types.ts`.
 
-6. **Add the grammar to `TsLang` and `tsLangForFile`** (both in
-   `src/syntax/runtime.ts`). Confirm the grammar
-   ships in `tree-sitter-wasm`'s `out/<lang>/` (check `manifest.json`). If one
-   logical language needs **two** grammars (e.g. plain vs. JSX dialects), add
-   both to `TsLang` — `TsLang` is allowed to be a **superset** of `Lang`.
+6. **Confirm the grammar ships in `tree-sitter-wasm`** (check
+   `manifest.json` / `out/<grammar>/`) and create
+   `src/syntax/languages/<grammar>.ts`. Export a
+   `const <grammar>Language = { ... } as const satisfies SyntaxLanguage`.
+   Its required fields are `grammar`, `lspLanguage`, `extensions`,
+   `classifyRole`, `qualifierSeparator`, `referenceNodes`, and
+   `definitionPolicy`. Then add that profile to `SYNTAX_LANGUAGES` in
+   `src/syntax/languages/index.ts` using `as const satisfies readonly
+   SyntaxLanguage[]`. This automatically derives `TsLang`, `tsLangForFile`,
+   `tsLangToLspLang`, and `classifierFor`; do **not** edit any hand-written
+   union, extension map, LSP map, or classifier dispatch table. One logical
+   language may have several profiles/grammars (for example TypeScript and
+   TSX), each with its own `lspLanguage`.
 
-7. **`tsLangToLspLang` — only if `TsLang` is a superset of `Lang`.** When two
-   tree-sitter grammars map to one LSP server, add the `TsLang → Lang` mapping
-   here and export an `LspLang` type. If `TsLang == Lang` (one grammar per
-   server), this helper stays a trivial identity and no callers need it.
-
-8. **Add a classifier file under `src/syntax/classifiers/`** (e.g.
-   `rust.ts`) and one line in `src/syntax/index.ts`'s dispatch table
-   (`classifierFor`) — this is enough for `parseSymbols`. For
-   each node type the grammar uses for identifiers, decide the `SymbolRole`
-   (`type` / `call` / `member` / `import` / `var`) from the node's **parent
-   type + field name**, not from the node text. Rules of thumb:
+7. **Add a classifier file under `src/syntax/classifiers/`** (e.g. `rust.ts`)
+   when the new profile cannot reuse an existing classifier. Point the
+   profile's `classifyRole` field at it. For each node type the grammar uses
+   for identifiers, decide the `SymbolRole` (`type` / `call` / `member` /
+   `import` / `var`) from the node's **parent type + field name**, not from
+   the node text. Rules of thumb:
 
     - **`type`** — every occurrence of a type name, not just the definition
       site (the agent hovers any use). Include primitive/builtin type nodes
@@ -148,42 +152,37 @@ table in `src/syntax/index.ts` (shared `TSNode` / `fieldOf()` / `SymbolRole` /
     this doc. The node-type names and field structure vary per grammar; do not
     guess from another language's grammar.
 
-    **Then audit the shared node-type supersets.** The classifier covers only
-    `parseSymbols`. `referenceSyntaxContext` and `findEnclosingDefWithDoc`
-    still gate on hand-maintained, language-agnostic node-type sets:
+    **Then build and audit the profile's reference/definition taxonomy.**
+    `referenceNodes` controls calls/imports/members/types/expressions/
+    statements/structures/blocks for `referenceSyntaxContext`; the
+    `definitionPolicy` controls the enclosing definition and body range for
+    `findEnclosingDefWithDoc`. Missing entries still degrade these capabilities
+    even if `parseSymbols` is correct, so probe representative calls, imports,
+    member access, declarations, definitions, and control flow.
 
-    - `src/syntax/reference-context.ts`: `CALL_NODE_TYPES`, `IMPORT_NODE_TYPES`,
-      `MEMBER_NODE_TYPES`, `TYPE_NODE_TYPES`, `DEFINITION_NODE_TYPES`,
-      `EXPRESSION_NODE_TYPES`, `STATEMENT_NODE_TYPES`, `STRUCTURAL_NODE_TYPES`,
-      `BLOCK_NODE_TYPES`, `COMPLETE_STATEMENT_NODE_TYPES`.
-    - `src/syntax/definition-context.ts`: `DEF_NODE_TYPES`, `DEF_BODY_NODE_TYPES`.
-
-    A node type that is not in the relevant set means that capability silently
-    degrades: a missing definition-node type skips `enclosing` metadata, a
-    missing call-expression type falls back to a passable-but-worse `read`
-    context, and a missing `DEF_NODE_TYPES` entry makes `code_definition`'s
-    tree-sitter resolver return null (the caller then falls back to LSP).
-    Probe the new grammar for these constructs and add them.
-
-    These supersets are collision-prone as grammars accumulate — a later
-    `SyntaxLanguage` per-grammar profile will replace them. Until it lands, do
-    not rely on `parseSymbols` working as evidence that the reference and
-    definition support also work.
+    Every taxonomy entry must be a **named** node: verify it with
+    `language.idForNodeType(type, true)`, not merely `Language.types` (which
+    also lists anonymous keywords and punctuation). Manually audit the
+    construct's semantics too. Identical strings can mean unrelated syntax in
+    different grammars — for example Python's `attribute` is member access,
+    while C++'s `attribute` is `[[nodiscard]]`, not member access. The registry
+    tests enforce named-node existence; semantic review is still required.
 
 ## 3. Tool layer — `index.ts`
 
-9. **`EXT_LANG` / `SOURCE_EXTS`** — already derived from the catalog's
+8. **`EXT_LANG` / `SOURCE_EXTS`** — already derived from the catalog's
    `LANGUAGES[lang].sourceExts` (step 0). Nothing to touch here; route every
-   extension you added to the catalog, and make sure each is also handled in
-   `tsLangForFile` (step 6). If an extension has a tree-sitter grammar but no
-   LSP server (or vice versa), that's a deliberate gap — document why.
+   extension you added to the catalog, and make sure each has a corresponding
+   syntax-profile extension (step 6). If an extension has a tree-sitter
+   grammar but no LSP server (or vice versa), that's a deliberate gap —
+   document why.
 
-10. **`loadConfig`** — iterates `ALL_LANGS` (imported from `nav.ts`) for the
-    `.pi/lsp.json` merge loop, so per-project overrides pick up a new
-    language automatically once it's added to `ALL_LANGS` (step 0/11) —
+9. **`loadConfig`** — iterates `ALL_LANGS` (imported from `nav.ts`) for the
+   `.pi/lsp.json` merge loop, so per-project overrides pick up a new
+   language automatically once it's added to `ALL_LANGS` (step 0/10) —
     nothing to touch here directly.
 
-11. **`code_search_symbol` default `langs`** — `ALL_LANGS` lives in
+10. **`code_search_symbol` default `langs`** — `ALL_LANGS` lives in
     `src/languages/catalog.ts` (re-exported by `nav.ts`). It is used by
     project-language detection (all tiers), `code_search_symbol`'s
     language-validation check (so a bad `language` value fails cleanly instead
@@ -194,32 +193,35 @@ table in `src/syntax/index.ts` (shared `TSNode` / `fieldOf()` / `SymbolRole` /
     no separate literal to remember. If the server needs `ensureProjectLoaded`
     (step 4), the call is already there for all languages (no-op otherwise).
 
-12. **`code_scan` `include_docs`** — if `TsLang` is a superset (step
-    7), the LSP client is spawned via `tsLangToLspLang(tsLang)`, **not** a
-    bare `tsLang as Lang` cast. That cast is only valid when `TsLang == Lang`.
+11. **`code_scan` `include_docs`** — syntax profiles can map several grammar
+    keys to one LSP language (for example `tsx` → `typescript`). The client is
+    spawned via profile-derived `tsLangToLspLang(tsLang)`, **not** a bare
+    `tsLang as Lang` cast.
 
 ## 4. CLI test harness — `scripts/nav-cli.mjs`
 
-13. Nothing to mirror anymore. The CLI is a thin argv-parser around `nav.ts`
+12. Nothing to mirror anymore. The CLI is a thin argv-parser around `nav.ts`
     (which `index.ts` also imports); the render helpers live in `render.ts`.
-    Adding a language to the catalog (step 0) and `tsLangToLspLang`
-    (in `src/syntax/runtime.ts`) is enough — both the extension and the CLI
+    Adding a language to the catalog (step 0) and syntax profile (step 6) is
+    enough — both the extension and the CLI
     pick it up automatically. The only thing to verify is that the CLI's
     `symbol` subcommand (which passes `language` through to `nav.symbol`)
     accepts the new language name.
 
 ## 5. Tests — `test/`
 
-14. Add `test/<lang>.test.mjs` pinning the new classifier's contract. Use
+13. Add `test/<lang>.test.mjs` pinning the new classifier's contract. Use
     `test/cpp.test.mjs` / `test/typescript.test.mjs` as templates. Assert
     every role branch (type / call / member / import / var) with
     `assertEntry` at exact 1-based positions, plus `assertNoEntry` for the
     filtered cases (e.g. declaration names dropped by the default role set).
     Add `tsLangForFile` / `tsLangToLspLang` mapping assertions to
-    `test/core.test.mjs` or the per-language test, and add a
-    `test/languages.test.mjs` row for the new language to pin the derived
-    `SOURCE_EXTS`/`EXT_LANG`/`ROOT_MARKERS` consistency (all are derived from
-    `LANGUAGES`, so this mostly guards against manual copy drift).
+    `test/core.test.mjs` or the per-language test. Extend
+    `test/syntax-languages.test.mjs`'s profile expectations and keep its named
+    node validation green. Add a `test/languages.test.mjs` row for the new
+    language to pin the derived `SOURCE_EXTS`/`EXT_LANG`/`ROOT_MARKERS`
+    consistency (all are derived from `LANGUAGES`, so this mostly guards
+    against manual copy drift).
 
     **Verify positions empirically before writing assertions** — off-by-one
     column counts are the most common test bug. Parse the snippet and print
@@ -230,14 +232,14 @@ table in `src/syntax/index.ts` (shared `TSNode` / `fieldOf()` / `SymbolRole` /
 
 ## 6. Dev shell — `flake.nix`
 
-15. Add the language server (and any runtime it wraps, e.g. `tsserver` for
+14. Add the language server (and any runtime it wraps, e.g. `tsserver` for
     `typescript-language-server`) to `devShells.<system>.default.buildInputs`.
     Users provide servers in their own project shells; these are for
     development/testing of the extension.
 
 ## 7. Docs
 
-16. Update `README.md` (intro line, built-in defaults, file-extension →
+15. Update `README.md` (intro line, built-in defaults, file-extension →
     language table, dependencies grammar list) and `AGENTS.md` (the "What
     this is" language-server list). Update `docs/DESIGN.md`: the supported-
     languages paragraph in the intro. Update `docs/lsp.md`: add a

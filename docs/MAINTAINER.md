@@ -126,24 +126,26 @@
   and the per-language registry (`strategyFor`); `symbol.ts` calls through
   it and contains NO per-language ranking branches.
 - `src/syntax/` — the tree-sitter support layer, split by capability:
-  `runtime.ts` (grammar lifecycle/cache + `TsLang`/`tsLangForFile`/
-  `tsLangToLspLang`), `symbol-scan.ts` (`parseSymbols`), `reference-context.ts`
-  (`referenceSyntaxContext`), `definition-context.ts` (`findEnclosingDefWithDoc`),
-  `source-render.ts` (`renderNumberedSource`/`annotateNumberedSource`/
-  `renderSymbolTable`/`hoverFirstLine`), `types.ts` (the `TSNode` view of a
-  web-tree-sitter `Node`, `RoleClassifier`, `SymbolRole`, `SymbolEntry`,
-  `fieldOf()`), and `classifiers/*.ts` (one classifier per grammar: python,
-  cpp, bash, typescript — tsx reuses the typescript classifier). `index.ts`
-  holds the `TsLang → RoleClassifier` dispatch table (`classifierFor`).
-  Adding a language = one classifier file + one registry line for the scope
-  `parseSymbols` covers, PLUS auditing the shared node-type supersets in
-  `reference-context.ts` (its `*_NODE_TYPES` sets) and
-  `definition-context.ts` (`DEF_NODE_TYPES`, `DEF_BODY_NODE_TYPES`) —
-  `referenceSyntaxContext` and `findEnclosingDefWithDoc` still gate on those,
-  so a new grammar's node types can pass symbol scanning while silently
-  degrading reference/definition support. A later per-grammar
-  `SyntaxLanguage` profile is intended to replace these supersets; until it
-  lands, they must be hand-maintained per grammar.
+  `runtime.ts` (grammar lifecycle/cache), `symbol-scan.ts` (`parseSymbols`),
+  `reference-context.ts` (`referenceSyntaxContext`), `definition-context.ts`
+  (`findEnclosingDefWithDoc`), `source-render.ts`
+  (`renderNumberedSource`/`annotateNumberedSource`/`renderSymbolTable`/
+  `hoverFirstLine`), and `types.ts` (the `TSNode` view of a web-tree-sitter
+  `Node`, `RoleClassifier`, `SymbolRole`, `SymbolEntry`, `fieldOf()`).
+  `languages/` holds one `SyntaxLanguage` profile per grammar plus its
+  registry: the profile declares grammar/LSP/extension routing, classifier,
+  qualifier separator, reference taxonomy, and definition policy. `TsLang`,
+  `tsLangForFile`, `tsLangToLspLang`, and `classifierFor` are derived from
+  that registry; `index.ts` re-exports it. Classifiers remain in
+  `classifiers/*.ts` (tsx reuses TypeScript's). Adding a syntax language means
+  creating a classifier when needed, creating its profile, and registering it
+  in `languages/index.ts` — never editing a hand-written language union or
+  dispatch table. Every taxonomy entry must be a **named** node verified by
+  `Language.idForNodeType(type, true)` and manually audited for that grammar's
+  semantics: a node name shared by two grammars can mean different things.
+  `findEnclosingDefWithDoc` additionally rejects anonymous nodes at runtime,
+  so a cursor on a keyword (such as `class`) walks up to the enclosing AST
+  definition rather than returning the keyword token.
 - `src/tree-sitter-parse.ts` — compatibility barrel re-exporting the public
   surface of `src/syntax/` (grammar lifecycle, `parseSymbols`,
   `referenceSyntaxContext`, `findEnclosingDefWithDoc`, source/table

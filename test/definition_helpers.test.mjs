@@ -80,6 +80,17 @@ test("cpp: cursor on a class/struct definition → hasBody=true", async () => {
     assert.equal(r.endLine, 3);
 });
 
+test("cpp: cursor on multiline class keyword resolves the class, not its anonymous token", async () => {
+    const { findEnclosingDefWithDoc } = await TS();
+    const src = [`class Widget {`, `public:`, `  void foo();`, `};`, ``].join("\n");
+    // `class` is an anonymous grammar token; walk through it to class_specifier.
+    const r = await findEnclosingDefWithDoc("cpp", src, 1, 1);
+    assert.ok(r);
+    assert.equal(r.hasBody, true);
+    assert.equal(r.startLine, 0);
+    assert.equal(r.endLine, 3);
+});
+
 // ---------------------------------------------------------------------------
 // C++: cursor on a header-only declaration (scenario 2).
 // ---------------------------------------------------------------------------
@@ -278,6 +289,18 @@ test("cpp: cursor on top-level whitespace / preprocessor → null or non-def", a
 // TypeScript: the same helper generalizes.
 // ---------------------------------------------------------------------------
 
+test("typescript: cursor on multiline class keyword resolves the class, not its anonymous token", async () => {
+    const { findEnclosingDefWithDoc } = await TS();
+    const src = [`class Widget {`, `  work(): void {`, `    return;`, `  }`, `}`, ``].join("\n");
+    // The grammar also has a named `class` expression node, but this cursor is
+    // on its anonymous keyword token and must walk to class_declaration.
+    const r = await findEnclosingDefWithDoc("typescript", src, 1, 1);
+    assert.ok(r);
+    assert.equal(r.hasBody, true);
+    assert.equal(r.startLine, 0);
+    assert.equal(r.endLine, 4);
+});
+
 test("typescript: cursor on function declaration with `/** */` doc → hasBody=true, doc range", async () => {
     const { findEnclosingDefWithDoc } = await TS();
     const src = [
@@ -300,6 +323,17 @@ test("typescript: cursor on function declaration with `/** */` doc → hasBody=t
 // Python: docstrings are INSIDE the body (first statement), not preceding
 // comments — so docStartLine is null, and the body range includes the docstring.
 // ---------------------------------------------------------------------------
+
+test("python: cursor on multiline class keyword resolves the class, not its anonymous token", async () => {
+    const { findEnclosingDefWithDoc } = await TS();
+    const src = [`class Widget:`, `    def work(self):`, `        return 1`, ``].join("\n");
+    // `class` is an anonymous grammar token; class_definition owns the body.
+    const r = await findEnclosingDefWithDoc("python", src, 1, 1);
+    assert.ok(r);
+    assert.equal(r.hasBody, true);
+    assert.equal(r.startLine, 0);
+    assert.equal(r.endLine, 2);
+});
 
 test("python: cursor on function def → hasBody=true, no preceding doc (docstring is inside)", async () => {
     const { findEnclosingDefWithDoc } = await TS();

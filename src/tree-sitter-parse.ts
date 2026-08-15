@@ -19,8 +19,9 @@
  * tree-sitter parse, no server round-trips. See code_scan.md "What it solves".
  */
 
-export { getLanguage, tsLangForFile, tsLangToLspLang } from "./syntax/runtime";
-export type { LspLang, TsLang } from "./syntax/runtime";
+export { getLanguage } from "./syntax/runtime";
+export { tsLangForFile, tsLangToLspLang } from "./syntax/languages/index";
+export type { TsLang } from "./syntax/languages/index";
 export { DEFAULT_SYMBOL_ROLES, parseSymbols } from "./syntax/symbol-scan";
 export type { ParseSymbolsOptions } from "./syntax/symbol-scan";
 export { referenceSyntaxContext } from "./syntax/reference-context";
@@ -33,3 +34,9 @@ export {
     renderNumberedSource,
     renderSymbolTable,
 } from "./syntax/source-render";
+export { SYNTAX_LANGUAGES, classifierFor, syntaxLanguage } from "./syntax/languages/index";
+export type {
+    DefinitionPolicy,
+    ReferenceNodeTaxonomy,
+    SyntaxLanguage,
+} from "./syntax/languages/index";

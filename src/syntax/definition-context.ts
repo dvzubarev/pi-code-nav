@@ -34,73 +34,16 @@
  */
 
 import { Parser } from "web-tree-sitter";
-import { getLanguage, TsLang } from "./runtime";
+import { syntaxLanguage, TsLang } from "./languages/index";
+import { getLanguage } from "./runtime";
 import type { TSNode } from "./types";
 
-/** Node types that count as a "definition" for code_definition's body
- * retrieval. A node of one of these types, found by walking up from the
- * cursor, is the enclosing definition whose body (or declaration) we
- * return. Function/method definitions and class/struct/enum specifiers are
- * the structural kinds the tool targets (matches code_outline's allowlist
- * plus function_definition for out-of-line C++ defs). */
-const DEF_NODE_TYPES = new Set([
-    // C++ / C: out-of-line function/method definition (has body).
-    "function_definition",
-    // C++ / C: class / struct / union / enum specifier (has body in `{ ... };`).
-    "class_specifier",
-    "struct_specifier",
-    "union_specifier",
-    "enum_specifier",
-    // C++: a free-function or member prototype inside a class / at file scope.
-    // `declaration` is broad (also covers `int x;`) so we only treat it as a
-    // def when its declarator is a function_declarator (i.e. a function
-    // prototype) — see isFunctionDeclaration. `field_declaration` covers
-    // method prototypes inside a class body.
-    "declaration",
-    "field_declaration",
-    // TypeScript / JavaScript: function/method/class/enum/interface declarations.
-    "function_declaration",
-    "method_definition",
-    "class_declaration",
-    "class",
-    "enum_declaration",
-    "interface_declaration",
-    // Python: function / class definitions (always have bodies).
-    "function_definition", // python uses the same node type name as C++
-    "class_definition",
-]);
-
-/** Node types that carry a body (a `{ ... }` block) — i.e. a real definition,
- * not a prototype. Used to set `hasBody`. For C++ a `function_definition`
- * contains a `compound_statement`; a `class_specifier` contains a
- * `field_declaration_list`; both count as bodies. A `declaration` or
- * `field_declaration` for a function prototype contains NO body node. */
-const DEF_BODY_NODE_TYPES = new Set([
-    "function_definition", // C++ and Python
-    "class_specifier",
-    "struct_specifier",
-    "union_specifier",
-    "enum_specifier",
-    "function_declaration", // TS
-    "method_definition",
-    "class_declaration",
-    "class",
-    "enum_declaration",
-    "interface_declaration",
-    "function_definition", // python (duplicate of the C++ entry — set dedupes)
-    "class_definition",
-]);
-
-/** Is this node a `declaration` / `field_declaration` whose declarator is a
- * function prototype (so it's a function declaration, not a variable)? Used to
- * keep `declaration` out of the false-positive path (`int x;` is a declaration
- * but not a function def). */
-function isFunctionDeclarationNode(node: TSNode, lang: TsLang): boolean {
-    if (lang !== "cpp") {
-        // For TS/Python the broad `declaration` node type isn't in DEF_NODE_TYPES
-        // (they use function_declaration / function_definition), so this is moot.
-        return false;
-    }
+/** Is this node a broad declaration whose declarator is a function prototype
+ * (so it's a function declaration, not a variable)? Only consulted for the
+ * node types the profile's `definitionPolicy.functionDeclarationCheck` names
+ * (cpp's `declaration` / `field_declaration`). Languages without such broad
+ * node types in `defNodes` leave that set empty and never enter here. */
+function isFunctionDeclarationNode(node: TSNode): boolean {
     // Walk the declaration's descendants for a function_declarator. A prototype
     // `void foo(int);` parses as declaration > function_declarator; a variable
     // `int x;` parses as declaration > identifier (no function_declarator).
@@ -143,7 +86,8 @@ export interface EnclosingDef {
  *
  * `line` is 1-based (the tool input contract); `column` is 1-based. Walks UP
  * from the node at that position to find the nearest enclosing definition
- * node (function/method/class/struct/etc. — see DEF_NODE_TYPES). Returns that
+ * node (function/method/class/struct/etc. — see the profile's
+ * definitionPolicy.defNodes). Returns that
  * node's range, whether it has a body, and the range of the preceding
  * `comment` sibling if one is immediately above (no blank line in between).
  *
@@ -172,6 +116,10 @@ export async function findEnclosingDefWithDoc(
     const tree = parser.parse(text);
     if (!tree) return null;
     try {
+        const profile = syntaxLanguage(lang);
+        const defNodes = profile.definitionPolicy.defNodes;
+        const defBodyNodes = profile.definitionPolicy.defBodyNodes;
+        const functionDeclCheck = profile.definitionPolicy.functionDeclarationCheck;
         // Tree-sitter positions are 0-based row/column. The input is 1-based.
         const root = tree.rootNode as unknown as TSNode;
         const node = root.descendantForPosition(
@@ -183,14 +131,19 @@ export async function findEnclosingDefWithDoc(
         let cur: TSNode | null = node;
         let defNode: TSNode | null = null;
         while (cur) {
-            if (DEF_NODE_TYPES.has(cur.type)) {
-                // For the broad `declaration` / `field_declaration` C++ nodes,
-                // only treat them as a def when they declare a FUNCTION
-                // prototype (a `field_declaration` of `int x;` is a member
-                // variable, not a function def — the cursor on `x` should NOT
-                // resolve to the field's extent via this path; LSP handles it).
-                if (cur.type === "declaration" || cur.type === "field_declaration") {
-                    if (isFunctionDeclarationNode(cur, lang)) {
+            // `Language.types` includes anonymous keyword/punctuation tokens;
+            // only a named AST node can enclose a useful source definition.
+            // In particular, a cursor on `class` must walk through the token
+            // to its class_definition/class_specifier/class_declaration.
+            if (cur.isNamed && defNodes.has(cur.type)) {
+                // For broad declaration node types (cpp's `declaration` /
+                // `field_declaration`), only treat them as a def when they
+                // declare a FUNCTION prototype (a `field_declaration` of
+                // `int x;` is a member variable, not a function def — the
+                // cursor on `x` should NOT resolve to the field's extent via
+                // this path; LSP handles it).
+                if (functionDeclCheck.has(cur.type)) {
+                    if (isFunctionDeclarationNode(cur)) {
                         defNode = cur;
                         break;
                     }
@@ -204,7 +157,7 @@ export async function findEnclosingDefWithDoc(
         if (!defNode) return null;
         const startLine = defNode.startPosition.row;
         const endLine = defNode.endPosition.row;
-        const hasBody = DEF_BODY_NODE_TYPES.has(defNode.type);
+        const hasBody = defBodyNodes.has(defNode.type);
         // Find the preceding sibling `comment` node(s) immediately above
         // `defNode`, if any. The doc comment is the comment node directly
         // above the definition with NO blank line in between (a blank line

@@ -1,32 +1,30 @@
 /**
- * The syntax layer's public surface: type + grammar dispatch table.
+ * The syntax layer's public surface, slimmed to a barrel over the
+ * per-grammar `SyntaxLanguage` registry (`./languages/`).
  *
- * To add a language's SYMBOL-SCAN role mapping: drop a classifier in
- * `classifiers/` and add one line to `classifiers` below. Everything that
- * routes through `classifierFor` (`parseSymbols`, code_scan, the
- * definition/reference `list_symbols` integration) picks the classifier up
- * automatically. This covers symbol scanning only — the reference/definition
- * support has its own language-sensitive node-type sets
- * (`reference-context.ts` / `definition-context.ts`), which are NOT
- * reachable through this table. See adding-a-language.md step 8.
+ * The old hand-maintained `TsLang → RoleClassifier` dispatch table is gone.
+ * Everything that was reachable through `classifierFor` now routes through the
+ * `SyntaxLanguage` profile's `classifyRole`, and — unlike before — the SAME
+ * profile also carries the reference/definition node-type taxonomies and the
+ * grammar↔LSP↔extension maps, so adding a language is one profile + one
+ * registry line, with no shared node-type supersets left to drift.
+ *
+ * To add a language's tree-sitter support: drop a profile in `languages/`
+ * (reusing an existing `classifiers/*` file when the grammar shares vocabulary)
+ * and add it to `SYNTAX_LANGUAGES`. That covers `parseSymbols`,
+ * `referenceSyntaxContext`, and `findEnclosingDefWithDoc` together.
  */
-import type { TsLang } from "./runtime";
-import type { RoleClassifier } from "./types";
-import { classifyPythonRole } from "./classifiers/python";
-import { classifyCppRole } from "./classifiers/cpp";
-import { classifyBashRole } from "./classifiers/bash";
-import { classifyTypeScriptRole } from "./classifiers/typescript";
 
-/** Strategy dispatch: tree-sitter language → role classifier. */
-const classifiers: Record<TsLang, RoleClassifier> = {
-    python: classifyPythonRole,
-    cpp: classifyCppRole,
-    bash: classifyBashRole,
-    typescript: classifyTypeScriptRole,
-    tsx: classifyTypeScriptRole, // TSX reuses the TS classifier (shared grammar vocabulary)
-};
-
-/** Get the role classifier for a tree-sitter language. */
-export function classifierFor(lang: TsLang): RoleClassifier {
-    return classifiers[lang];
-}
+export {
+    SYNTAX_LANGUAGES,
+    classifierFor,
+    syntaxLanguage,
+    tsLangForFile,
+    tsLangToLspLang,
+} from "./languages/index";
+export type {
+    DefinitionPolicy,
+    ReferenceNodeTaxonomy,
+    SyntaxLanguage,
+    TsLang,
+} from "./languages/index";

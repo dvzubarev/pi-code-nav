@@ -20,8 +20,8 @@
  */
 
 import { Parser } from "web-tree-sitter";
-import { classifierFor } from "./index";
-import { getLanguage, TsLang } from "./runtime";
+import { classifierFor, TsLang } from "./languages/index";
+import { getLanguage } from "./runtime";
 import type { SymbolEntry, SymbolRole, TSNode } from "./types";
 
 // ---------------------------------------------------------------------------

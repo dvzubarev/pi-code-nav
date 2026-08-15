@@ -5,11 +5,11 @@
  * structural view of a web-tree-sitter `Node` (`TSNode`) and the shared
  * `fieldOf()` helper, and produce a `SymbolRole` classification. Keeping these
  * here (rather than in the symbol-scan/reference/definition modules) lets a
- * new language register its `parseSymbols` role mapping by dropping one
- * classifier file next to the existing ones, with no edits to the modules
- * that dispatch through `classifierFor`. (This is scoped to symbol scanning
- * only; reference/definition support has its own language-sensitive node-type
- * sets — see adding-a-language.md step 8.)
+ * new language profile register its `parseSymbols` role mapping by pointing
+ * `classifyRole` at one classifier file, with no edits to the modules that
+ * dispatch through `classifierFor`. The same view also serves definition
+ * recognition, which must distinguish named AST nodes from anonymous keyword
+ * and punctuation tokens (`isNamed`).
  */
 
 /**
@@ -43,6 +43,8 @@ export interface SymbolEntry {
  */
 export interface TSNode {
     type: string;
+    /** False for anonymous grammar tokens such as `class`, `(`, or `;`. */
+    isNamed: boolean;
     text: string;
     id: number;
     startPosition: { row: number; column: number };
