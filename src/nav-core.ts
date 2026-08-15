@@ -6,9 +6,9 @@
  * diagnostics.ts) needs:
  *   - `ClientProvider`     — the `(lang) => Promise<LspClient>` callback shape
  *                            every tool takes (mirrors ServerPool.client).
- *   - `ALL_LANGS`          — the single source of truth for the `Lang` union's
- *                            members (one array, many call sites — adding a
- *                            language can't silently miss one).
+ *   - `ALL_LANGS`          — the supported language ids, RE-EXPORTED from the
+ *                            neutral catalog (`src/languages/catalog.ts`,
+ *                            where `LANGUAGES` is the single source of truth).
  *   - `UnknownLanguageError` — hard failure for single-file tools.
  *   - position-selector validation/resolution for detail tools called directly.
  *   - `awaitReadyForQuery` — openDocument + project-readiness wait before a
@@ -18,20 +18,22 @@
  * re-exports everything `index.ts` and the tests consume as `nav.*`.
  */
 
-import type { Lang, LspClient } from "./lsp-client";
+import type { LspClient } from "./lsp-client";
+import type { Lang } from "./languages/types";
+
+export type { Lang } from "./languages/types";
+/** `ALL_LANGS` lives in the neutral catalog (`src/languages/catalog.ts`,
+ * derived from `LANGUAGES`); keep this re-export so `nav.ts`'s public surface
+ * and its existing consumers (code_search_symbol validation, the
+ * `.pi/lsp.json` merge loop, the `StringEnum` for the tool's `language`
+ * parameter) stay unchanged. Adding a language to `LANGUAGES` in the catalog
+ * still reaches every `ALL_LANGS` call site. */
+export { ALL_LANGS } from "./languages/catalog";
 
 /** Provides a per-language LspClient on demand (mirrors ServerPool.client). */
 export interface ClientProvider {
     (lang: Lang): Promise<LspClient>;
 }
-
-/** Every language this extension supports — the single source of truth for
- * the `Lang` union's members. Used for project-language detection (all
- * tiers), to validate an agent-supplied `language` string (code_search_symbol),
- * and by index.ts for the `.pi/lsp.json` merge loop and the code_search_symbol
- * tool's `language` parameter StringEnum — one array, four call sites, so
- * adding a language can't silently miss one of them. */
-export const ALL_LANGS = ["cpp", "python", "bash", "typescript"] as const satisfies readonly Lang[];
 
 // ---------------------------------------------------------------------------
 // Per-file query readiness (openDocument + cpp indexing wait)

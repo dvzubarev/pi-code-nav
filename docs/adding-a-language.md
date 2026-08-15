@@ -12,10 +12,26 @@ parsing, the tool/registration layer, and the CLI test harness — plus docs and
 the dev shell. Steps within a layer are grouped; layers can be done in any
 order but must land together.
 
+## 0. Language catalog — `src/languages/`
+
+0. **Add the language to the catalog.** `src/languages/catalog.ts` is the
+   **single source of truth**, and `LANGUAGES` is its ONE registry entry per
+   language. Add one entry to `LANGUAGES` (an `id`, `displayName`,
+   `sourceExts`, and `rootMarkers`) — `Lang`, `ALL_LANGS`, `SOURCE_EXTS`,
+   `EXT_LANG`, `ROOT_MARKERS`, `DISPLAY_NAMES`, and the `Record<Lang, ...>`
+   typing are ALL derived from that single list, so a language added or
+   removed here propagates everywhere. `sourceExts`/`rootMarkers` may be
+   empty (source scanning is the detection fallback). `src/languages/types.ts`
+   is only a type-only `Lang` re-export facade. The catalog must NOT import
+   `lsp-client.ts`.
+
 ## 1. LSP server — `lsp-client.ts`
 
-1. **Add the language to `Lang`.** The union drives every `Record<Lang, ...>`
-   and every `switch`/`if` on language downstream.
+1. **`Lang` is derived, not hand-written.** The union is derived from
+   `LANGUAGES` in `src/languages/catalog.ts` and re-exported (type-only) by
+   `src/languages/types.ts`; do not hand-edit a union here. `lsp-client.ts`
+   imports `Lang` and `SOURCE_EXTS` from the catalog. The union drives every
+   `Record<Lang, ...>` and every `switch`/`if` on language downstream.
 
 2. **Add a `ServerConfig`.** Define `<LANG>_CONFIG` (`command`, `args`,
    `initOptions`). Add it to `DEFAULTS`.
@@ -38,9 +54,9 @@ order but must land together.
    implementation when completion is nonstandard (Bash log messages, ccls
    `$ccls/info`). A server may also need a trigger in its tracker/readiness path:
    tsserver needs a bootstrap `didOpen`; ty needs `workspace/diagnostic` in
-   workspace mode. `findFirstSourceFile` + `SOURCE_EXTS` are the bootstrap
-   scanning helpers. Document whether the barrier applies to workspace-only
-   queries or every per-file action via `awaitReadyForQuery`.
+   workspace mode. `findFirstSourceFile` + `SOURCE_EXTS` (from the catalog) are
+   the bootstrap scanning helpers. Document whether the barrier applies to
+   workspace-only queries or every per-file action via `awaitReadyForQuery`.
 
 5. **Verify the server is stdio-only.** All supported servers are stdio-only
    (no `--listen`/`--socket`); the extension owns the child process. Do not
@@ -49,7 +65,8 @@ order but must land together.
 ## 2. tree-sitter — `tree-sitter-parse.ts`
 
 This module has **no dependency on `lsp-client.ts`** (it makes zero LSP
-calls). Keep it that way — do not import `Lang` from the LSP module.
+calls). Keep it that way — import the neutral `Lang` from
+`./languages/types`, never from the LSP module.
 
 6. **Add the grammar to `TsLang` and `tsLangForFile`.** Confirm the grammar
    ships in `tree-sitter-wasm`'s `out/<lang>/` (check `manifest.json`). If one
@@ -97,19 +114,20 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
 
 ## 3. Tool layer — `index.ts`
 
-9. **`EXT_LANG`** — map every file extension to the `Lang`. This is the LSP
-   routing key. All extensions here should also be handled in
-   `tsLangForFile` (step 6); if an extension has a tree-sitter grammar but no
+9. **`EXT_LANG` / `SOURCE_EXTS`** — already derived from the catalog's
+   `LANGUAGES[lang].sourceExts` (step 0). Nothing to touch here; route every
+   extension you added to the catalog, and make sure each is also handled in
+   `tsLangForFile` (step 6). If an extension has a tree-sitter grammar but no
    LSP server (or vice versa), that's a deliberate gap — document why.
 
 10. **`loadConfig`** — iterates `ALL_LANGS` (imported from `nav.ts`) for the
     `.pi/lsp.json` merge loop, so per-project overrides pick up a new
-    language automatically once it's added to `ALL_LANGS` (step 11) —
+    language automatically once it's added to `ALL_LANGS` (step 0/11) —
     nothing to touch here directly.
 
-11. **`code_search_symbol` default `langs`** — add the language to `ALL_LANGS`
-    in `nav.ts` (the single source of truth for the `Lang` union's members).
-    It's reused by: project-language detection (all tiers), `code_search_symbol`'s
+11. **`code_search_symbol` default `langs`** — `ALL_LANGS` lives in
+    `src/languages/catalog.ts` (re-exported by `nav.ts`). It is used by
+    project-language detection (all tiers), `code_search_symbol`'s
     language-validation check (so a bad `language` value fails cleanly instead
     of throwing a raw TypeError out of `resolveConfig`), `index.ts`'s
     `.pi/lsp.json` merge loop, and the `StringEnum` for the `code_search_symbol`
@@ -126,7 +144,7 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
 
 13. Nothing to mirror anymore. The CLI is a thin argv-parser around `nav.ts`
     (which `index.ts` also imports); the render helpers live in `render.ts`.
-    Adding a language to `EXT_LANG` (in `render.ts`) and `tsLangToLspLang`
+    Adding a language to the catalog (step 0) and `tsLangToLspLang`
     (in `tree-sitter-parse.ts`) is enough — both the extension and the CLI
     pick it up automatically. The only thing to verify is that the CLI's
     `symbol` subcommand (which passes `language` through to `nav.symbol`)
@@ -140,7 +158,10 @@ calls). Keep it that way — do not import `Lang` from the LSP module.
     `assertEntry` at exact 1-based positions, plus `assertNoEntry` for the
     filtered cases (e.g. declaration names dropped by the default role set).
     Add `tsLangForFile` / `tsLangToLspLang` mapping assertions to
-    `test/core.test.mjs` or the per-language test.
+    `test/core.test.mjs` or the per-language test, and add a
+    `test/languages.test.mjs` row for the new language to pin the derived
+    `SOURCE_EXTS`/`EXT_LANG`/`ROOT_MARKERS` consistency (all are derived from
+    `LANGUAGES`, so this mostly guards against manual copy drift).
 
     **Verify positions empirically before writing assertions** — off-by-one
     column counts are the most common test bug. Parse the snippet and print

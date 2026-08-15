@@ -42,6 +42,7 @@
 import { Parser, Language, Node } from "web-tree-sitter";
 import { getWasmPath } from "tree-sitter-wasm";
 import { readFile } from "node:fs/promises";
+import type { Lang } from "./languages/types";
 
 /**
  * The syntactic role assigned to a discovered identifier.
@@ -76,7 +77,10 @@ export interface SymbolEntry {
  * arguments/literals and too noisy, matching the design doc's "finalize bash
  * when implementing; don't block on it" guidance.
  */
-export type TsLang = "python" | "cpp" | "bash" | "typescript" | "tsx";
+/** Superset of `Lang`: the four LSP languages plus `tsx` (the JSX dialect
+ * that parses with a distinct tree-sitter grammar but is served by the single
+ * `typescript` LSP server). */
+export type TsLang = Lang | "tsx";
 
 /** Map a file extension to a tree-sitter language, or null if unsupported. */
 export function tsLangForFile(path: string): TsLang | null {
@@ -128,7 +132,7 @@ export function tsLangForFile(path: string): TsLang | null {
  * this helper rather than casting `tsLang as Lang` — that cast is only valid
  * for python/cpp/bash/typescript and would break for `tsx`.
  */
-export type LspLang = "python" | "cpp" | "bash" | "typescript";
+export type LspLang = Lang;
 export function tsLangToLspLang(lang: TsLang): LspLang {
     if (lang === "tsx") return "typescript";
     return lang;

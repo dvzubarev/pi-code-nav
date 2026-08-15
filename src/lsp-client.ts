@@ -12,6 +12,12 @@ import { readdir, readFile, unlink } from "node:fs/promises";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { resolve, join } from "node:path";
 import { createProjectProgress, type ProjectProgress } from "./project-progress";
+import type { Lang } from "./languages/types";
+// Back-compat: `Lang` lived here historically; keep re-exporting it so
+// existing consumers importing it from lsp-client keep working while new code
+// should import the neutral type from ./languages/types.
+export type { Lang };
+import { SOURCE_EXTS } from "./languages/catalog";
 import {
     createMessageConnection,
     StreamMessageReader,
@@ -37,8 +43,6 @@ import {
 
 // Importing from the /node subpath auto-installs the jsonrpc Node RAL
 // as a side effect of module load (see vscode-jsonrpc/lib/node/main.js).
-
-export type Lang = "cpp" | "python" | "bash" | "typescript";
 
 /** Command + args + init options for one language. */
 export interface ServerConfig {
@@ -154,16 +158,7 @@ function languageIdFor(absPath: string, lang: Lang): string {
     return lang; // python, bash
 }
 
-/**
- * Extensions that count as source files for each language, used by
- * findFirstSourceFile to locate a representative file to open.
- */
-export const SOURCE_EXTS: Record<Lang, readonly string[]> = {
-    typescript: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"],
-    cpp: [".cpp", ".cc", ".cxx", ".c", ".hpp", ".hh", ".hxx", ".h"],
-    python: [".py"],
-    bash: [".sh", ".bash"],
-};
+
 
 /**
  * Recursively find the first source file of `lang` under `rootUri`, skipping

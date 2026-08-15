@@ -90,6 +90,13 @@ leading empty string. Verified against ty's raw output: `greet`=`kind:12`,
 
 ## Server lifecycle — the exact invariants
 
+- **`Lang` lives in the neutral catalog.** `src/languages/catalog.ts` declares
+  the single `LANGUAGES` registry and derives `Lang` (re-exported type-only by
+  `src/languages/types.ts`), `ALL_LANGS`, `SOURCE_EXTS`, `EXT_LANG`,
+  `ROOT_MARKERS`, `DISPLAY_NAMES`, and `langForFile` from it — all
+  transport-neutral. `lsp-client.ts` imports (and re-exports) `Lang` but no
+  longer declares it. Adding a language is one edit to `LANGUAGES`, not a
+  hand-synced union edit across four files.
 - `ServerPool` holds `Map<Lang, LspClient>`, keyed by language only (cwd is
   fixed at pool construction, set to `ctx.cwd`).
 - `LspClient.ensureReady()` is idempotent — it stores the ready promise and

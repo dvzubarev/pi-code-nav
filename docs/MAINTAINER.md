@@ -25,21 +25,35 @@
   system prompt while enabled. `applyWorkspaceEdit` / `applyTextEdits` (in
   `src/render.ts`) apply rename results to disk — see `code_rename.md`. Rendering
   helpers live in `src/render.ts`. Integration invariants in `IMPL.md`.
+- `src/languages/catalog.ts` — the transport-neutral language catalog and the
+  **single source of truth**: `LANGUAGES` is the ONE registry (one entry per
+  language: `id`, `displayName`, `sourceExts`, `rootMarkers`). `Lang`,
+  `ALL_LANGS`, `SOURCE_EXTS`, `EXT_LANG`, `ROOT_MARKERS`, `DISPLAY_NAMES`,
+  and `langForFile` are ALL derived from `LANGUAGES`, so extension routing and
+  project detection cannot drift. Adding a language is one registry edit.
+  Does NOT import `lsp-client.ts`.
+- `src/languages/types.ts` — a type-only re-export facade for `Lang` (the
+  `Lang` union is defined in `catalog.ts`). Kept for a stable, neutral import
+  path; no runtime dependency. `Lang` is also re-exported by `lsp-client.ts`
+  for backwards compatibility.
 - `src/render.ts` — pure rendering + small helpers (no pi, no LSP, no fs beyond
   readFile/writeFile in the WorkspaceEdit applier): `symbolKindName`,
   `renderDocSymbol`, `renderSymbolInfo`, `renderLocation`, `renderDiagnostic`,
   `hoverText`, `hoverSignature`, `resolveDefBodyRange`, `resolveSymbolSelStart`,
-  `applyWorkspaceEdit`, `langForFile`, `EXT_LANG`. Shared verbatim by
-  `index.ts`, the CLI harness, and the e2e tests — this is what killed the
-  old "keep nav-cli.mjs in sync with index.ts by hand" landmine.
+  `applyWorkspaceEdit`. The previously-included `langForFile`/`EXT_LANG` now
+  RE-EXPORT from `src/languages/catalog.ts` so consumers keep the same surface.
+  Shared verbatim by `index.ts`, the CLI harness, and the e2e tests — this is
+  what killed the old "keep nav-cli.mjs in sync with index.ts by hand" landmine.
 - `src/nav.ts` — barrel re-exporting eight implementations (seven registered
   agent tools plus the internal `scan`) and the shared `ClientProvider` / `ALL_LANGS` / `UnknownLanguageError` (from
   `src/nav-core.ts`) and project-language detection (from `src/detect.ts`).
   `index.ts` and the tests/CLI import the tools via `./src/nav` so they don't
   need to know about the per-tool file split.
-- `src/nav-core.ts` — shared core for every tool: `ClientProvider`, `ALL_LANGS`,
+- `src/nav-core.ts` — shared core for every tool: `ClientProvider`,
   `UnknownLanguageError`, and `awaitReadyForQuery` (openDocument + project
-  readiness wait, deduplicated across tools).
+  readiness wait, deduplicated across tools). `ALL_LANGS` is re-exported from
+  the neutral catalog (`src/languages/catalog.ts`) to keep `nav.ts`'s public
+  surface stable; the source of truth lives in the catalog.
 - `src/project-progress.ts` — project-readiness abstraction. `ProjectProgress`
   is the transport-facing API; `WorkDoneProgress` handles standard
   `$/progress`, while `BashProjectProgress` and `CppProjectProgress` implement

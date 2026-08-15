@@ -1,4 +1,4 @@
-import type { Lang } from "./lsp-client";
+import type { Lang } from "./languages/types";
 
 export type ProgressToken = string | number;
 export interface WorkDoneProgressParams {

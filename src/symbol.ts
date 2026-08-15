@@ -11,7 +11,8 @@
 import { readFile, readdir } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import type { DocumentSymbol, SymbolInformation } from "vscode-languageserver-protocol";
-import type { Lang, LspClient } from "./lsp-client";
+import type { LspClient } from "./lsp-client";
+import type { Lang } from "./languages/types";
 import { detectProjectLanguages } from "./detect";
 import { ALL_LANGS, ClientProvider } from "./nav-core";
 import { definition } from "./definition";

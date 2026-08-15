@@ -26,7 +26,12 @@ import type {
     WorkspaceEdit,
     Diagnostic,
 } from "vscode-languageserver-protocol";
-import type { Lang, LspClient } from "./lsp-client";
+import type { LspClient } from "./lsp-client";
+// The extension→language routing table now lives in the neutral catalog
+// (src/languages/catalog.ts). These re-exports preserve `render.ts`'s public
+// surface for existing consumers (the tool implementations, index.ts, the CLI,
+// and tests) while keeping the source of truth transport-neutral.
+export { EXT_LANG, langForFile } from "./languages/catalog";
 
 // ---------------------------------------------------------------------------
 // Path / URI / truncation helpers
@@ -679,40 +684,7 @@ export async function applyTextEdits(path: string, edits: TextEditShape[]): Prom
 // ---------------------------------------------------------------------------
 // File extension → language
 // ---------------------------------------------------------------------------
-
-/** File extension → language. Shared by index.ts and the CLI. */
-export const EXT_LANG: Record<string, Lang> = {
-    ".py": "python",
-    ".c": "cpp",
-    ".cc": "cpp",
-    ".cpp": "cpp",
-    ".cxx": "cpp",
-    ".h": "cpp",
-    ".hh": "cpp",
-    ".hpp": "cpp",
-    ".hxx": "cpp",
-    ".m": "cpp",
-    ".mm": "cpp",
-    ".sh": "bash",
-    ".bash": "bash",
-    // TypeScript/JavaScript — one LSP server (typescript-language-server)
-    // serves all of these; tree-sitter uses distinct grammars for the JSX
-    // variants (see tsLangForFile). .mts/.cts/.mjs/.cjs are TS/JS module
-    // variants that parse identically for our role-classification purposes.
-    ".ts": "typescript",
-    ".mts": "typescript",
-    ".cts": "typescript",
-    ".tsx": "typescript",
-    ".jsx": "typescript",
-    ".js": "typescript",
-    ".mjs": "typescript",
-    ".cjs": "typescript",
-};
-
-/** Map a file path to its LSP language, or null if unknown. */
-export function langForFile(path: string): Lang | null {
-    const dot = path.lastIndexOf(".");
-    if (dot < 0) return null;
-    const ext = path.slice(dot).toLowerCase();
-    return EXT_LANG[ext] ?? null;
-}
+//
+// Moved to the neutral catalog (src/languages/catalog.ts), which derives
+// `EXT_LANG` and `langForFile` from `LANGUAGES.sourceExts`. Re-exported at
+// the top of this file so existing consumers keep importing them from here.

@@ -37,7 +37,8 @@ import { Type } from "typebox";
 import { readFile } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { LspClient, resolveConfig, type Lang, type ServerConfig } from "./src/lsp-client";
+import { LspClient, resolveConfig, type ServerConfig } from "./src/lsp-client";
+import type { Lang } from "./src/languages/types";
 import * as nav from "./src/nav";
 import { ALL_LANGS } from "./src/nav";
 

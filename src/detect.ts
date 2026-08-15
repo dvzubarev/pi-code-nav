@@ -18,40 +18,8 @@
 import { readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Lang } from "./lsp-client";
-import { SOURCE_EXTS } from "./lsp-client";
-import { ALL_LANGS } from "./nav-core";
-
-/**
- * Root-level marker files that signal a language is in use. Checked first
- * (instant existsSync, no recursion) — the primary signal for languages with
- * a real build/dependency manifest. Source-extension scan (below) is the
- * fallback for languages whose projects often have no marker (e.g. a dir of
- * .sh scripts, or a bare .cpp playground).
- */
-const ROOT_MARKERS: Partial<Record<Lang, readonly string[]>> = {
-    python: [
-        "pyproject.toml",
-        "setup.py",
-        "setup.cfg",
-        "requirements.txt",
-        "Pipfile",
-        "poetry.lock",
-        "uv.lock",
-        ".python-version",
-    ],
-    typescript: ["package.json", "tsconfig.json", "jsconfig.json", "deno.json"],
-    cpp: [
-        "CMakeLists.txt",
-        "Makefile",
-        "meson.build",
-        "compile_commands.json",
-        "CMakeCache.txt",
-        "Makefile.am",
-        "configure.ac",
-    ],
-    bash: ["shell.nix"],
-};
+import type { Lang } from "./languages/types";
+import { ALL_LANGS, ROOT_MARKERS, SOURCE_EXTS } from "./languages/catalog";
 
 /** Directories never descended into during the source-file scan. */
 const SCAN_SKIP = new Set([
@@ -103,11 +71,11 @@ async function detectProjectLanguagesUncached(rootPath: string): Promise<Lang[]>
     // Tier 1: root markers.
     for (const lang of ALL_LANGS) {
         const markers = ROOT_MARKERS[lang];
-        if (markers?.some((m) => existsSync(resolve(rootPath, m)))) {
+        if (markers.some((m) => existsSync(resolve(rootPath, m)))) {
             found.add(lang);
         }
     }
-    if (found.size === 4) return [...found];
+    if (found.size === ALL_LANGS.length) return [...found];
 
     // Tier 2: bounded breadth-first source-extension scan. Build the set of
     // languages still unconfirmed so we can stop early once all resolve.
