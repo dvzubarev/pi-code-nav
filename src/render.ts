@@ -13,20 +13,16 @@
  * here, every consumer sees the change automatically.
  *
  * All output positions are 1-based (LSP is 0-based; convert on the way out).
+ *
+ * The LSP-assisted symbol/body resolution and the WorkspaceEdit filesystem
+ * application that used to live here were split out into `lsp-resolution.ts`
+ * and `workspace-edit.ts` respectively (see docs/MAINTAINER.md); this module
+ * is now purely output formatting.
  */
 
-import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { isAbsolute, resolve } from "node:path";
-import type {
-    DocumentSymbol,
-    SymbolInformation,
-    Location,
-    Hover,
-    WorkspaceEdit,
-    Diagnostic,
-} from "vscode-languageserver-protocol";
-import type { LspClient } from "./lsp-client";
+import type { DocumentSymbol, SymbolInformation, Location, Hover, Diagnostic } from "vscode-languageserver-protocol";
 // The extension→language routing table now lives in the neutral catalog
 // (src/languages/catalog.ts). These re-exports preserve `render.ts`'s public
 // surface for existing consumers (the tool implementations, index.ts, the CLI,
@@ -327,127 +323,25 @@ export function renderSymbolInfo(
     return `${symbolKindName(s.kind)} ${s.name}  ${path}:${pos}`;
 }
 
-// ---------------------------------------------------------------------------
-// DocumentSymbol tree searches (sel-start resolution, body-range resolution)
-// ---------------------------------------------------------------------------
-
 /**
- * Resolve the identifier (selectionRange) start for a SymbolInformation.
+ * Does a source snippet look like a definition BODY (as opposed to a bare
+ * declaration/prototype)?
  *
- * SymbolInformation (from workspace/symbol) only carries `location.range` —
- * the full symbol extent, whose start is column 0 of the enclosing line and
- * does NOT resolve in hover/definition/references on servers like ty. We need
- * the identifier position so code_search_symbol output is directly reusable as input
- * to the other code_* tools.
+ * Heuristic: the snippet contains an open-brace character. A function/method
+ * body, a class/struct definition, and an inline header definition all contain
+ * an open brace. A prototype, a forward declaration, and a using/typedef do
+ * NOT. Used by code_definition to decide whether the resolved snippet is a
+ * body (returned verbatim) or a declaration (prepend the preceding doc
+ * comment, resolved separately via tree-sitter — see findEnclosingDefWithDoc).
  *
- * We fetch documentSymbol for the result's file (cached per uri within a
- * single code_search_symbol call) and find the child whose name matches and whose
- * range contains the SymbolInformation's range. If no match, fall back to
- * scanning the source line for the symbol name. Returns 0-based LSP coords.
+ * The check is deliberately simple: an open brace anywhere in the snippet.
+ * Declarations of function-pointer parameters and templates contain no open
+ * brace, so they correctly read as declarations. A lambda capture list only
+ * appears inside a body, which already has one. Good enough for the cases this
+ * tool serves.
  */
-export async function resolveSymbolSelStart(
-    client: LspClient,
-    sym: SymbolInformation,
-    docCache: Map<string, DocumentSymbol[]>,
-): Promise<{ line: number; character: number } | undefined> {
-    const path = uriToPath(sym.location.uri);
-    const rangeStart = sym.location.range?.start;
-    if (!rangeStart) return undefined;
-    // Try documentSymbol lookup for an exact selectionRange.
-    try {
-        let syms = docCache.get(path);
-        if (!syms) {
-            let text: string;
-            try {
-                text = await readFile(path, "utf8");
-            } catch {
-                text = "";
-            }
-            const got = await client.documentSymbols(path, text);
-            syms = got as DocumentSymbol[];
-            docCache.set(path, syms);
-        }
-        const match = findDocSymbolByNameRange(syms, sym.name, sym.location.range);
-        if (match?.selectionRange?.start) {
-            return {
-                line: match.selectionRange.start.line,
-                character: match.selectionRange.start.character,
-            };
-        }
-    } catch {
-        // Fall through to source-line scan.
-    }
-    // Fallback: scan the source line for the symbol name.
-    // Only use the fallback when `rangeStart.character` is 0 — servers like
-    // `ty` (python/typescript) return line-start ranges for workspace/symbol
-    // results, so the fallback scanning finds the actual identifier position.
-    // When `rangeStart.character > 0` (ccls provides per-identifier positions
-    // already), trust the server — the fallback scan of `sym.name` for cpp
-    // (where the name is a full signature like `"using my_type_t = int"`) can
-    // match at column 0 and return a WORSE position than `rangeStart`.
-    if (rangeStart.character === 0) {
-        try {
-            const text = await readFile(path, "utf8");
-            const lineText = text.split(/\r?\n/)[rangeStart.line] ?? "";
-            const idx = lineText.indexOf(sym.name);
-            if (idx >= 0) return { line: rangeStart.line, character: idx };
-        } catch {}
-    }
-    return undefined;
-}
-
-/** Recursively find a DocumentSymbol by name whose range contains `within`. */
-export function findDocSymbolByNameRange(
-    syms: DocumentSymbol[],
-    name: string,
-    within: {
-        start?: { line: number; character: number };
-        end?: { line: number; character: number };
-    },
-): DocumentSymbol | undefined {
-    for (const s of syms) {
-        if (s.name === name && rangeContains(s.range, within)) return s;
-        const children = (s as unknown as { children?: DocumentSymbol[] }).children ?? [];
-        const m = findDocSymbolByNameRange(children, name, within);
-        if (m) return m;
-    }
-    return undefined;
-}
-
-/** Recursively find a DocumentSymbol whose selectionRange.start equals `pos`. */
-export function findDocSymbolBySelStart(
-    syms: DocumentSymbol[],
-    pos: { line: number; character: number },
-): DocumentSymbol | undefined {
-    for (const s of syms) {
-        const sel = s.selectionRange?.start;
-        if (sel && sel.line === pos.line && sel.character === pos.character) return s;
-        const children = (s as unknown as { children?: DocumentSymbol[] }).children ?? [];
-        const m = findDocSymbolBySelStart(children, pos);
-        if (m) return m;
-    }
-    return undefined;
-}
-
-export function rangeContains(
-    outer:
-        | { start?: { line: number; character: number }; end?: { line: number; character: number } }
-        | undefined,
-    inner: {
-        start?: { line: number; character: number };
-        end?: { line: number; character: number };
-    },
-): boolean {
-    if (!outer?.start || !outer?.end || !inner?.start || !inner?.end) return false;
-    const a = posKey(outer.start),
-        b = posKey(outer.end);
-    const c = posKey(inner.start),
-        d = posKey(inner.end);
-    return a <= c && b >= d;
-}
-
-export function posKey(p: { line: number; character: number }): number {
-    return p.line * 1_000_000 + p.character;
+export function snippetHasBody(snippet: string): boolean {
+    return snippet.includes("{");
 }
 
 // ---------------------------------------------------------------------------
@@ -531,160 +425,9 @@ export function renderDiagnostic(path: string, d: Diagnostic): string {
 }
 
 // ---------------------------------------------------------------------------
-// Definition body-range resolution (needs an LspClient for documentSymbols)
-// ---------------------------------------------------------------------------
-
-/**
- * Does a source snippet look like a definition BODY (as opposed to a bare
- * declaration/prototype)?
- *
- * Heuristic: the snippet contains an open-brace character. A function/method
- * body, a class/struct definition, and an inline header definition all contain
- * an open brace. A prototype, a forward declaration, and a using/typedef do
- * NOT. Used by code_definition to decide whether the resolved snippet is a
- * body (returned verbatim) or a declaration (prepend the preceding doc
- * comment, resolved separately via tree-sitter — see findEnclosingDefWithDoc).
- *
- * The check is deliberately simple: an open brace anywhere in the snippet.
- * Declarations of function-pointer parameters and templates contain no open
- * brace, so they correctly read as declarations. A lambda capture list only
- * appears inside a body, which already has one. Good enough for the cases this
- * tool serves.
- */
-export function snippetHasBody(snippet: string): boolean {
-    return snippet.includes("{");
-}
-
-/**
- * Resolve the full definition body range for a Location returned by
- * textDocument/definition. LSP servers (pyright/ty/ccls) typically return only
- * the identifier span (e.g. the 9 chars of `punintend`), not the whole
- * function/class body. We fetch documentSymbol for the target file and find the
- * child whose selectionRange.start equals the definition's identifier position;
- * we then return that child's full `range` (the enclosing extent) so callers can
- * slice the actual definition source. Returns 0-based LSP line coords or null.
- */
-export async function resolveDefBodyRange(
-    client: LspClient,
-    loc: Location,
-): Promise<{ startLine: number; endLine: number } | null> {
-    const path = uriToPath(loc.uri);
-    const idStart = loc.range?.start;
-    if (!idStart) return null;
-    try {
-        let text = "";
-        try {
-            text = await readFile(path, "utf8");
-        } catch {}
-        const syms = await client.documentSymbols(path, text);
-        // Hierarchical DocumentSymbol[] has selectionRange; flat SymbolInformation[]
-        // does not — bail (no enclosing extent to resolve).
-        const flat =
-            syms.length > 0 && "selectionRange" in syms[0] ? (syms as DocumentSymbol[]) : [];
-        const m = findDocSymbolBySelStart(flat, idStart);
-        if (m?.range?.start && m?.range?.end) {
-            return { startLine: m.range.start.line, endLine: m.range.end.line };
-        }
-    } catch {}
-    return null;
-}
-
-// ---------------------------------------------------------------------------
-// WorkspaceEdit application (writes to disk)
-// ---------------------------------------------------------------------------
-
-export interface AppliedFile {
-    path: string;
-    edits: number;
-}
-
-export type TextEditShape = {
-    range?: {
-        start?: { line?: number; character?: number };
-        end?: { line?: number; character?: number };
-    };
-    newText?: string;
-};
-
-export async function applyWorkspaceEdit(edit: WorkspaceEdit): Promise<AppliedFile[]> {
-    const applied: AppliedFile[] = [];
-    // documentChanges (preferred) — may contain TextDocumentEdit / CreateFile / etc.
-    const docChanges = (edit as { documentChanges?: unknown[] }).documentChanges;
-    if (Array.isArray(docChanges)) {
-        for (const ch of docChanges) {
-            const tde = ch as {
-                textDocument?: { uri?: string };
-                edits?: TextEditShape[];
-                kind?: string;
-            };
-            if (tde.textDocument && Array.isArray(tde.edits)) {
-                const path = uriToPath(tde.textDocument.uri ?? "");
-                const edits = await applyTextEdits(path, tde.edits);
-                if (edits > 0) applied.push({ path, edits });
-            }
-            // CreateFile / DeleteFile / RenameFile are reported but not auto-applied.
-        }
-    }
-    // changes (legacy) — { uri: TextEdit[] }
-    const changes = (edit as { changes?: Record<string, unknown[]> }).changes;
-    if (changes) {
-        for (const [uri, edits] of Object.entries(changes)) {
-            const path = uriToPath(uri);
-            const n = await applyTextEdits(path, edits as TextEditShape[]);
-            if (n > 0) applied.push({ path, edits: n });
-        }
-    }
-    return applied;
-}
-
-/** Apply TextEdits to a file on disk. LSP lines are 0-based. */
-export async function applyTextEdits(path: string, edits: TextEditShape[]): Promise<number> {
-    if (edits.length === 0) return 0;
-    let text: string;
-    try {
-        text = await readFile(path, "utf8");
-    } catch {
-        return 0;
-    }
-    // Split preserving line endings; use a flat line array for offset math.
-    const lines = text.split(/\r?\n/);
-    // Sort edits in reverse so earlier offsets stay valid.
-    const sorted = [...edits].sort((a, b) => {
-        const al = a.range?.start?.line ?? 0;
-        const bl = b.range?.start?.line ?? 0;
-        return bl - al;
-    });
-    let count = 0;
-    for (const e of sorted) {
-        const sr = e.range?.start?.line ?? 0;
-        const sc = e.range?.start?.character ?? 0;
-        const er = e.range?.end?.line ?? 0;
-        const ec = e.range?.end?.character ?? 0;
-        const before = lines.slice(0, sr);
-        const after = lines.slice(er + 1);
-        const line = (lines[sr] ?? "") + "";
-        const head = line.slice(0, sc);
-        const tailLine = lines[er] ?? "";
-        const tail = tailLine.slice(ec);
-        const replacement = (e.newText ?? "").split(/\r?\n/);
-        const merged = [...before, head + replacement[0], ...replacement.slice(1, -1)];
-        if (replacement.length > 1) {
-            merged[merged.length - 1] = (merged[merged.length - 1] ?? "") + tail;
-        } else {
-            merged[merged.length - 1] = head + replacement[0] + tail;
-        }
-        lines.length = 0;
-        lines.push(...merged, ...after);
-        count++;
-    }
-    await writeFile(path, lines.join("\n"), "utf8");
-    return count;
-}
-
-// ---------------------------------------------------------------------------
 // File extension → language
 // ---------------------------------------------------------------------------
 //
-// Moved to the neutral catalog (src/languages/catalog.ts), which derives
+// Lives in the neutral catalog (src/languages/catalog.ts), which derives
 // `EXT_LANG` and `langForFile` from `LANGUAGES.sourceExts`. Re-exported at
 // the top of this file so existing consumers keep importing them from here.

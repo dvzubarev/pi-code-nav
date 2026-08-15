@@ -27,8 +27,8 @@
   tools. `ServerPool` manages the per-language clients. `CODE_NAV_PROMPT_BLOCK`
   is the grouped tool overview the `before_agent_start` hook appends to the
   system prompt while enabled. `applyWorkspaceEdit` / `applyTextEdits` (in
-  `src/render.ts`) apply rename results to disk — see `code_rename.md`. Rendering
-  helpers live in `src/render.ts`. Integration invariants in `IMPL.md`.
+  `src/workspace-edit.ts`) apply rename results to disk — see `code_rename.md`.
+  Rendering helpers live in `src/render.ts`. Integration invariants in `IMPL.md`.
 - `src/languages/catalog.ts` — the transport-neutral language catalog and the
   **single source of truth**: `LANGUAGES` is the ONE registry (one entry per
   language: `id`, `displayName`, `sourceExts`, `rootMarkers`). `Lang`,
@@ -40,14 +40,25 @@
   `Lang` union is defined in `catalog.ts`). Kept for a stable, neutral import
   path; no runtime dependency. `Lang` is also re-exported by `lsp-client.ts`
   for backwards compatibility.
-- `src/render.ts` — pure rendering + small helpers (no pi, no LSP, no fs beyond
-  readFile/writeFile in the WorkspaceEdit applier): `symbolKindName`,
-  `renderDocSymbol`, `renderSymbolInfo`, `renderLocation`, `renderDiagnostic`,
-  `hoverText`, `hoverSignature`, `resolveDefBodyRange`, `resolveSymbolSelStart`,
-  `applyWorkspaceEdit`. The previously-included `langForFile`/`EXT_LANG` now
-  RE-EXPORT from `src/languages/catalog.ts` so consumers keep the same surface.
+- `src/render.ts` — pure rendering + small helpers (no pi, no LSP, no fs):
+  `symbolKindName`, `renderDocSymbol`, `renderSymbolInfo`, `renderLocation`,
+  `renderDiagnostic`, `hoverText`, `hoverSignature`, `snippetHasBody`.
+  The LSP-assisted resolution (`resolveDefBodyRange`, `resolveSymbolSelStart`)
+  and the WorkspaceEdit applier (`applyWorkspaceEdit`) were split into
+  `src/lsp-resolution.ts` and `src/workspace-edit.ts` respectively.
+  The previously-included `langForFile`/`EXT_LANG` RE-EXPORT from
+  `src/languages/catalog.ts` so consumers keep the same surface.
   Shared verbatim by `index.ts`, the CLI harness, and the e2e tests — this is
   what killed the old "keep nav-cli.mjs in sync with index.ts by hand" landmine.
+- `src/lsp-resolution.ts` — LSP-assisted symbol/body resolution (needs an
+  `LspClient` for `documentSymbols` + reads source from disk):
+  `resolveSymbolSelStart`, `resolveDefBodyRange`, and the `DocumentSymbol`
+  tree search helpers (`findDocSymbolBySelStart`, `findDocSymbolByNameRange`,
+  `rangeContains`, `posKey`). 0-based LSP coords; imported by `definition.ts`
+  and `symbol.ts`.
+- `src/workspace-edit.ts` — WorkspaceEdit filesystem application (reads + writes
+  files on disk): `applyWorkspaceEdit`, `applyTextEdits`, `AppliedFile`,
+  `TextEditShape`. Imported by `rename.ts`.
 - `src/nav.ts` — barrel re-exporting eight implementations (seven registered
   agent tools plus the internal `scan`) and the shared `ClientProvider` / `ALL_LANGS` / `UnknownLanguageError` (from
   `src/nav-core.ts`) and project-language detection (from `src/detect.ts`).

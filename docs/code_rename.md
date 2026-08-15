@@ -1,12 +1,12 @@
 # `code_rename` — applying `WorkspaceEdit` to disk
 
-> Implementation notes for the rename applier (`render.ts`
+> Implementation notes for the rename applier (`src/workspace-edit.ts`
 > `applyWorkspaceEdit` / `applyTextEdits`), used by the `code_rename` tool
 > (`nav.ts` `rename()`).
 
 ## `applyWorkspaceEdit` — handle with care
 
-`applyWorkspaceEdit` (in `render.ts`) applies LSP `WorkspaceEdit` results to
+`applyWorkspaceEdit` (in `src/workspace-edit.ts`) applies LSP `WorkspaceEdit` results to
 disk. It handles both `documentChanges` (preferred, modern) and `changes`
 (legacy `{ uri: TextEdit[] }`). It does NOT handle `CreateFile` / `DeleteFile`
 / `RenameFile` resource operations inside `documentChanges` — it skips them

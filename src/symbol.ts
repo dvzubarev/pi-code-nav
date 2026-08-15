@@ -15,7 +15,8 @@ import type { LspClient } from "./lsp-client";
 import type { Lang } from "./languages/types";
 import { detectProjectLanguages } from "./detect";
 import { ALL_LANGS, ClientProvider } from "./nav-core";
-import { renderSymbolInfo, resolveSymbolSelStart, symbolKindFromName, uriToPath } from "./render";
+import { renderSymbolInfo, symbolKindFromName, uriToPath } from "./render";
+import { resolveSymbolSelStart } from "./lsp-resolution";
 import {
     SYMBOL_FANOUT_MAX_MATCHES,
     renderSymbolFanOut,

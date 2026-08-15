@@ -28,14 +28,11 @@ import {
     UnknownLanguageError,
     validateLine,
 } from "./nav-core";
+import { langForFile, snippetHasBody, toAbs, uriToPath } from "./render";
 import {
     findDocSymbolBySelStart,
-    langForFile,
     resolveDefBodyRange,
-    snippetHasBody,
-    toAbs,
-    uriToPath,
-} from "./render";
+} from "./lsp-resolution";
 import {
     findEnclosingDefWithDoc,
     parseSymbols,

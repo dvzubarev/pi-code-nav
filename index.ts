@@ -62,7 +62,8 @@ const POSITION_SELECTOR_SCHEMA = Type.Union([
 ]);
 
 /** File extension → language (re-exported from src/render.ts for status reporting). */
-// EXT_LANG and langForFile now live in src/render.ts; index.ts imports them.
+// EXT_LANG and langForFile now live in src/languages/catalog.ts; render.ts
+// re-exports them, and index.ts imports them from render.ts.
 
 /** Load .pi/lsp.json (project) then ~/.pi/lsp.json (global); merge per-lang. */
 async function loadConfig(ctx: ExtensionContext): Promise<Partial<Record<Lang, ServerOverride>>> {
@@ -141,10 +142,11 @@ class ServerPool {
 }
 
 // ---------------------------------------------------------------------------
-// Rendering + WorkspaceEdit helpers now live in src/render.ts (shared with the
-// CLI harness and tests). The tool implementations live in src/<tool>.ts (one
-// file per tool, re-exported by src/nav.ts); registerTools
-// below is a thin shim that parses params, calls
+// Rendering helpers now live in src/render.ts; LSP-assisted symbol/body
+// resolution in src/lsp-resolution.ts; WorkspaceEdit filesystem application in
+// src/workspace-edit.ts. All are shared with the CLI harness and tests. The
+// tool implementations live in src/<tool>.ts (one file per tool, re-exported
+// by src/nav.ts); registerTools below is a thin shim that parses params, calls
 // nav.<tool>(params, ctx.cwd, (lang) => state.pool.client(lang)), and wraps the
 // returned string in text_result / err. index.ts no longer holds any rendering
 // logic — the old "keep nav-cli.mjs in sync with index.ts by hand" landmine is

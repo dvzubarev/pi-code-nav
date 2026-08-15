@@ -11,7 +11,8 @@ import {
     UnknownLanguageError,
     validatePosition,
 } from "./nav-core";
-import { applyWorkspaceEdit, langForFile, toAbs } from "./render";
+import { langForFile, toAbs } from "./render";
+import { applyWorkspaceEdit } from "./workspace-edit";
 
 export interface RenameParams {
     path: string;
