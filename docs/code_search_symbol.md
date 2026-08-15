@@ -1,14 +1,18 @@
 # `code_search_symbol` — workspace + third-party symbol lookup
 
 > Implementation notes for the `workspace/symbol`-backed tool
-> (`nav.ts` `symbol()`). Single agent entry point for finding a symbol by name,
+> (`src/symbol.ts` `symbol()`; per-language strategy policy in `src/symbol-search/`).
+> Single agent entry point for finding a symbol by name,
 > whether it lives in the workspace or indexed third-party/stdlib trees. See
 > `code_scan.md` for the internal file-and-range implementation.
 
 ## Two mechanisms
 
 1. **Third-party/stdlib roots as extra workspace folders (Python / ty).**
-   `discoverThirdPartyRoots(lang, cwd)` reads `$propagatedBuildInputs` (nix —
+   `discoverThirdPartyRoots(lang, cwd)` — a compatibility wrapper in
+   `src/symbol.ts` that delegates to `discoverPythonRoots(cwd)` (in
+   `src/symbol-search/roots/python.ts`) only for Python and returns `[]` for
+   every other language — reads `$propagatedBuildInputs` (nix —
    each package prefix yields `lib/pythonX.Y` (stdlib) AND
    `lib/pythonX.Y/site-packages` (installed packages)). `$PYTHONPATH` is ONLY
    consulted when `$propagatedBuildInputs` is absent — in a nix shell
@@ -29,13 +33,15 @@
    still runs against the workspace root.
 
 2. **Qualified-name parsing + tiered module-path filtering.**
-   `parseSymbolQuery` splits `typing.cast` -> `(qualifier="typing",
-   bare="cast")` on the language's separator (`.` for python/typescript, `::`
-   for cpp). For python/typescript the server is queried with the BARE name
+   `parseQuery` (the dotted/python+typescript strategy, `src/symbol-search/strategies/dotted.ts`)
+   splits `typing.cast` -> `(qualifier="typing",
+bare="cast")` on the language's separator (`.` for python/typescript, `::`
+   for cpp in `src/symbol-search/strategies/cpp.ts`). For python/typescript the server is queried with the BARE name
    (ty only matches bare names — `typing.cast` returns 0), then results are
    tiered by how well the qualifier relates to each hit's defining module
-   path (`modulePathOf`, derived from the file's path relative to its home
-   workspace folder, longest-match-first). For cpp (ccls) the FULL query is
+   path (`modulePathOf`, now `src/symbol-search/paths.ts`, derived from the
+   file's path relative to its home workspace folder, longest-match-first).
+   For cpp (ccls) the FULL query is
    passed (ccls handles `::` qualified natively) and the separator is used
    only to extract the bare tail for ranking.
 
@@ -69,13 +75,13 @@ container; it does **not** imply that the symbol is third-party.
 - **Q2** = exact name, module path shares the qualifier's LEADING component
   (first `.`-segment). Graceful fallback for two cases a
   precise module-path match silently dropped before:
-  * `aiohttp.StreamReader.iter_chunks` — the qualifier's `StreamReader` is a
-    CLASS, not a module; the method lives in `aiohttp.streams`. Shared
-    leading component `aiohttp` matches.
-  * `aiohttp.web.Request` — `Request` is DEFINED in `aiohttp.web_request`
-    (re-exported from `aiohttp.web`). `aiohttp.web_request` does NOT
-    `.startsWith("aiohttp.web.")` (the `_` breaks the `.` boundary), but the
-    leading component `aiohttp` matches.
+    - `aiohttp.StreamReader.iter_chunks` — the qualifier's `StreamReader` is a
+      CLASS, not a module; the method lives in `aiohttp.streams`. Shared
+      leading component `aiohttp` matches.
+    - `aiohttp.web.Request` — `Request` is DEFINED in `aiohttp.web_request`
+      (re-exported from `aiohttp.web`). `aiohttp.web_request` does NOT
+      `.startsWith("aiohttp.web.")` (the `_` breaks the `.` boundary), but the
+      leading component `aiohttp` matches.
 - **Q3** = exact name in any workspace folder, anything else (last resort so
   a qualified query never returns empty when exact-name hits exist).
 
@@ -112,23 +118,25 @@ mode may retain a T3 fuzzy tail because ccls searches full signatures. C++
 For cpp (ccls) the workspace/symbol `name` is a full C++ qualified
 signature (`void diskann::Index::occlude_list(...)`) rather than a bare
 identifier, so the "exact name" check is a TOKEN-LEVEL rule
-(`isCppExactMatch` in `nav.ts`), NOT a substring check. The rule:
+(`isCppExactMatch` in `src/symbol-search/cpp-parse.ts`), NOT a substring
+check. The rule:
 
-  1. Parse the candidate `name` into `(qualifierTokens, bare)` via
-     `parseCppSymbolName`: strip the parameter list (everything from the
-     first `(`), take the last whitespace-separated token (the qualified
-     declarator, after stripping leading `&`/`*`), then split on top-level
-     `::`. The last component is the bare identifier; the rest is the
-     qualifier-token chain. Template arguments are retained.
-  2. The candidate is **exact** iff its bare component matches the query's
-     bare component AND, for a qualified query, the query's qualifier-token
-     chain is a SUFFIX of the candidate's qualifier-token chain (token-level, so
-     `vector` matches `std::vector` and `mystd::vector` but NOT
-     `std::my_vector` — the `_` token boundary is honored). For a bare query
-     (empty qualifier tokens), only the bare component is required. A query
-     component with explicit template arguments must equal the candidate
-     component exactly; a component without arguments also matches candidate
-     specializations (`Result` matches `Result<void>`).
+1. Parse the candidate `name` into `(qualifierTokens, bare)` via
+   `parseCppSymbolName` (also `src/symbol-search/cpp-parse.ts`): strip the
+   parameter list (everything from the
+   first `(`), take the last whitespace-separated token (the qualified
+   declarator, after stripping leading `&`/`*`), then split on top-level
+   `::`. The last component is the bare identifier; the rest is the
+   qualifier-token chain. Template arguments are retained.
+2. The candidate is **exact** iff its bare component matches the query's
+   bare component AND, for a qualified query, the query's qualifier-token
+   chain is a SUFFIX of the candidate's qualifier-token chain (token-level, so
+   `vector` matches `std::vector` and `mystd::vector` but NOT
+   `std::my_vector` — the `_` token boundary is honored). For a bare query
+   (empty qualifier tokens), only the bare component is required. A query
+   component with explicit template arguments must equal the candidate
+   component exactly; a component without arguments also matches candidate
+   specializations (`Result` matches `Result<void>`).
 
 For a template-id query, code-nav strips balanced template arguments from the
 query sent to ccls, then restores precision through this exact post-filter.
@@ -136,7 +144,8 @@ This is necessary because ccls returns the `Result<void>` declaration for a
 `Result` workspace query but returns only its members for `Result<void>`.
 
 Examples:
-  - `vector::push_back` (qual=[vector], bare=push_back):
+
+- `vector::push_back` (qual=[vector], bare=push_back):
     - `std::vector::push_back(int)` → qual=[std,vector], `[vector]` is a
       token suffix → **exact**.
     - `mystd::vector::push_back(int)` → qual=[mystd,vector], `[vector]` is
@@ -145,11 +154,11 @@ Examples:
       `[vector]` is NOT a token suffix (`my_vector` != `vector`) → **not
       exact** → T3 fuzzy (has `push_back` substring) → dropped when T1/T2
       non-empty.
-  - `push_back` (bare, qual=[]):
+- `push_back` (bare, qual=[]):
     - `std::vector::push_back(int)` → bare=push_back → **exact**.
     - `std::vector::push_back_int(int)` → bare=push_back_int != push_back
       → **not exact** → T3 fuzzy → dropped when T1 non-empty.
-  - `data::Result<void>`:
+- `data::Result<void>`:
     - `template<> class engine::data::Result<void> {}` → **exact**.
     - `class engine::data::Result {}` → **not exact** (explicit arguments pin
       the specialization).
@@ -268,7 +277,6 @@ fuzzy hits the tier dropped) and BEFORE dedupe + the fan-out/cap branch.
 The intended workflow is: first call without `include` (or with `include` but
 over the cap) → see the row list → add `kinds` / `name_pattern` to
 narrow to ≤5 (ideally 1) exact matches → the fan-out fires automatically.
-
 
 ## Caveats
 

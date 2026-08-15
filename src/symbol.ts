@@ -6,16 +6,20 @@
  * symbols. With public `include` non-empty, fans out per exact match (≤ cap)
  * with definition / hover / references sections. See
  * docs/code_search_symbol.md.
+ *
+ * The per-language query parsing / server-transformation / ranking-rules live
+ * in the symbol-search strategies (`src/symbol-search/`). This file is the
+ * GENERIC pipeline: server availability, capability check, readiness,
+ * third-party-root discovery, dedupe, public kind/regex filters, row
+ * rendering and fan-out. There are no per-language ranking branches here.
  */
 
-import { readdir } from "node:fs/promises";
-import { resolve, sep } from "node:path";
 import type { DocumentSymbol, SymbolInformation } from "vscode-languageserver-protocol";
 import type { LspClient } from "./lsp-client";
 import type { Lang } from "./languages/types";
 import { detectProjectLanguages } from "./detect";
 import { ALL_LANGS, ClientProvider } from "./nav-core";
-import { renderSymbolInfo, symbolKindFromName, uriToPath } from "./render";
+import { renderSymbolInfo, symbolKindFromName } from "./render";
 import { resolveSymbolSelStart } from "./lsp-resolution";
 import {
     SYMBOL_FANOUT_MAX_MATCHES,
@@ -23,6 +27,8 @@ import {
     type FanOutMatch,
 } from "./symbol-search/fanout";
 import type { SymbolRole } from "./syntax/types";
+import { strategyFor, type SearchContext } from "./symbol-search/types";
+import { discoverPythonRoots } from "./symbol-search/roots/python";
 
 export interface SymbolParams {
     query: string;
@@ -41,23 +47,6 @@ export interface SymbolParams {
     filter_by_regex?: string;
 }
 
-/**
- * The separator used in a qualified symbol name for each language. `.` for
- * Python/TypeScript (`typing.cast`, `fs.readFileSync`), `::` for C++
- * (`std::vector::push_back`), none for bash (no qualified-name concept).
- * Used by code_search_symbol to split an agent-supplied qualified query into
- * `(qualifier, bareName)` so it can (a) query the server with the bare name on
- * servers that only match bare names (ty) and (b) filter the results to the
- * requested module/namespace. ccls (cpp) handles qualified queries natively,
- * so cpp passes the full query through and uses the separator only for
- * extracting the bare tail when ranking.
- */
-const QUALIFIED_SEP: Partial<Record<Lang, string>> = {
-    python: ".",
-    typescript: ".",
-    cpp: "::",
-};
-
 /** Soft cap on the number of rows `code_search_symbol` emits per language.
  * ty's fuzzy search can return hundreds of results for a bare common name
  * (`cast` -> ~400, `loads` -> ~120) once third-party/stdlib roots are added;
@@ -65,190 +54,6 @@ const QUALIFIED_SEP: Partial<Record<Lang, string>> = {
  * a quick entry point. Exact-name matches are ALWAYS kept (they're what the
  * agent asked for); only the fuzzy tail is trimmed, with a trailing note. */
 const SYMBOL_MAX_ROWS_PER_LANG = 50;
-
-/**
- * Parse a (possibly qualified) symbol query into `(qualifier, bareName)`.
- * `qualifier` is null when the query has no separator (a bare name). The bare
- * name is the last path component after splitting on the language's
- * separator — e.g. `typing.cast` -> `(qualifier="typing", bare="cast")`,
- * `std::vector::push_back` -> `(qualifier="std::vector", bare="push_back")`.
- * For bash (no separator) the whole query is the bare name.
- */
-function lastCppScopeSeparator(query: string): number {
-    let angleDepth = 0;
-    let last = -1;
-    for (let i = 0; i + 1 < query.length; i++) {
-        if (query[i] === "<") angleDepth++;
-        else if (query[i] === ">" && angleDepth > 0) angleDepth--;
-        else if (angleDepth === 0 && query[i] === ":" && query[i + 1] === ":") {
-            last = i;
-            i++;
-        }
-    }
-    return last;
-}
-
-function parseSymbolQuery(query: string, lang: Lang): { qualifier: string | null; bare: string } {
-    const sep = QUALIFIED_SEP[lang];
-    if (!sep) return { qualifier: null, bare: query };
-    // A C++ template argument may itself be qualified (`Result<std::string>`),
-    // so only split on a top-level `::` rather than blindly taking the last one.
-    const idx = lang === "cpp" ? lastCppScopeSeparator(query) : query.lastIndexOf(sep);
-    if (idx < 0) return { qualifier: null, bare: query };
-    return {
-        qualifier: query.slice(0, idx),
-        bare: query.slice(idx + sep.length),
-    };
-}
-
-/** Remove balanced C++ template-argument groups for ccls's fuzzy query. ccls
- * does not return a specialization declaration for `Result<void>`, but does
- * return it for `Result`; exact post-filtering restores the requested args. */
-function stripCppTemplateArguments(query: string): string {
-    // `<`, `<<`, and `<=>` are operator names, not template argument lists.
-    if (query.includes("operator<")) return query;
-    let depth = 0;
-    let out = "";
-    for (const ch of query) {
-        if (ch === "<") {
-            depth++;
-            continue;
-        }
-        if (ch === ">" && depth > 0) {
-            depth--;
-            continue;
-        }
-        if (depth === 0) out += ch;
-    }
-    // An unmatched `<` is more likely an operator name than a template-id.
-    return depth === 0 ? out : query;
-}
-
-/**
- * The filesystem path of the workspace folder a result file lives under, or
- * null when it is under none. `folders` MUST be sorted longest-first so the
- * most specific folder wins (a broad folder like `lib/python3.13` is a prefix
- * of `lib/python3.13/site-packages`). Used by code_search_symbol to tell
- * workspace-root results from third-party ones.
- */
-function homeFolderOf(uri: string, folders: string[]): string | null {
-    const p = uriToPath(uri);
-    for (const f of folders) {
-        if (p === f || p.startsWith(f + sep)) return f;
-    }
-    return null;
-}
-
-/**
- * Derive the dotted module path of a result file relative to its home folder
- * (the longest matching workspace folder), for Python/TypeScript qualified-
- * name filtering.
- *
- * `folders` MUST be sorted longest-first (see `LspClient.workspaceFolderPaths`)
- * so a specific folder (`lib/python3.13/site-packages`) wins over a broad one
- * (`lib/python3.13`) that is a prefix of it. Returns e.g. `cbor2._decoder` for
- * `.../site-packages/cbor2/_decoder.py`, `typing` for `.../python3.13/typing.py`.
- * `__init__.py` maps to the package name (the containing dir name). For a
- * workspace-root file the result is the project-relative path (e.g. `second`
- * for `.../workspace/second.py`); callers distinguish workspace vs third-party
- * with `homeFolderOf` (the home folder equals `rootPath` or not).
- */
-function modulePathOf(uri: string, folders: string[]): string | null {
-    const p = uriToPath(uri);
-    const f = homeFolderOf(uri, folders);
-    if (!f || p === f) return null;
-    let rel = p
-        .slice(f.length + 1)
-        .replace(/\.py[i]?$/, "")
-        .replace(/\.ts$/, "")
-        .replace(/\.tsx$/, "");
-    // __init__ -> the package (the containing dir name).
-    if (rel.endsWith("/__init__")) rel = rel.slice(0, -9);
-    return rel.split(/[/\\]/).join(".");
-}
-
-/**
- * Discover third-party / stdlib roots to add as extra workspace folders for
- * `code_search_symbol`, so servers whose default index is workspace-only
- * (notably `ty`) can find symbols in third-party trees.
- *
- * The discovery is environment-driven and nix-aware (the user's primary
- * environment), with a generic fallback:
- *
- *   - Python (`ty`): from `$propagatedBuildInputs` (nix — each entry is a
- *     package prefix; we add `lib/pythonX.Y` (stdlib) and
- *     `lib/pythonX.Y/site-packages` (installed packages)). `$PYTHONPATH` is
- *     ONLY consulted when `$propagatedBuildInputs` is absent — in a typical
- *     nix shell `$PYTHONPATH` carries the FULL transitive dependency closure
- *     (every dependency-of-a-dependency's site-packages), which is a large,
- *     rarely-queried set that would cost ty real index time and inflate the
- *     fuzzy-result tail for bare-name queries. The project's direct deps
- *     (from `$propagatedBuildInputs`) is the targeted set the agent actually
- *     searches. In a regular venv/conda (no `$propagatedBuildInputs`)
- *     `$PYTHONPATH` is the venv's own (small, direct) site-packages and is
- *     the only source, so it's fine to use it then. ccls does NOT use this
- *     — it indexes third-parties via its compilation database's `-isystem`
- *     flags, so adding folders to ccls would just re-parse them as source
- *     trees for no benefit (and real indexing cost).
- *   - C++ / TypeScript / bash: no env-driven discovery (ccls already covers
- *     C++; the others have no third-party symbol-search story this improves).
- *
- * Returns distinct absolute paths that exist and are not the cwd itself.
- * Best-effort: never throws — a missing env var or unreadable dir yields [].
- * Existence is NOT checked here (the caller's `addWorkspaceFolders` is the
- * source of truth and tolerates missing dirs); we only dedupe and skip the
- * cwd to avoid adding the workspace root a second time.
- */
-export async function discoverThirdPartyRoots(lang: Lang, cwd: string): Promise<string[]> {
-    if (lang !== "python") return [];
-    const roots = new Set<string>();
-    const seen = new Set<string>();
-    const add = (p: string | undefined) => {
-        if (!p) return;
-        let abs: string;
-        try {
-            abs = resolve(p);
-        } catch {
-            return;
-        }
-        // Skip the cwd (already the server's root folder).
-        if (abs === resolve(cwd)) return;
-        if (seen.has(abs)) return;
-        seen.add(abs);
-        roots.add(abs);
-    };
-
-    // $propagatedBuildInputs (nix): space-separated package prefixes.
-    // Each entry is a DIRECT dependency of the project (not transitive),
-    // so this is the targeted set the agent actually searches.
-    const prop = (process.env.propagatedBuildInputs ?? "").split(/\s+/).filter(Boolean);
-    for (const pkg of prop) {
-        // Discover `lib/pythonX.Y` and `lib/pythonX.Y/site-packages` under each.
-        const lib = resolve(pkg, "lib");
-        let entries;
-        try {
-            entries = await readdir(lib, { withFileTypes: true });
-        } catch {
-            continue;
-        }
-        for (const e of entries) {
-            if (!e.isDirectory()) continue;
-            if (!/^python\d+\.\d+$/.test(e.name)) continue;
-            add(resolve(lib, e.name)); // stdlib (e.g. typing.py lives here)
-            add(resolve(lib, e.name, "site-packages")); // installed packages
-        }
-    }
-    // $PYTHONPATH is ONLY consulted when $propagatedBuildInputs is absent.
-    // In a nix shell $PYTHONPATH carries the full transitive closure (deep,
-    // rarely-queried, costly to index); $propagatedBuildInputs gives the
-    // direct deps. In a regular venv/conda (no $propagatedBuildInputs)
-    // $PYTHONPATH is the venv's own small site-packages and is the only source.
-    if (prop.length === 0) {
-        for (const p of (process.env.PYTHONPATH ?? "").split(":").filter(Boolean)) add(p);
-    }
-
-    return [...roots];
-}
 
 /**
  * Tracks which clients have already had their third-party roots added, so
@@ -259,214 +64,18 @@ export async function discoverThirdPartyRoots(lang: Lang, cwd: string): Promise<
  */
 const clientsWithRoots = new WeakSet<LspClient>();
 
-/** Parse a cpp workspace/symbol `name` (a full C++ qualified signature like
- * `void diskann::Index::occlude_list(const uint32_t location, ...)`) into its
- * qualifier-token chain and bare identifier. Used by code_search_symbol's
- * token-level exact-match rule for cpp, replacing the old substring check
- * (`name.includes("::" + bare)`) which incorrectly ranked
- * `std::my_vector::push_back` as an exact match for `vector::push_back` — the
- * `_` token boundary wasn't honored.
+/**
+ * Third-party/stdlib root discovery, public compatibility wrapper.
  *
- * The ccls `name` is a declarator + return type + parameter list — except for
- * `using`-alias and `typedef` declarations, where ccls formats the name as
- * `using <qual>::<name> = <type>` or `typedef <type> <qual>::<name>`. We detect
- * these by the first token: `using`-alias (name starts with "using" and
- * contains "=") extracts the name from between "using " and "=";
- * `using`-declarations ("using <qual>::<member>", no "=") and `typedef` both
- * parse via the general last-token rule (correct because the defined name is
- * the last qualified identifier). For all other forms we strip the parameter
- * list (everything from the first `(`), take the last whitespace-separated
- * token (the qualified declarator, after stripping leading `&`/`*` ref/pointer
- * qualifiers), then split on top-level `::`. Template arguments are retained
- * so an explicit specialization query can distinguish `Result<void>` from
- * the primary `Result`; matching ignores candidate arguments only when the
- * corresponding query component has none.
- *
- * Examples:
- *   `void diskann::Index::occlude_list(...)`
- *     → qual=["diskann","Index"], bare="occlude_list"
- *   `std::vector<uint32_t> diskann::InMemQueryScratch::_occlude_list_output`
- *     → qual=["diskann","InMemQueryScratch"], bare="_occlude_list_output"
- *   `struct AlphaGadget` → qual=[], bare="AlphaGadget"
- *   `push_back`           → qual=[], bare="push_back"
- *   `using my_type_t = int`
- *     → qual=[], bare="my_type_t"
- *   `using MyGadget::inner_type = int`
- *     → qual=["MyGadget"], bare="inner_type"
- *   `using std::pmr::vector = std::vector<_Tp, polymorphic_allocator<_Tp>>`
- *     → qual=["std","pmr"], bare="vector"
- *   `typedef _Vector_base<_Tp, _Alloc> std::vector::_Base`
- *     → qual=["std","vector"], bare="_Base"
- *   `using _Base::_M_allocate`
- *     → qual=["_Base"], bare="_M_allocate"
- *   `TM_TRAIN_CODEC = 1` (ccls enum member)
- *     → qual=[], bare="TM_TRAIN_CODEC"
- *   `struct temp::detail::int_helper {}` (ccls struct with trailing ` {}`)
- *     → qual=["temp","detail"], bare="int_helper"
- *   `template<> struct temp::detail::int_helper<int> {}`
- *     → qual=["temp","detail"], bare="int_helper<int>" */
-function parseCppSymbolName(name: string): {
-    qualifierTokens: string[];
-    bare: string;
-} {
-    let s = name;
-    // ccls renders anonymous namespace scope as `(anon ns)`, before the
-    // function parameter list. Normalize that scope component first, or the
-    // first `(` below would truncate the declarator at `diskann::` and make
-    // the actual function name fail the exact-match filter.
-    s = s.replace(/::\((?:anon ns|anonymous namespace)\)::/g, "::__anon_scope__::");
-    // Strip the parameter list: everything from the first `(`. ccls's
-    // workspace/symbol `name` has at most one remaining top-level `(...)`
-    // (the function's); return types don't contain `(` for the cases we handle.
-    // Exception: C++ operator() where the first () is the operator NAME, not
-    // the parameter list. In that case, skip past operator() and find the real
-    // parameter list.
-    let parenIdx = s.indexOf("(");
-    if (parenIdx >= 0) {
-        if (
-            s.slice(0, parenIdx).endsWith("operator") &&
-            parenIdx + 1 < s.length &&
-            s[parenIdx + 1] === ")"
-        ) {
-            // operator() found — the () is part of the name.
-            const nextParen = s.indexOf("(", parenIdx + 2);
-            s = nextParen >= 0 ? s.slice(0, nextParen) : s;
-        } else {
-            s = s.slice(0, parenIdx);
-        }
-    }
-    s = s.trim();
-
-    // Handle `using NAME = TYPE` (ccls name: `using <qual>::<name> = <type>`).
-    // We detect this by the first token being "using" AND the name containing
-    // "=". `using`-declarations ("using _Base::_M_allocate", no "=") fall
-    // through to the general last-token rule, which correctly picks up the
-    // member name. `typedef <type> <qual>::<name>` also falls through — the
-    // last qualified identifier IS the defined name.
-    if (s.startsWith("using ") && s.includes("=")) {
-        // Extract the substring between "using " and " =" (or "=").
-        // The equal sign is always on the top level (not inside <> template
-        // args) because ccls formats these names with a top-level " = ".
-        const eqIdx = s.indexOf("=");
-        const between = s.slice(6, eqIdx).trim(); // 6 = "using ".length
-        // `between` is a (possibly qualified) name like `my_type_t` or
-        // `MyGadget::inner_type` or `std::pmr::vector`. Split on `::`.
-        const parts = between.split("::").filter((p) => p.length > 0);
-        if (parts.length === 0) return { qualifierTokens: [], bare: "" };
-        return { qualifierTokens: parts.slice(0, -1), bare: parts[parts.length - 1] };
-    }
-
-    // Strip ` = VALUE` suffix (ccls appends e.g. ` = 1` for enum members).
-    // This handles all non-`using` forms where ccls appends " = <value>".
-    // Look for a top-level ` = ` (not inside `<>`) — the `=` is always at the
-    // top level in ccls's name formatting for enum members.
-    const eqIdx = s.indexOf(" = ");
-    if (eqIdx >= 0 && !s.includes("<") && !s.includes(">")) {
-        // No angle brackets — safe to strip from " = " onward.
-        s = s.slice(0, eqIdx);
-    } else if (eqIdx >= 0) {
-        // Angle brackets present — verify the `=` is at the top level by
-        // counting angle-bracket depth up to eqIdx.
-        let depth = 0;
-        let topLevelEq = -1;
-        for (let i = 0; i < s.length; i++) {
-            const ch = s[i];
-            if (ch === "<") depth++;
-            else if (ch === ">") depth--;
-            else if (ch === "=" && depth === 0) {
-                // Found a top-level `=`. Check it starts with " = ".
-                if (i > 0 && s[i - 1] === " " && i + 1 < s.length && s[i + 1] === " ") {
-                    topLevelEq = i;
-                    break;
-                }
-            }
-        }
-        if (topLevelEq >= 0) {
-            s = s.slice(0, topLevelEq).trim();
-        }
-    }
-
-    // Strip trailing ` {}` — ccls appends ` {}` (empty braces) to the end of
-    // struct/class/interface definitions (e.g. `struct Foo {}`). The braces
-    // are always empty; ccls never includes the body in the name.
-    if (s.endsWith("}")) {
-        const braceIdx = s.lastIndexOf("{");
-        if (braceIdx >= 0 && s.slice(braceIdx + 1).trim() === "}") {
-            s = s.slice(0, braceIdx).trim();
-        }
-    }
-
-    // Strip trailing ` : <inheritance-clause>` suffix — ccls appends this
-    // for typed enums (`enum Foo : int {}`) and struct/class inheritances
-    // (`struct Derived : Base {}`, `struct Derived : NS::Base {}`,
-    // `class Foo : public Bar {}`). After `{}` stripping above, find the
-    // last ` : ` (space-colon-space) and strip everything from it onward.
-    const lastColonSpace = s.lastIndexOf(" : ");
-    if (lastColonSpace >= 0) {
-        s = s.slice(0, lastColonSpace).trim();
-    }
-
-    // General case: the last whitespace-separated token is the qualified
-    // declarator (after return type). Strip leading `&`/`*` (ref/pointer
-    // qualifiers on the decl).
-    const tokens = s.split(/\s+/).filter(Boolean);
-    let last = tokens.length > 0 ? tokens[tokens.length - 1] : "";
-    last = last.replace(/^[&*]+\s*/, "");
-    const parts: string[] = [];
-    let componentStart = 0;
-    let angleDepth = 0;
-    for (let i = 0; i + 1 < last.length; i++) {
-        if (last[i] === "<") angleDepth++;
-        else if (last[i] === ">" && angleDepth > 0) angleDepth--;
-        else if (angleDepth === 0 && last[i] === ":" && last[i + 1] === ":") {
-            const component = last.slice(componentStart, i);
-            if (component) parts.push(component);
-            componentStart = i + 2;
-            i++;
-        }
-    }
-    const finalComponent = last.slice(componentStart);
-    if (finalComponent) parts.push(finalComponent);
-    if (parts.length === 0) return { qualifierTokens: [], bare: "" };
-    return { qualifierTokens: parts.slice(0, -1), bare: parts[parts.length - 1] };
-}
-
-/** Token-level exact-match test for cpp. A candidate is "exact" iff:
- *   - the candidate's bare identifier equals the query's bare name, AND
- *   - for a qualified query, the query's qualifier-token chain is a SUFFIX of
- *     the candidate's qualifier-token chain (token-level, so `vector` matches
- *     `std::vector` and `mystd::vector` but NOT `std::my_vector` — the `_`
- *     token boundary is honored).
- * For a bare query (empty qualifier tokens), only bare equality is required.
- *
- * Replaces the old substring check, which ranked
- * `std::my_vector::push_back` as exact for `vector::push_back`. See
- * docs/code_search_symbol.md. */
-
-function cppNameComponentMatches(query: string, candidate: string): boolean {
-    // Explicit template arguments pin the specialization. Without them, retain
-    // the existing behavior where a base-name query also finds specializations.
-    return query.includes("<")
-        ? candidate === query
-        : stripCppTemplateArguments(candidate) === query;
-}
-
-function isCppExactMatch(
-    queryQualifierTokens: string[],
-    queryBare: string,
-    candidateName: string,
-): boolean {
-    const { qualifierTokens, bare } = parseCppSymbolName(candidateName);
-    if (!cppNameComponentMatches(queryBare, bare)) return false;
-    if (queryQualifierTokens.length === 0) return true; // bare query
-    if (qualifierTokens.length < queryQualifierTokens.length) return false;
-    const offset = qualifierTokens.length - queryQualifierTokens.length;
-    for (let i = 0; i < queryQualifierTokens.length; i++) {
-        if (!cppNameComponentMatches(queryQualifierTokens[i], qualifierTokens[offset + i])) {
-            return false;
-        }
-    }
-    return true;
+ * Kept with its ORIGINAL `(lang, cwd)` signature because
+ * `nav.discoverThirdPartyRoots` is called directly by the python e2e helpers
+ * (and historically by any caller reaching for the nav surface). Only Python
+ * performs discovery; every other language returns `[]` verbatim. New code
+ * should use the strategy's `discoverExtraRoots` instead of this wrapper.
+ */
+export function discoverThirdPartyRoots(lang: Lang, cwd: string): Promise<string[]> {
+    if (lang !== "python") return Promise.resolve([]);
+    return discoverPythonRoots(cwd);
 }
 
 export async function symbol(
@@ -563,29 +172,42 @@ export async function symbol(
         // entirely — calling workspace/symbol on a project-less tsserver throws
         // "No Project." and would abort the whole query.
         if (!(await client.ensureProjectLoaded())) continue;
+        const strategy = strategyFor(lang);
+        if (!strategy) {
+            // Defensive: `detectProjectLanguages` and the caller-supplied
+            // `language` are both constrained to the catalog, so this should
+            // be unreachable. Fail softly per-language so one bad entry cannot
+            // abort results already collected for earlier languages.
+            out.push(`ERROR  [${lang}]  no symbol-search strategy`);
+            continue;
+        }
         // Add third-party/stdlib roots once per server so the symbol search
         // covers third-party trees. Best-effort: failures (no env var, server
         // that doesn't support workspaceFolders) are silent — the query still
-        // runs against the workspace root. Only python (ty) discovers roots;
-        // ccls already indexes third-parties via its compile flags, and the
-        // other languages return [] (see discoverThirdPartyRoots).
+        // runs against the workspace root. Only python discovers roots (see
+        // its strategy's `discoverExtraRoots`); ccls already indexes
+        // third-parties via its compile flags, and the other languages return
+        // [].
         if (!clientsWithRoots.has(client)) {
             clientsWithRoots.add(client);
             try {
-                const roots = await discoverThirdPartyRoots(lang, cwd);
+                const roots = strategy.discoverExtraRoots
+                    ? await strategy.discoverExtraRoots(cwd)
+                    : [];
                 if (roots.length > 0) await client.addWorkspaceFolders(roots);
             } catch {
                 // Discovery or folder-add failed — proceed workspace-only.
             }
         }
-        // Parse the (possibly qualified) query. For cpp (ccls) the server
-        // handles qualified names natively and ranks them, so we pass the
-        // FULL query through; the qualifier is still extracted for the bare
-        // tail used in ranking. For python/typescript (ty) the server only
-        // matches bare names, so we query with the bare tail and filter
-        // results by module path against the qualifier.
-        const { qualifier, bare } = parseSymbolQuery(params.query, lang);
-        const queryForServer = lang === "cpp" ? stripCppTemplateArguments(params.query) : bare;
+        // Parse the (possibly qualified) query and compute the server query.
+        // For cpp (ccls) the server handles qualified names natively and ranks
+        // them, so the strategy passes the FULL query through; the qualifier is
+        // still extracted for the bare tail used in ranking. For
+        // python/typescript (ty) the server only matches bare names, so the
+        // strategy queries with the bare tail and filters results by module
+        // path against the qualifier.
+        const parsed = strategy.parseQuery(params.query);
+        const queryForServer = strategy.queryForServer(parsed);
         let syms: SymbolInformation[];
         try {
             syms = await client.workspaceSymbol(queryForServer);
@@ -595,239 +217,45 @@ export async function symbol(
             out.push(`ERROR  [${lang}]  workspace/symbol failed: ${e}`);
             continue;
         }
-        // For python/typescript: when a qualifier is present, the agent asked
-        // for a SPECIFIC symbol (e.g. workspace `commerce.domain.Invoice` or
-        // dependency `typing.cast`). Keep ONLY exact-name matches, tiered by
-        // how closely the result's module path matches the qualifier. Every
-        // workspace folder participates, including the project root and added
-        // third-party roots; qualification says nothing about symbol ownership.
-        if (lang !== "cpp" && qualifier !== null) {
-            // Qualified query (python/typescript): the agent asked for a
-            // SPECIFIC symbol like `typing.cast`, `cbor2.loads`,
-            // `aiohttp.StreamReader.iter_chunks`, or `aiohttp.web.Request`.
-            // ty does NOT support qualified names natively (querying
-            // "typing.cast" returns 0) and does NOT populate
-            // `SymbolInformation.containerName` (confirmed: every Python
-            // server — ty, pyrefly, pyright — leaves it null), so we query
-            // with the bare tail and tier the results by how well the
-            // qualifier relates to each hit's defining module path.
-            //
-            // The qualifier is split on the language separator; the bare tail
-            // is the last component. `modulePathOf` derives a dotted module
-            // path from the result file's location. Three tiers, first
-            // non-empty wins (so a precise qualifier is never drowned by the
-            // broad fallback):
-            //   Q1 — exact name in any workspace folder, module path matches
-            //        the qualifier precisely (`mod === qualifier` or
-            //        `mod.startsWith(qualifier + ".")`). This is the happy
-            //        path: workspace `commerce.domain.Invoice` ->
-            //        `commerce.domain`, `typing.cast` -> `typing`, and
-            //        `cbor2.loads` -> `cbor2._decoder` (matches `cbor2.`).
-            //   Q2 — exact name in any workspace folder whose module path
-            //        shares the qualifier's LEADING component. The leading
-            //        component is its first path segment (e.g. `aiohttp` for
-            //        `aiohttp.StreamReader` and `aiohttp.web`). This catches
-            //        the two cases `modulePathOf`-vs-qualifier mismatch that
-            //        a precise match silently dropped before:
-            //          * `aiohttp.StreamReader.iter_chunks`: the qualifier's
-            //            `StreamReader` is a CLASS, not a module — the method
-            //            lives in `aiohttp.streams`. Leading component `aiohttp`
-            //            matches.
-            //          * `aiohttp.web.Request`: `Request` is defined in
-            //            `aiohttp.web_request` (re-exported from `aiohttp.web`).
-            //            `aiohttp.web_request` does NOT `.startsWith("aiohttp.web.")`
-            //            (the `_` breaks the `.` boundary), but its leading
-            //            component `aiohttp` matches.
-            //   Q3 — exact name in any workspace folder, anything else. Last
-            //        resort so a qualified query never returns empty when
-            //        exact-name hits exist; the agent can disambiguate from
-            //        the rendered paths.
-            // Fuzzy/partial-name matches are ALWAYS dropped for a qualified
-            // query — the agent asked for a specific symbol, so fuzzy noise
-            // (e.g. `RequestHandler` for `aiohttp.web.Request`) is not useful.
-            const folders = client.workspaceFolderPaths();
-            // Case-SENSITIVE name match for a qualified query: the agent
-            // spelled the exact symbol (`Request`, not `request`), so a
-            // case variant is a different symbol and would be noise. (The
-            // bare-query path below is case-insensitive because ty's fuzzy
-            // search returns case variants and a bare name is ambiguous;
-            // a qualified query is not.)
-            const exactName = (s: SymbolInformation): boolean => s.name === bare;
-            const qualLeading = qualifier.split(QUALIFIED_SEP[lang]!)[0];
-            const modLeadingCmp = (uri: string): string | null => {
-                const mod = modulePathOf(uri, folders);
-                if (mod === null) return null;
-                return mod.split(".")[0];
-            };
-            const exactMatches = syms.filter(exactName);
-            const q1 = exactMatches.filter((s) => {
-                const mod = modulePathOf(s.location.uri, folders);
-                return mod !== null && (mod === qualifier || mod.startsWith(qualifier + "."));
-            });
-            const q2 = exactMatches.filter((s) => {
-                const lead = modLeadingCmp(s.location.uri);
-                return lead !== null && lead === qualLeading;
-            });
-            const q3 = exactMatches;
-            syms = q1.length > 0 ? q1 : q2.length > 0 ? q2 : q3;
-            // TODO(future): precise container disambiguation via documentSymbol.
-            //   Q2 (leading-component fallback) is deliberately loose — it
-            //   returns every exact-name hit whose module shares the
-            //   qualifier's leading package, so `aiohttp.StreamReader.iter_chunks`
-            //   returns the one `iter_chunks` in `aiohttp.streams` (correct)
-            //   but `aiohttp.SomeClass.method` would return every `method` in
-            //   any `aiohttp.*` module if several existed. When Q2 is ambiguous
-            //   (len > 1) AND the qualifier's tail (last component before the
-            //   bare name, e.g. `StreamReader`) looks like a CLASS name, we
-            //   could `documentSymbol` each Q2 hit's file (cached in `docCache`,
-            //   so shared with the resolveSymbolSelStart path below) and keep
-            //   only the hits whose ancestor chain in the hierarchical
-            //   DocumentSymbol tree contains that tail. workspace/symbol is
-            //   flat and leaves `containerName` null on every Python server
-            //   (ty/pyrefly/pyright) and on ccls, but the hierarchical
-            //   documentSymbol tree DOES carry the class container (verified:
-            //   `iter_chunks`'s ancestor in streams.py is `StreamReader`).
-            //   This is a per-result extra round-trip, so gate it behind Q2
-            //   being non-empty AND ambiguous (len > 1) — the common
-            //   single-hit Q2 case needs no extra work. Not implemented yet:
-            //   the current Q2/Q3 fallback is correct for the reported cases
-            //   and the ambiguous case is rare; add this only if an agent
-            //   hits a genuinely ambiguous Q2 in practice.
-        } else {
-            // Bare query, or cpp. Tier the results so the agent sees the most
-            // relevant matches first and is not flooded with third-party fuzzy
-            // noise once third-party/stdlib roots are added:
-            //   T1 — exact name in the workspace root (the agent's own code;
-            //        a bare name almost always means their symbol).
-            //   T2 — exact name in third-party/stdlib (e.g. bare `loads` with
-            //        no workspace `loads` -> cbor2.loads, json.loads, ...).
-            //   T3 — fuzzy matches whose name CONTAINS the bare query as a
-            //        substring (kept only when T1 is empty, after T2, and
-            //        trimmed at SYMBOL_MAX_ROWS_PER_LANG). Fuzzy hits that
-            //        don't even share a substring with the query (e.g.
-            //        `using thrust::iterator_traversal<...>` for `occlude_list`,
-            //        `encode_stringref_namespace` for `tempc`) are pure noise
-            //        that bloats context — they're dropped. The agent almost
-            //        always wants results that at least match by substring.
-            // When T1 is non-empty, emit ONLY T1 (drop T2/T3) — the agent's
-            // bare name is their symbol, and third-party fuzzy hits like
-            // `encode_stringref_namespace` for query `tempc` are pure noise.
-            // When T1 is empty, emit T2 then T3 (trimmed). For cpp (ccls) the
-            // `name` is a full signature; "exact" is a TOKEN-LEVEL match
-            // (isCppExactMatch: bare equality +, for a qualified query, the
-            // query's qualifier-token chain is a suffix of the candidate's) —
-            // so `vector::push_back` ranks `std::vector::push_back` and
-            // `mystd::vector::push_back` as exact but NOT
-            // `std::my_vector::push_back` (the `_` token boundary is honored),
-            // and a bare `push_back` ranks `std::vector::push_back` but NOT
-            // `std::vector::push_back_int`. The T3 substring filter then drops
-            // the rest of the noise (the `thrust::iterator_*` rows ccls's
-            // fuzzy ranker surfaces for almost any query).
-            const folders = client.workspaceFolderPaths();
-            // ty's workspace/symbol is case-INSENSITIVE fuzzy, so `s.name`
-            // may differ in case from the bare query (`TempC` for query `tempc`).
-            // The "exact name" check must therefore be case-insensitive for
-            // python/typescript. C++ (ccls) is case-sensitive and `name` is a
-            // full signature, so cpp uses the token-level rule (isCppExactMatch)
-            // rather than a plain equality.
-            const caseInsensitive = lang === "python" || lang === "typescript";
-            const bareCmp = caseInsensitive ? bare.toLowerCase() : bare;
-            // Query qualifier tokenized on `::` for the cpp token-suffix rule.
-            // Empty for a bare cpp query (qualifier === null).
-            const queryQualifierTokens: string[] =
-                qualifier !== null && lang === "cpp"
-                    ? (() => {
-                          const tokens: string[] = [];
-                          let rest = qualifier;
-                          while (rest) {
-                              const idx = lastCppScopeSeparator(rest);
-                              if (idx < 0) {
-                                  tokens.unshift(rest);
-                                  break;
-                              }
-                              tokens.unshift(rest.slice(idx + 2));
-                              rest = rest.slice(0, idx);
-                          }
-                          return tokens;
-                      })()
-                    : [];
-            // Loose substring match — the name contains the bare query as a
-            // substring. Used to filter out the ccls/ty fuzzy tail that
-            // doesn't even share a substring with the query. Without this
-            // guard a bare cpp query like `occlude_list` lets through
-            // `using thrust::iterator_traversal<...>` (no `occlude_list`
-            // substring at all) and a bare python query like `tempc` lets
-            // through `encode_stringref_namespace` — both pure context-bloat.
-            const nameHasBare = (s: SymbolInformation): boolean => {
-                const nm = caseInsensitive ? s.name.toLowerCase() : s.name;
-                return nm.includes(bareCmp);
-            };
-            const isExact = (s: SymbolInformation): boolean => {
-                if (lang === "cpp") {
-                    // cpp `name` is a full C++ qualified signature
-                    // (`void diskann::Index::occlude_list(...)`). Token-level
-                    // exact: bare equality + (for a qualified query) the query's
-                    // qualifier-token chain is a SUFFIX of the candidate's. This
-                    // replaces the old substring check, which ranked
-                    // `std::my_vector::push_back` as exact for
-                    // `vector::push_back` (the `_` token boundary wasn't
-                    // honored). See isCppExactMatch / parseCppSymbolName.
-                    return isCppExactMatch(queryQualifierTokens, bare, s.name);
-                }
-                // py/ts: case-insensitive bare-name equality.
-                return s.name.toLowerCase() === bareCmp;
-            };
-            const inWorkspaceRoot = (s: SymbolInformation): boolean => {
-                const home = homeFolderOf(s.location.uri, folders);
-                return !!home && home === client.rootPath;
-            };
-            const t1 = syms.filter((s) => isExact(s) && inWorkspaceRoot(s));
-            const t2 = syms.filter((s) => isExact(s) && !inWorkspaceRoot(s));
-            if (t1.length > 0) {
-                // Bare name resolved to the agent's own symbol — drop all
-                // third-party/fuzzy noise.
-                syms = t1;
-            } else {
-                // T3 fuzzy tail: keep only results whose name contains the
-                // bare query as a substring. The agent almost always wants
-                // results that at least match by substring; fuzzy hits
-                // without a shared substring are pure noise that bloats
-                // context. Exact matches are already in t2; this only
-                // scopes the fuzzy tail.
-                const t3 = syms.filter((s) => !isExact(s) && nameHasBare(s));
-                // When `info` is non-empty (fan-out mode), drop the fuzzy T3
-                // tail entirely — the agent asked for detail on specific
-                // symbols, so fuzzy partial-name matches are noise that would
-                // inflate the match count past the fan-out cap. Only exact
-                // matches (t2) are kept; the agent narrows with filters or a
-                // qualified name if it wants a specific fuzzy hit.
-                syms = wantInfo ? t2 : [...t2, ...t3];
-            }
-        }
+        // Instantiate the search context once for this language: folder list
+        // (longest-first), primary root, and the language tag.
+        const ctx: SearchContext = {
+            lang,
+            workspaceFolders: client.workspaceFolderPaths(),
+            rootPath: client.rootPath,
+        };
+        const ranked = strategy.rank(syms, parsed, ctx);
+        // Fan-out mode keeps ONLY exact-name matches (the agent asked for
+        // detail on specific symbols, so the fuzzy tail is noise that would
+        // inflate the match count past the cap). List mode keeps the full
+        // tiered order (exact first, then the substring-guarded fuzzy tail).
+        const candidateRows = wantInfo
+            ? ranked.ordered.filter((_, i) => ranked.exactIndexes.has(i))
+            : ranked.ordered;
         // Dedupe identical (path, line, col, name) rows — ty sometimes
         // returns the same symbol twice (e.g. cbor2.loads appears once per
         // re-export path) and the agent gets no value from the duplicate.
         const seenRows = new Set<string>();
         const deduped: SymbolInformation[] = [];
-        for (const s of syms) {
+        for (const s of candidateRows) {
             const start = s.location.range?.start;
             const key = `${s.location.uri}|${start?.line ?? -1}|${start?.character ?? -1}|${s.name}`;
             if (seenRows.has(key)) continue;
             seenRows.add(key);
             deduped.push(s);
         }
-        syms = deduped;
         // Post-tier filters (apply in BOTH modes — list and fan-out — so an
         // agent can narrow to a single exact match for fan-out). These run
         // AFTER the tier filter so they narrow the exact-match set rather
         // than re-introducing fuzzy hits the tier dropped.
-        if (kindFilter) syms = syms.filter((s) => kindFilter!.has(s.kind ?? 0));
-        if (regexFilter) syms = syms.filter((s) => regexFilter!.test(s.name));
+        let symsFinal = deduped;
+        if (kindFilter) symsFinal = symsFinal.filter((s) => kindFilter!.has(s.kind ?? 0));
+        if (regexFilter) symsFinal = symsFinal.filter((s) => regexFilter!.test(s.name));
         if (wantInfo) {
             // Fan-out mode: collect matches (with resolved identifier
             // positions) across languages; the actual fan-out / over-cap list
             // renders AFTER the per-language loop so the cap is cross-language.
-            for (const s of syms) {
+            for (const s of symsFinal) {
                 const selStart = await resolveSymbolSelStart(client, s, docCache);
                 fanoutMatches.push({ lang, sym: s, selStart });
             }
@@ -840,10 +268,10 @@ export async function symbol(
         // added), trim the fuzzy tail to keep the output useful — exact-name
         // matches are always preserved (they're what the agent asked for).
         let trimmed = 0;
-        let emit = syms;
-        if (syms.length > SYMBOL_MAX_ROWS_PER_LANG) {
-            emit = syms.slice(0, SYMBOL_MAX_ROWS_PER_LANG);
-            trimmed = syms.length - emit.length;
+        let emit = symsFinal;
+        if (symsFinal.length > SYMBOL_MAX_ROWS_PER_LANG) {
+            emit = symsFinal.slice(0, SYMBOL_MAX_ROWS_PER_LANG);
+            trimmed = symsFinal.length - emit.length;
         }
         for (const s of emit) {
             const selStart = await resolveSymbolSelStart(client, s, docCache);

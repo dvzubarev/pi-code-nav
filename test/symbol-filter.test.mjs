@@ -278,6 +278,47 @@ test("python bare 'tempc' with workspace TempC returns ONLY TempC (case-insensit
     }
 });
 
+test("bash matching is case-sensitive (QUERY_NAME must not become an exact hit for query_name)", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-symfilter-bash-case-"));
+    try {
+        const root = dir;
+        const canned = [
+            // A workspace hit spelled with different case. Bash identifiers
+            // are case-sensitive, so this must NOT be treated as exact. Under
+            // the wrong (case-insensitive) ranking it would be T1-exact and
+            // win, hiding the real lowercase fuzzy hit below. Under correct
+            // case-sensitive ranking it is NOT exact, and its name does not
+            // even contain the lowercase bare query as a substring (the T3
+            // substring guard is also case-sensitive for bash), so it must be
+            // dropped entirely.
+            sym("DEPLOY_RELEASE", 12, `${root}/deploy.sh`, 31, 1),
+            // A fuzzy (substring, non-exact) row that DOES contain the bare
+            // query case-sensitively. This is the only surviving row.
+            sym("deploy_release_v2", 12, `/nix/store/fake/lib.sh`, 3, 1),
+        ];
+        const out = await symbol(
+            { query: "deploy_release", language: "bash" },
+            dir,
+            mockClientOf(dir, canned),
+        );
+        const rows = out.split("\n").filter((l) => l.startsWith("[bash]"));
+        const dataRows = rows.filter((l) => !l.startsWith("[bash] #"));
+        assert.equal(
+            dataRows.length,
+            1,
+            `expected ONLY the case-matching substring row, got:\n${out}`,
+        );
+        assert.match(out, /deploy_release_v2/);
+        assert.ok(
+            !/DEPLOY_RELEASE/.test(out),
+            `case-mismatched DEPLOY_RELEASE should NOT be an exact (T1) hit for deploy_release:\n${out}`,
+        );
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
 // ---------------------------------------------------------------------------
 // New: token-level exact rule for cpp, filter_by_kind / filter_by_regex,
 // and the `info` fan-out (dedup, cap, references cap).

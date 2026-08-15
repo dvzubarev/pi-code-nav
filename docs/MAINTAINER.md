@@ -110,6 +110,20 @@
   `ServerPool`. `index.ts` and `scripts/nav-cli.mjs` call the same exported
   implementations via `src/nav.ts`; `scan` is exercised only by the CLI/tests
   and the definition/reference `list_symbols=[...]` paths, not registered as an agent tool.
+- `src/symbol-search/` — the per-language symbol-search strategies. The
+  GENERIC pipeline (server availability, capability check, readiness,
+  root discovery, dedupe, kind/name filters, rendering, fan-out) lives in
+  `symbol.ts`; every per-language ranking/parsing branch is a strategy:
+  `cpp-parse.ts` (pure ccls signature parsing, moved verbatim out of
+  `symbol.ts`), `paths.ts` (home-folder + module-path derivation),
+  `tier.ts` (shared workspace-first T1/T2/T3 tiering), and
+  `strategies/{cpp,dotted,bash}.ts`. `cpp` = template stripping, `::`
+  parsing, token-level exact matching; `dotted` = the shared
+  python/typescript `.` qualification + Q1/Q2/Q3 module-path ranking;
+  `bash` = plain-name. Python root discovery lives in
+  `roots/python.ts`. `types.ts` holds the `SymbolSearchStrategy` interface
+  and the per-language registry (`strategyFor`); `symbol.ts` calls through
+  it and contains NO per-language ranking branches.
 - `src/syntax/` — the tree-sitter role-classification layer, split by
   language: `types.ts` (the `TSNode` view of a web-tree-sitter `Node`,
   `RoleClassifier`, `SymbolRole`, `SymbolEntry`, `fieldOf()`) and
