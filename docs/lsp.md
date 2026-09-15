@@ -101,6 +101,12 @@ leading empty string. Verified against ty's raw output: `greet`=`kind:12`,
   fixed at pool construction, set to `ctx.cwd`).
 - `LspClient.ensureReady()` is idempotent — it stores the ready promise and
   returns it on repeat calls. `start()` is only ever run once per client.
+- `openDocument()` normally refreshes changed on-disk text with a full-content
+  `textDocument/didChange`. For ccls it deliberately sends an awaited
+  `didClose` + `didOpen` pair instead: ccls otherwise reuses the translation
+  unit's old preamble, so a simultaneous header/source API edit can yield a
+  false declaration/definition mismatch even after its indexing pipeline is
+  idle. Reopening rebuilds the preamble from the current filesystem snapshot.
 - Project-readiness tracking lives in `src/project-progress.ts`, behind the
   `ProjectReadiness` policy interface. `WorkDoneProgress` is the shared
   standard `$/progress` token tracker; each language/server pair has a policy:

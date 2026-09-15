@@ -667,25 +667,22 @@ export class LspClient {
      * Open or refresh a document on the server.
      *
      * First call for a URI sends `textDocument/didOpen` with the full text.
-     * Subsequent calls send `textDocument/didChange` (full-content sync) when
-     * the new text differs from what the server last saw — this is what keeps
-     * the server's index/diagnostics fresh after the agent edits the file on
-     * disk. Without it the server keeps analyzing the version-1 snapshot
-     * forever (we don't advertise workspace/didChangeWatchedFiles, so the
-     * server has no other way to learn the file changed). Every nav.ts tool
-     * reads the file fresh from disk before calling in, so a didChange is sent
-     * automatically whenever the on-disk content has changed since the last
-     * tool call touched that file.
+     * Subsequent calls normally send `textDocument/didChange` (full-content
+     * sync) when the new text differs from what the server last saw. ccls is
+     * the exception: a changed document is closed and reopened so its preamble
+     * is rebuilt from current included headers rather than reused from before
+     * a multi-file disk edit. Every nav tool reads the target file fresh from
+     * disk before calling in, so changes are synchronized automatically.
      *
-     * Versioning: starts at 1 on didOpen and monotonically increments on each
-     * didChange. Servers use the version to order updates and to match
-     * publishDiagnostics to the document version they describe; skipping it
-     * or reusing a value confuses servers that track it (tsserver, pyright).
+     * Versioning starts at 1 and monotonically increments on each refresh,
+     * whether that refresh is didChange or ccls's close/reopen sequence.
+     * Servers use it to order updates and match publishDiagnostics to the
+     * document version; reusing a value confuses tsserver and pyright.
      *
      * The text is tracked here (not re-read from disk) because the caller
      * already has it — and comparing against the last-sent text is what lets
-     * us skip the no-op didChange when a tool is called twice on an
-     * unmodified file (avoids re-indexing churn on ccls/tsserver).
+     * us skip synchronization when a tool is called twice on an unmodified
+     * file (avoids re-indexing churn on ccls/tsserver).
      */
     async openDocument(absPath: string, text: string): Promise<void> {
         await this.ensureReady();
@@ -694,24 +691,38 @@ export class LspClient {
         if (existing) {
             if (existing.text === text) return; // no change since last sync
             const version = existing.version + 1;
-            // Full-content sync: send the entire document text. We never
-            // compute incremental (range) edits — the server is told the
-            // whole file each time. The LSP client capability only opts into
-            // willSave/willSaveWaitUntil/didSave; didOpen/didChange/didClose
-            // are always available when `synchronization` is advertised, and
-            // the server's initialize result declares its preferred
-            // textDocumentSync (all four servers we use accept full-content
-            // didChange).
-            // Clear stale diagnostics BEFORE sending didChange. The server can
-            // publish a fresh set as soon as it receives the notification; if
-            // deletion happened after the awaited write, that fresh set could
-            // arrive during the await and then be accidentally erased, causing
-            // code_diagnostics to time out despite a successful publication.
+            // Clear stale diagnostics BEFORE notifying the server. A fast
+            // publication can arrive while the notification write is awaited.
             this.diagnosticsByUri.delete(uri);
-            await notifyWithTimeout(this.conn!, "textDocument/didChange", {
-                textDocument: { uri, version },
-                contentChanges: [{ text }],
-            });
+
+            if (this.cfg.serverKind === "ccls") {
+                // ccls's didChange path reuses the translation unit's existing
+                // preamble. If an included header and this source file were both
+                // edited on disk, that preamble can still contain the old header
+                // declaration and produce a false "out-of-line definition does
+                // not match" diagnostic. Closing and reopening the changed main
+                // file makes ccls rebuild its preamble from the current filesystem
+                // snapshot. Other servers use ordinary full-content didChange.
+                await notifyWithTimeout(this.conn!, "textDocument/didClose", {
+                    textDocument: { uri },
+                });
+                const doc: TextDocumentItem = {
+                    uri,
+                    languageId: languageIdFor(absPath, this.lang),
+                    version,
+                    text,
+                };
+                await notifyWithTimeout(this.conn!, "textDocument/didOpen", {
+                    textDocument: doc,
+                });
+            } else {
+                // Full-content sync: send the entire document text. We never
+                // compute incremental range edits.
+                await notifyWithTimeout(this.conn!, "textDocument/didChange", {
+                    textDocument: { uri, version },
+                    contentChanges: [{ text }],
+                });
+            }
             // The readiness policy may need to re-establish its barrier after
             // a document change (notably ccls's indexing pipeline).
             this.readiness.onDocumentSynced(absPath);

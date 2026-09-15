@@ -35,10 +35,12 @@ server exits or shuts down, preventing a dead or live-but-silent process from
 leaving a dangling waiter.
 The push cache (`diagnosticsByUri` in `LspClient`) is latest-wins per URI,
 populated by a `textDocument/publishDiagnostics` handler installed in
-`start()`. On `didChange`, the old cache entry must be cleared **before**
-sending the notification: a fast server may publish during the awaited write,
-and clearing afterward would erase the fresh result and force the caller to
-wait until its 60-second deadline.
+`start()`. Before refreshing a changed document, the old cache entry must be
+cleared **before** sending the notification: a fast server may publish during
+the awaited write, and clearing afterward would erase the fresh result and
+force the caller to wait until its 60-second deadline. Most servers are
+refreshed with `didChange`; ccls uses `didClose` + `didOpen` so it rebuilds the
+translation unit preamble and sees simultaneous edits to included headers.
 
 ## Why event-driven, not a fixed-budget poll
 
