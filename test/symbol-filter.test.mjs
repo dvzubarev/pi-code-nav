@@ -1173,6 +1173,45 @@ test("parseCppSymbolName: ccls anonymous-namespace function is an exact bare mat
     }
 });
 
+test("parseCppSymbolName: top-level anonymous-namespace function is token-exact", async () => {
+    const { symbol } = await load("./src/nav.ts");
+    const dir = await mkdtemp(resolve(tmpdir(), "code-nav-top-level-anon-ns-"));
+    try {
+        // Exact raw workspace/symbol row from ccls for DiskANN's
+        // read_block_counters. Unlike the nested diskann::(anon ns) case,
+        // this top-level anonymous namespace has no `::` before `(anon ns)`.
+        // The second row is a fuzzy cousin that must be dropped when the real
+        // symbol is recognized as the token-exact T1 match.
+        const canned = [
+            sym(
+                "block_counters_t (anon ns)::read_block_counters(const std::string &configured_device)",
+                12,
+                `${dir}/disk_index_searcher.cpp`,
+                234,
+                17,
+            ),
+            sym(
+                "block_counters_t (anon ns)::read_block_counters_extra(const std::string &configured_device)",
+                12,
+                `${dir}/disk_index_searcher.cpp`,
+                250,
+                17,
+            ),
+        ];
+        const out = await symbol(
+            { query: "read_block_counters", language: "cpp" },
+            dir,
+            mockClientOf(dir, canned),
+        );
+        const rows = out.split("\n").filter((line) => line.startsWith("[cpp]"));
+        assert.equal(rows.length, 1, `expected only the token-exact row, got:\n${out}`);
+        assert.match(rows[0], /\(anon ns\)::read_block_counters\(/);
+        assert.doesNotMatch(out, /read_block_counters_extra/);
+    } finally {
+        await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
+    }
+});
+
 test("info fan-out: enum member (kind 13) `NAME = VALUE` gets code body, not dropped", async () => {
     const { symbol } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-fanout-enum-"));

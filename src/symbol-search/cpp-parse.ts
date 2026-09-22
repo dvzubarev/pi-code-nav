@@ -131,9 +131,12 @@ export function parseCppSymbolName(name: string): {
     let s = name;
     // ccls renders anonymous namespace scope as `(anon ns)`, before the
     // function parameter list. Normalize that scope component first, or the
-    // first `(` below would truncate the declarator at `diskann::` and make
-    // the actual function name fail the exact-match filter.
-    s = s.replace(/::\((?:anon ns|anonymous namespace)\)::/g, "::__anon_scope__::");
+    // first `(` below would truncate the declarator and make the actual
+    // function name fail the exact-match filter. Do not require a preceding
+    // `::`: a top-level anonymous namespace is rendered after the return type
+    // as `block_counters_t (anon ns)::read_block_counters(...)`, while a
+    // nested one is rendered as `diskann::(anon ns)::helper(...)`.
+    s = s.replace(/\((?:anon ns|anonymous namespace)\)::/g, "__anon_scope__::");
     // Strip the parameter list: everything from the first `(`. ccls's
     // workspace/symbol `name` has at most one remaining top-level `(...)`
     // (the function's); return types don't contain `(` for the cases we handle.
