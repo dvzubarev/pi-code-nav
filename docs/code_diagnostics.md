@@ -2,7 +2,32 @@
 
 > Implementation notes for the diagnostics tool (`nav.ts` `diagnostics()`,
 > `lsp-client.ts` push cache + event-driven wait). Reports errors/warnings for
-> a file.
+> a Python, C/C++, or Bash file.
+
+## TypeScript/JavaScript: use the compiler CLI
+
+`code_diagnostics` rejects all TypeScript/JavaScript extensions before acquiring
+an LSP client. Other navigation tools remain supported. The error includes a
+copyable shell command for the target file's project, for example:
+
+```bash
+cd '/path/to/project' && npx tsc --noEmit --pretty false -p tsconfig.json
+```
+
+The nearest ancestor `tsconfig.json` is used, starting at the target file's
+directory, not the session cwd. This lookup is only for CLI guidance; it does
+not change the LSP workspace-root policy. With no config, the command names the
+file explicitly and uses compiler defaults (`--allowJs --checkJs` for JavaScript,
+`--jsx preserve` for JSX/TSX). Paths are shell-quoted. The command is suggested,
+not executed. Projects with custom configs or build scripts may prefer their
+own type-check command. Project checks intentionally cover more than one file;
+passing a source file to tsc would bypass the project's config.
+
+Why not push fallback? typescript-language-server suppresses repeated empty
+diagnostic sets. After a clean-to-clean edit, clearing our stale cache and
+waiting for a fresh publication therefore times out even though analysis has
+finished. Keeping the stale cache or interpreting silence as clean could hide
+errors. Rather than add a server-specific diagnostics protocol, use tsc.
 
 ## The contract: one call → one result string
 
@@ -25,7 +50,7 @@ LSP has two diagnostics flows:
 
 The pull model is the natural fit for the synchronous contract — but only
 pyright/ty answer the pull request (see table below). For servers that
-reject the pull request (tsserver, bash-language-server, ccls), the tool
+reject the pull request (bash-language-server, ccls), the tool
 falls back to an **event-driven** wait on the push model: `openDocument` →
 (for cpp, via `ensureDocumentReady`) the ccls pipeline poll →
 `LspClient.waitForPushedDiagnostics()`.
@@ -93,11 +118,9 @@ The new flow waits on ccls's authoritative pipeline state and then on the diagno
    `undefined` so the tool falls through to the honest pull-error path
    instead of hanging or timing out.
 
-For non-cpp push servers (tsserver, bash-language-server) there is no
-project-wide index, so the indexing wait is skipped and the tool waits directly
-for publication. Tsserver's diagnostics delayer is normally 300-800ms; the
-60-second deadline is only a safety bound for a live server that never
-publishes.
+For Bash there is no cpp-style indexing barrier, so the tool waits directly
+for publication. The 60-second deadline is a safety bound for a live server
+that never publishes.
 
 ## The push fallback is gated on a client capability we must advertise
 
@@ -107,7 +130,8 @@ typescript-language-server gates its ENTIRE diagnostics flow on
 sends *zero* `publishDiagnostics` notifications no matter how long you wait
 — the server silently does nothing. `LspClient.start()` advertises
 `textDocument.publishDiagnostics: { versionSupport: false }` in client caps
-precisely so tsserver/bash-language-server/ccls opt in. This is harmless to
+so push servers can opt in (TypeScript diagnostics are nevertheless excluded
+from the tool, as explained above). This is harmless to
 pyright/ty (they ignore the field and answer pull anyway).
 
 ## Do NOT gate on advertised SERVER capabilities
@@ -121,7 +145,7 @@ we support, verified empirically:
 | pyright-langserver | **no** | **yes** (answers anyway) | no (pull works) |
 | ccls | no | no (rejected) | yes (event-driven, after indexing) |
 | bash-language-server | no | no (rejected: "Unhandled method") | yes (event-driven) |
-| typescript-language-server | no | no (rejected: "Unhandled method") | yes (event-driven) |
+| typescript-language-server | no | no (rejected: "Unhandled method") | not supported; use tsc CLI |
 
 `LspClient.supportsPullDiagnostics()` exists as introspection (it reads
 `ServerCapabilities.diagnosticProvider`) but the tool does **not** pre-gate
@@ -140,7 +164,7 @@ notification arrives before then (including when the server terminates), it
 returns a hard error that names both failures, for example:
 
 ```
-typescript: diagnostics unavailable for src/example.ts: the server does not support pull diagnostics (Unhandled method textDocument/diagnostic); push diagnostics were not received within 60 seconds
+bash: diagnostics unavailable for src/example.sh: the server does not support pull diagnostics (Unhandled method textDocument/diagnostic); push diagnostics were not received within 60 seconds
 ```
 
 This means diagnostics could not be obtained—not that the file has no issues.
@@ -173,11 +197,3 @@ embeds the primary's position/severity/message. Standalone info diagnostics and
 unrecognized multiline messages remain visible. This turns ccls's repeated
 warning + instantiation-info chains into grouped warnings with unique notes,
 without treating arbitrary multiline messages from other servers as duplicates.
-
-## tsserver's lazy project load (a prerequisite)
-
-typescript-language-server does NOT implement the pull model. It also does
-not load a project until the first `didOpen` of a file in that project — so
-diagnostics for a never-opened file won't appear until `openDocument` primes
-the push cache (which `code_diagnostics` does before the event-driven push
-wait).

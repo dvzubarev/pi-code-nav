@@ -181,7 +181,9 @@
   stable response contracts rather than full snapshots of language-server
   output. E2E files are split by language and tool, for example
   `test/python.definition.e2e.mjs`, `test/cpp.symbol.e2e.mjs`, and
-  `test/typescript.diagnostics.e2e.mjs`.
+  `test/typescript.outline.e2e.mjs`. TypeScript diagnostics are unsupported;
+  `test/typescript.diagnostics.test.mjs` checks the compiler CLI guidance
+  without a language server.
 - **Full extension (commands register)**: `printf '{"type":"get_commands"}' |
 pi --mode rpc --no-session | grep code-nav`. The tools themselves are best
   exercised by the LLM after `/code-nav`, or by `npm run test:e2e`.

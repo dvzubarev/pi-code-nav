@@ -177,7 +177,7 @@ test("nav.diagnostics uses a 60-second push deadline and reports an unavailable 
     const { diagnostics } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
-        await writeFile(resolve(dir, "svc.ts"), "const x = 1;\n", "utf8");
+        await writeFile(resolve(dir, "svc.sh"), "echo hello\n", "utf8");
         const client = {
             openDocument: async () => {},
             ensureDocumentReady: async () => {},
@@ -190,8 +190,8 @@ test("nav.diagnostics uses a 60-second push deadline and reports an unavailable 
             },
         };
         await assert.rejects(
-            diagnostics({ path: "svc.ts" }, dir, async () => client),
-            /diagnostics unavailable for svc\.ts: the server does not support pull diagnostics .*; push diagnostics were not received within 60 seconds/,
+            diagnostics({ path: "svc.sh" }, dir, async () => client),
+            /diagnostics unavailable for svc\.sh: the server does not support pull diagnostics .*; push diagnostics were not received within 60 seconds/,
         );
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));
@@ -202,7 +202,7 @@ test("nav.diagnostics treats an empty push notification as a clean result", asyn
     const { diagnostics } = await load("./src/nav.ts");
     const dir = await mkdtemp(resolve(tmpdir(), "code-nav-err-"));
     try {
-        await writeFile(resolve(dir, "svc.ts"), "const x = 1;\n", "utf8");
+        await writeFile(resolve(dir, "svc.sh"), "echo hello\n", "utf8");
         const client = {
             openDocument: async () => {},
             ensureDocumentReady: async () => {},
@@ -212,8 +212,8 @@ test("nav.diagnostics treats an empty push notification as a clean result", asyn
             waitForPushedDiagnostics: async () => [],
         };
         assert.equal(
-            await diagnostics({ path: "svc.ts" }, dir, async () => client),
-            "(no diagnostics for svc.ts)",
+            await diagnostics({ path: "svc.sh" }, dir, async () => client),
+            "(no diagnostics for svc.sh)",
         );
     } finally {
         await import("node:fs/promises").then((fs) => fs.rm(dir, { recursive: true }));

@@ -5,9 +5,10 @@
  * for the server to analyze it), then tries the LSP 3.17 pull model
  * (textDocument/diagnostic). The push model (textDocument/publishDiagnostics)
  * is the fallback for servers that reject the pull request
- * (typescript-language-server, bash-language-server, ccls). The push wait is
- * event-driven with a generous 60-second deadline, so a live server that
- * silently omits the notification cannot hang the tool indefinitely.
+ * (bash-language-server, ccls). TypeScript/JavaScript are unsupported and
+ * return a concrete tsc command instead of contacting a language server.
+ * The push wait is event-driven, with a generous 60-second deadline to prevent
+ * a live but silent server from hanging the tool indefinitely.
  *
  * Capability advertisement is unreliable: pyright implements
  * textDocument/diagnostic but does NOT advertise diagnosticProvider, while
@@ -16,8 +17,8 @@
  * actual response (or error) decide. See docs/code_diagnostics.md.
  */
 
-import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { basename, dirname, extname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { LSPErrorCodes, type Diagnostic } from "vscode-languageserver-protocol/node";
 import { DEFAULT_PUSH_DIAGNOSTICS_TIMEOUT_MS, type LspClient } from "./lsp-client";
@@ -46,6 +47,30 @@ function pullFailureDescription(error: Error): string {
         : `the pull-diagnostics request failed (${error.message})`;
 }
 
+/** Find the target file's config, not the session cwd (which may be another project). */
+async function typeScriptCheckCommand(absPath: string): Promise<string> {
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    let dir = dirname(absPath);
+    while (true) {
+        try {
+            if ((await stat(join(dir, "tsconfig.json"))).isFile()) {
+                return `cd ${quote(dir)} && npx tsc --noEmit --pretty false -p tsconfig.json`;
+            }
+        } catch {
+            // No config here; tsc normally searches parent directories too.
+        }
+        const parent = dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+    // Without a config, explicitly check this file using compiler defaults.
+    const ext = extname(absPath).toLowerCase();
+    const flags =
+        ([".js", ".jsx", ".mjs", ".cjs"].includes(ext) ? " --allowJs --checkJs" : "") +
+        ([".tsx", ".jsx"].includes(ext) ? " --jsx preserve" : "");
+    return `cd ${quote(dirname(absPath))} && npx tsc --noEmit --pretty false${flags} ${quote(basename(absPath))}`;
+}
+
 export async function diagnostics(
     params: DiagnosticsParams,
     cwd: string,
@@ -62,6 +87,11 @@ export async function diagnostics(
         // sets isError: true — the agent gets a machine-readable failure bit
         // instead of an inline string indistinguishable from a data row.
         throw new Error(`Cannot read ${abs}: ${e}`);
+    }
+    if (lang === "typescript") {
+        throw new Error(
+            `TypeScript/JavaScript diagnostics are unsupported by code_diagnostics. Run:\n${await typeScriptCheckCommand(abs)}`,
+        );
     }
     let client: LspClient;
     try {
@@ -110,7 +140,7 @@ export async function diagnostics(
         }
     }
     // FALLBACK: push model (textDocument/publishDiagnostics). Servers that reject
-    // the pull model (typescript-language-server, bash-language-server, ccls)
+    // the pull model (bash-language-server, ccls)
     // still emit publishDiagnostics notifications after didOpen, but only if the
     // client advertised textDocument.publishDiagnostics in initialize (which
     // LspClient.start() does). This wait is now EVENT-DRIVEN: instead of polling

@@ -232,9 +232,11 @@ immediately, and the Ty/Bash policies carry their own workspace barriers).
 target document first, so they load the project naturally and don't need the
 cold workspace-search barrier.
 
-**Diagnostics via push fallback.** typescript-language-server does NOT
-implement the LSP 3.17 `textDocument/diagnostic` pull model — see
-`code_diagnostics.md`.
+**Diagnostics are not supported by `code_diagnostics`.** The server does not
+implement pull diagnostics and suppresses repeated empty push results after
+clean-to-clean edits. The tool rejects TS/JS files without contacting the
+server and suggests a concrete `tsc --noEmit` CLI command instead. Other
+TypeScript navigation tools are unaffected. See `code_diagnostics.md`.
 
 ### Bash server background analysis
 
