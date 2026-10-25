@@ -38,14 +38,15 @@
 bare="cast")` on the language's separator (`.` for python/typescript, `::`
    for cpp in `src/symbol-search/strategies/cpp.ts`). For python/typescript the server is queried with the BARE name
    (ty only matches bare names — `typing.cast` returns 0), then results are
-   tiered by how well the qualifier relates to each hit's defining module
-   path (`modulePathOf`, now `src/symbol-search/paths.ts`, derived from the
-   file's path relative to its home workspace folder, longest-match-first).
+   tiered by the defining module path AND lexical container ancestry.
+   `modulePathOf` (`src/symbol-search/paths.ts`) derives the module from the
+   file's path relative to its home workspace folder, longest-match-first;
+   hierarchical `documentSymbol` trees recover enclosing classes/functions.
    For cpp (ccls) the FULL query is
    passed (ccls handles `::` qualified natively) and the separator is used
    only to extract the bare tail for ranking.
 
-## Why `containerName` can't be used
+## Recovering containers from `documentSymbol`
 
 **No Python server populates `SymbolInformation.containerName`** (confirmed:
 ty, pyrefly, pyright all leave it `null` — the data simply isn't on the
@@ -55,6 +56,50 @@ qualified signature `std::vector::push_back`, which is why the cpp path
 string-matches the qualifier against `name` instead.) The hierarchical
 `documentSymbol` tree DOES carry the class container (the ancestor chain of
 a method is its class), but `workspace/symbol` is flat and discards it.
+Qualified dotted queries first narrow candidate files with a second
+`workspace/symbol` lookup (see below). The survivors are located in their
+file's `documentSymbol` tree, matching **name AND range**, then recovering the
+ancestor names. This separates same-named methods in sibling classes and
+retains each overload declaration. The tree is cached per file per search
+call and shared with identifier-position resolution (`cachedDocumentSymbols`
+in `src/lsp-resolution.ts`); failed/flat responses cache an empty tree rather
+than inventing ancestry. Bare queries do not need this extra ranking step.
+
+### Container prefilter: intersect before reading files
+
+For `LazyRecords.items`, the strategy searches bare `items`, then (unless a
+module match already settled the query) bare `LazyRecords`. Keeping the
+member query first preserves the single-query fast path for `typing.cast`
+and other module-qualified names.
+
+- Container results must have the exact, case-sensitive name and a container
+  kind (class/interface/struct/enum, namespace/module, or function/method).
+  Fuzzy names and variable/import-binding hits do not constrain the search.
+- Intersect member candidates with container hits by source URI. With a
+  multi-line container range, also require it to contain the member range.
+  Single-line ranges may be identifier-only (e.g. tsserver), so they narrow
+  by file only; ancestry verification still decides the match.
+- Only the surviving files are read/opened for `documentSymbol`. Merely
+  sharing a file/range is NOT sufficient to accept a result: the full lexical
+  ancestry is verified afterward, including module prefixes and nested names.
+- For `Outer.Inner.items`, search bare `Inner`, then verify `Outer.Inner`.
+  All exact container declarations participate, including dependency files;
+  do not apply workspace-first ranking to this internal container search.
+- If the extra request fails or has no usable exact container declarations,
+  use the original ancestry-verification path. This avoids false negatives
+  for servers that omit containers or return import bindings. A known
+  container with no member candidates in its files can return empty without
+  opening any candidate files.
+
+This is a best-effort optimization over the server's index. A server that
+returns only a subset of multiple same-named container declarations can also
+limit the result set; the LSP response provides no completeness indicator.
+Inherited members/import aliases remain outside lexical qualification.
+
+Verified on `ppllib` with ty 0.0.56 and 0.0.91: `items` yields 19 exact rows
+across 16 files; `LazyRecords` yields one container, and only
+`lazy_records.py` needs a document-symbol request. All three overload/
+implementation declarations still expand references.
 
 ## Tiered qualified-name filter (first non-empty tier wins)
 
@@ -68,22 +113,37 @@ All workspace folders participate in every tier: the project root as well as
 added dependency/stdlib roots. A qualified name identifies a module or
 container; it does **not** imply that the symbol is third-party.
 
-- **Q1** = exact name, module path matches the qualifier precisely
-  (`mod === qualifier` or `mod.startsWith(qualifier + ".")`). Happy paths:
-  workspace `commerce.domain.Invoice` -> `commerce.domain`, `typing.cast` ->
-  `typing`, and `cbor2.loads` -> `cbor2._decoder`.
-- **Q2** = exact name, module path shares the qualifier's LEADING component
-  (first `.`-segment). Graceful fallback for two cases a
-  precise module-path match silently dropped before:
-    - `aiohttp.StreamReader.iter_chunks` — the qualifier's `StreamReader` is a
-      CLASS, not a module; the method lives in `aiohttp.streams`. Shared
-      leading component `aiohttp` matches.
-    - `aiohttp.web.Request` — `Request` is DEFINED in `aiohttp.web_request`
-      (re-exported from `aiohttp.web`). `aiohttp.web_request` does NOT
-      `.startsWith("aiohttp.web.")` (the `_` breaks the `.` boundary), but the
-      leading component `aiohttp` matches.
-- **Q3** = exact name in any workspace folder, anything else (last resort so
-  a qualified query never returns empty when exact-name hits exist).
+1. **Module match** = exact name, module path matches the qualifier precisely
+   (`mod === qualifier` or `mod.startsWith(qualifier + ".")`). Happy paths:
+   workspace `commerce.domain.Invoice` -> `commerce.domain`, `typing.cast` ->
+   `typing`, and `cbor2.loads` -> `cbor2._decoder`. Return immediately without
+   fetching ancestry for unrelated files. Module-only queries may intentionally
+   return multiple same-named members from that module.
+2. **Lexical match** = exact name, qualifier is a token-boundary suffix of
+   the enclosing-name chain or of `module + enclosing-name chain`.
+   `LazyRecords.items`, `Outer.Inner.items`, and
+   `ppllib.core.lazy_records.LazyRecords.items` all work. Names are
+   case-sensitive; `MyLazyRecords` does not match `LazyRecords`.
+3. **Constrained package re-export fallback** = exact name, defining module
+   shares the qualifier's leading component, with verified ancestry:
+   - For a member, some module-prefix/container-suffix split of the qualifier
+     must match the module prefix and enclosing names. Thus
+     `aiohttp.StreamReader.iter_chunks` finds `StreamReader` in
+     `aiohttp.streams`, but not another class's `iter_chunks`.
+   - Verified top-level symbols retain the package-level fallback for
+     `aiohttp.web.Request` -> `aiohttp.web_request.Request`. This remains an
+     approximation: it does not prove that the requested module re-exports
+     the name, and can return multiple top-level definitions in the package.
+
+There is **no unqualified exact-name fallback** for qualified queries. The old
+Q3 returned every `items` in the workspace AND stdlib for `LazyRecords.items`,
+then misleadingly called them all exact matches and blocked `include` fan-out.
+If no tier matches, return no symbols rather than discarding the qualifier.
+
+This is lexical qualification, not expression evaluation: inherited members
+and arbitrary import aliases are not resolved through class/import graphs.
+Without hierarchical document symbols, module matching still works, but
+container matching and the re-export fallback cannot be verified.
 
 ## Ranking (workspace-first tiering)
 
@@ -108,8 +168,8 @@ ty's `workspace/symbol` is case-insensitive FUZZY — a bare `cast` returns
   `tempc`, `load_package_tests` for `load`, `occlude_list_v2` for
   `occlude_list`).
 
-For qualified Python/TypeScript queries the tiered Q1/Q2/Q3 filter above
-applies; fuzzy/partial-name matches are always dropped. Qualified C++ list
+For qualified Python/TypeScript queries the module/container tiers above
+apply; fuzzy/partial-name matches are always dropped. Qualified C++ list
 mode may retain a T3 fuzzy tail because ccls searches full signatures. C++
 `include` mode keeps exact matches only.
 
@@ -173,8 +233,8 @@ unchanged) still drops the rest of the ccls fuzzy noise (the
 
 For Python/TypeScript (ty), the `name` is the bare identifier and "exact" is
 case-insensitive bare equality (case-insensitive because ty's fuzzy search
-returns case variants). Disambiguation across modules uses the Q1/Q2/Q3
-tiered module-path filter above; disambiguation across overloads (identical
+returns case variants). Disambiguation across modules and containers uses the qualified-name tiers
+above; disambiguation across overloads (identical
 name columns) cannot be done with `name_pattern`—see the `include` fan-out
 section below.
 
@@ -192,7 +252,7 @@ block containing the requested `--- section ---` blocks.
 Pipeline (when `include` is non-empty):
 
 ```
-workspace/symbol → tier (Q1/Q2/Q3 or T1/T2/T3) → drop T3 fuzzy tail
+workspace/symbol → tier (module/container/re-export or T1/T2/T3) → drop T3 fuzzy tail
   → kinds → name_pattern → dedupe
   → len==0 ? "(no symbols matching ...)"
   : len≤5 ? fan-out per match

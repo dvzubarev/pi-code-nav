@@ -10,7 +10,7 @@
  * — it contains no per-language ranking branches.
  */
 
-import type { SymbolInformation } from "vscode-languageserver-protocol";
+import type { DocumentSymbol, SymbolInformation } from "vscode-languageserver-protocol";
 import type { Lang } from "../languages/types";
 import { cppStrategy } from "./strategies/cpp";
 import { pythonStrategy, typescriptStrategy } from "./strategies/dotted";
@@ -41,6 +41,10 @@ export interface SearchContext {
     readonly workspaceFolders: readonly string[];
     /** The filesystem path of the primary workspace root. */
     readonly rootPath: string;
+    /** Cached hierarchical symbols for a candidate's file (empty on failure). */
+    documentSymbols(uri: string): Promise<DocumentSymbol[]>;
+    /** Raw server search for an additional bare name (e.g. a container). */
+    workspaceSymbols(query: string): Promise<SymbolInformation[]>;
 }
 
 /**
@@ -65,7 +69,11 @@ export interface SymbolSearchStrategy {
     /** Transform the parsed query into what the server's `workspace/symbol` sees. */
     queryForServer(parsed: ParsedQuery): string;
     /** Tier + filter raw `workspace/symbol` results most-relevant-first. */
-    rank(symbols: SymbolInformation[], parsed: ParsedQuery, context: SearchContext): RankedSymbols;
+    rank(
+        symbols: SymbolInformation[],
+        parsed: ParsedQuery,
+        context: SearchContext,
+    ): RankedSymbols | Promise<RankedSymbols>;
     /** Best-effort discovery of extra (third-party/stdlib) workspace roots. */
     discoverExtraRoots?(cwd: string): Promise<string[]>;
 }

@@ -19,8 +19,8 @@ import type { LspClient } from "./lsp-client";
 import type { Lang } from "./languages/types";
 import { detectProjectLanguages } from "./detect";
 import { ALL_LANGS, ClientProvider } from "./nav-core";
-import { renderSymbolInfo, symbolKindFromName } from "./render";
-import { resolveSymbolSelStart } from "./lsp-resolution";
+import { renderSymbolInfo, symbolKindFromName, uriToPath } from "./render";
+import { cachedDocumentSymbols, resolveSymbolSelStart } from "./lsp-resolution";
 import {
     SYMBOL_FANOUT_MAX_MATCHES,
     renderSymbolFanOut,
@@ -223,8 +223,10 @@ export async function symbol(
             lang,
             workspaceFolders: client.workspaceFolderPaths(),
             rootPath: client.rootPath,
+            documentSymbols: (uri) => cachedDocumentSymbols(client, uriToPath(uri), docCache),
+            workspaceSymbols: (query) => client.workspaceSymbol(query),
         };
-        const ranked = strategy.rank(syms, parsed, ctx);
+        const ranked = await strategy.rank(syms, parsed, ctx);
         // Fan-out mode keeps ONLY exact-name matches (the agent asked for
         // detail on specific symbols, so the fuzzy tail is noise that would
         // inflate the match count past the cap). List mode keeps the full

@@ -52,7 +52,8 @@
   what killed the old "keep nav-cli.mjs in sync with index.ts by hand" landmine.
 - `src/lsp-resolution.ts` — LSP-assisted symbol/body resolution (needs an
   `LspClient` for `documentSymbols` + reads source from disk):
-  `resolveSymbolSelStart`, `resolveDefBodyRange`, and the `DocumentSymbol`
+  `cachedDocumentSymbols` (shared by qualified search ranking and selection
+  resolution), `resolveSymbolSelStart`, `resolveDefBodyRange`, and the `DocumentSymbol`
   tree search helpers (`findDocSymbolBySelStart`, `findDocSymbolByNameRange`,
   `rangeContains`, `posKey`). 0-based LSP coords; imported by `definition.ts`
   and `symbol.ts`.
@@ -120,8 +121,11 @@
   `tier.ts` (shared workspace-first T1/T2/T3 tiering), and
   `strategies/{cpp,dotted,bash}.ts`. `cpp` = template stripping, `::`
   parsing, token-level exact matching; `dotted` = the shared
-  python/typescript `.` qualification + Q1/Q2/Q3 module-path ranking;
-  `bash` = plain-name. Python root discovery lives in
+  python/typescript `.` qualification + module/container/re-export ranking;
+  `bash` = plain-name. Dotted ranking can asynchronously recover lexical
+  containers through the search context's cached document-symbol loader,
+  after an extra bare-container workspace search intersects candidate files
+  (and spanning ranges). No language-specific ranking branches live in `symbol.ts`. Python root discovery lives in
   `roots/python.ts`. `types.ts` holds the `SymbolSearchStrategy` interface
   and the per-language registry (`strategyFor`); `symbol.ts` calls through
   it and contains NO per-language ranking branches.

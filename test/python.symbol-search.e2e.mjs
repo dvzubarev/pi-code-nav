@@ -30,7 +30,9 @@ pythonScenario("code_search_symbol auto-detects Python in a multi-module service
 // Reproduce from the repository root:
 //   CODE_NAV_ROOT="$PWD/test/fixtures/symbol-search-python" node scripts/nav-cli.mjs symbol commerce.domain.Invoice python
 pythonScenario("code_search_symbol resolves a qualified workspace module symbol", {
-    given: { fixtures },
+    // Match the CLI root above: the fixture wrapper is not a Python package.
+    // The old unqualified fallback accidentally hid this incorrect test root.
+    given: { fixtures, workspaceRoot: "symbol-search-python" },
     when: ({ root, clientOf }) =>
         nav.symbol({ query: "commerce.domain.Invoice", language: "python" }, root, clientOf),
     then: [

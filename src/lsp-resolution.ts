@@ -22,6 +22,29 @@ import { uriToPath } from "./render";
 // DocumentSymbol tree searches (sel-start resolution, body-range resolution)
 // ---------------------------------------------------------------------------
 
+/** Load a hierarchical document-symbol tree once per file per search call.
+ * Flat responses and failed requests cannot establish ancestry; cache an empty
+ * tree so ranking and identifier resolution don't repeat those requests. */
+export async function cachedDocumentSymbols(
+    client: LspClient,
+    path: string,
+    docCache: Map<string, DocumentSymbol[]>,
+): Promise<DocumentSymbol[]> {
+    const cached = docCache.get(path);
+    if (cached) return cached;
+    let syms: DocumentSymbol[] = [];
+    try {
+        let text = "";
+        try {
+            text = await readFile(path, "utf8");
+        } catch {}
+        const got = await client.documentSymbols(path, text);
+        syms = got.filter((s): s is DocumentSymbol => "selectionRange" in s);
+    } catch {}
+    docCache.set(path, syms);
+    return syms;
+}
+
 /**
  * Resolve the identifier (selectionRange) start for a SymbolInformation.
  *
@@ -46,18 +69,7 @@ export async function resolveSymbolSelStart(
     if (!rangeStart) return undefined;
     // Try documentSymbol lookup for an exact selectionRange.
     try {
-        let syms = docCache.get(path);
-        if (!syms) {
-            let text: string;
-            try {
-                text = await readFile(path, "utf8");
-            } catch {
-                text = "";
-            }
-            const got = await client.documentSymbols(path, text);
-            syms = got as DocumentSymbol[];
-            docCache.set(path, syms);
-        }
+        const syms = await cachedDocumentSymbols(client, path, docCache);
         const match = findDocSymbolByNameRange(syms, sym.name, sym.location.range);
         if (match?.selectionRange?.start) {
             return {
