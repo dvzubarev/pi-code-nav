@@ -17,11 +17,12 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { LSPErrorCodes, type Diagnostic } from "vscode-languageserver-protocol/node";
 import { DEFAULT_PUSH_DIAGNOSTICS_TIMEOUT_MS, type LspClient } from "./lsp-client";
 import { awaitReadyForQuery, ClientProvider, UnknownLanguageError } from "./nav-core";
-import { langForFile, renderDiagnostic, toAbs } from "./render";
+import { diagnosticMessage, langForFile, renderDiagnostic, toAbs } from "./render";
 
 export interface DiagnosticsParams {
     path: string;
@@ -156,11 +157,128 @@ export async function diagnostics(
     return renderDiagnostics(params.path, diags as Diagnostic[]);
 }
 
-/** Shared renderer for the diagnostic list (pull or push origin). */
+interface EmbeddedNote {
+    path: string;
+    line: number;
+    column: number;
+    kind: string;
+    message: string;
+}
+
+/** ccls embeds Clang's note chain in message, even with relatedInformation enabled. */
+function splitDiagnostic(diagnostic: Diagnostic) {
+    const message = diagnosticMessage(diagnostic);
+    const unchanged = { diagnostic, message, notes: [] as EmbeddedNote[] };
+    if (diagnostic.source !== "ccls") return unchanged;
+    const [primary, ...paragraphs] = message.split(/\r?\n\s*\r?\n/);
+    if (paragraphs.length === 0) return unchanged;
+    const notes: EmbeddedNote[] = [];
+    for (const paragraph of paragraphs) {
+        const match = /^(.*):(\d+):(\d+):\s*(note|warning|error|remark):\s+([\s\S]+)$/.exec(
+            paragraph,
+        );
+        // Don't truncate arbitrary multiline diagnostics: only a fully recognized
+        // Clang location/severity suffix is safe to separate from the message.
+        if (!match) return unchanged;
+        notes.push({
+            path: match[1],
+            line: Number(match[2]),
+            column: Number(match[3]),
+            kind: match[4],
+            message: match[5],
+        });
+    }
+    return { diagnostic, message: primary, notes };
+}
+
+type SplitDiagnostic = ReturnType<typeof splitDiagnostic>;
+
+/** Fold only info entries proven to mirror a primary's embedded note. */
+function isMirroredNote(entry: SplitDiagnostic, parent: SplitDiagnostic, path: string): boolean {
+    if (entry.diagnostic.source !== "ccls" || entry.diagnostic.severity !== 3) return false;
+    const kind = parent.diagnostic.severity === 1 ? "error" : "warning";
+    const start = parent.diagnostic.range.start;
+    if (
+        entry.notes.length === 0 ||
+        !entry.notes.every(
+            (note) =>
+                note.kind === kind &&
+                note.line === start.line + 1 &&
+                note.column === start.character + 1 &&
+                note.message === parent.message,
+        )
+    )
+        return false;
+    const entryStart = entry.diagnostic.range.start;
+    return parent.notes.some(
+        (note) =>
+            note.kind === "note" &&
+            note.line === entryStart.line + 1 &&
+            note.column === entryStart.character + 1 &&
+            note.message === entry.message &&
+            (note.path === path || note.path === basename(path)),
+    );
+}
+
+/** Shared renderer for pull and push; never mutates the server's cached list. */
 function renderDiagnostics(path: string, diags: Diagnostic[]): string {
     if (diags.length === 0) {
         return `(no diagnostics for ${path})`;
     }
-    const lines = diags.map((d) => renderDiagnostic(path, d));
-    return `${diags.length} diagnostic(s) for ${path}:\n` + lines.join("\n");
+    const entries = diags.map(splitDiagnostic);
+    const parents = entries.filter(
+        ({ diagnostic, notes }) =>
+            diagnostic.source === "ccls" &&
+            notes.length > 0 &&
+            (diagnostic.severity === 1 || diagnostic.severity === 2),
+    );
+    const groups = new Map<
+        string,
+        { entry: SplitDiagnostic; count: number; notes: Map<string, EmbeddedNote> }
+    >();
+    let folded = 0;
+    for (const entry of entries) {
+        if (parents.some((parent) => isMirroredNote(entry, parent, path))) {
+            folded++;
+            continue;
+        }
+        const d = entry.diagnostic;
+        // Full range + severity/source/code + primary text: never merge issues
+        // at distinct locations or different diagnostic kinds. Only ccls's
+        // recognized context suffix is excluded; other messages match verbatim.
+        const key = JSON.stringify([
+            d.range.start.line,
+            d.range.start.character,
+            d.range.end.line,
+            d.range.end.character,
+            d.severity,
+            d.source,
+            d.code,
+            entry.message,
+        ]);
+        let group = groups.get(key);
+        if (!group) {
+            group = { entry, count: 0, notes: new Map() };
+            groups.set(key, group);
+        }
+        group.count++;
+        for (const note of entry.notes) {
+            group.notes.set(JSON.stringify(note), note);
+        }
+    }
+    const lines: string[] = [];
+    for (const { entry, count, notes } of groups.values()) {
+        const repeats = count > 1 ? `  [${count} occurrences]` : "";
+        lines.push(
+            renderDiagnostic(path, { ...entry.diagnostic, message: entry.message }) + repeats,
+        );
+        for (const note of notes.values()) {
+            lines.push(`  ${note.path}:${note.line}:${note.column}  ${note.kind}: ${note.message}`);
+        }
+    }
+    const summary =
+        groups.size === diags.length
+            ? ""
+            : ` (${diags.length} reported${folded ? `; ${folded} related diagnostics folded` : ""})`;
+    return `${groups.size} diagnostic(s) for ${path}${summary}:\n` + lines.join("\n");
 }

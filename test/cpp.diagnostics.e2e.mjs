@@ -32,6 +32,40 @@ cppScenario("code_diagnostics reports a C++ type error after ccls indexing", {
     ],
 });
 
+cppScenario("code_diagnostics compacts repeated ccls template warnings and their info mirrors", {
+    given: {
+        files: {
+            "index.h": `
+                struct Base {
+                    virtual void save() {}
+                    virtual void load() {}
+                };
+                template<class T> struct Index : Base {
+                    void save() {}
+                    void load() override {}
+                };
+            `,
+            "templates.cpp": `
+                #include "index.h"
+                Index<float> floats;
+                Index<int> ints;
+            `,
+            "build/compile_commands.json": compileCommands("templates.cpp"),
+        },
+    },
+    when: ({ root, clientOf }) => nav.diagnostics({ path: "templates.cpp" }, root, clientOf),
+    then: [
+        matches(/^1 diagnostic\(s\) for templates\.cpp .*related diagnostics folded/),
+        matches(/warning\s+ccls.*'save'.*not marked 'override'.*\[2 occurrences\]/),
+        matches(/note: in instantiation of template class 'Index<float>'/),
+        matches(/note: in instantiation of template class 'Index<int>'/),
+        notMatches(
+            /\sinfo\s+ccls/,
+            "mirrored instantiation notes must not be separate diagnostics",
+        ),
+    ],
+});
+
 cppScenario("code_diagnostics reports a clean C++ translation unit", {
     given: {
         files: {

@@ -153,7 +153,26 @@ diagnostic range start, +1 from 0-based LSP), severity name
 message. Output positions are reusable as `line`/`column` input to
 `code_hover`/`code_definition`/`code_references`, matching the round-trip
 contract of the other tools. Both pull and push diagnostics render through
-the same path (`renderDiagnostics` in `nav.ts`).
+the same path (`renderDiagnostics` in `src/diagnostics.ts`).
+
+The list renderer deduplicates entries within a single server response, not just
+across servers. Groups retain first-seen order and match by full range,
+severity, source, code (including its type), and message. Repeated entries show
+`[N occurrences]`; the header counts displayed groups and includes the original
+reported count whenever compaction occurs. The server's cached diagnostics are
+never mutated.
+
+For **ccls only**, a message's blank-line-separated suffix is recognized as
+Clang context only when *every* paragraph has a `path:line:column: severity:`
+shape (including the newline-before-`note:` variant). Such diagnostics group by
+the primary message and union their distinct context notes, printed once each
+under the group. Template-instantiation notes are not discarded or truncated.
+An info diagnostic is folded into a primary only when both sides agree: the
+primary embeds that info's position/message in the requested file, and the info
+embeds the primary's position/severity/message. Standalone info diagnostics and
+unrecognized multiline messages remain visible. This turns ccls's repeated
+warning + instantiation-info chains into grouped warnings with unique notes,
+without treating arbitrary multiline messages from other servers as duplicates.
 
 ## tsserver's lazy project load (a prerequisite)
 

@@ -1,4 +1,4 @@
-// Pull-diagnostic cancellation/retry regressions; no real language server needed.
+// Diagnostic rendering and cancellation/retry regressions; no real server needed.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { load } from "./helpers.mjs";
 
 const { diagnostics } = await load("./src/diagnostics.ts");
+const { renderDiagnostic } = await load("./src/render.ts");
 const cancelled = (code = -32802, data = { retriggerRequest: true }) =>
     Object.assign(new Error("server cancelled the request"), { code, data });
 const diagnostic = {
@@ -33,6 +34,151 @@ function clientWith(pullDiagnostics) {
         waitForPushedDiagnostics: async () => assert.fail("must retry pull, not wait for push"),
     };
 }
+
+async function renderList(t, diags, pushed = false) {
+    const root = await workspace(t);
+    const client = clientWith(async () => {
+        if (pushed) throw new Error("Method not found");
+        return diags;
+    });
+    client.waitForPushedDiagnostics = async () => diags;
+    return diagnostics({ path: "a.py" }, root, async () => client);
+}
+
+function at(line, character = 0) {
+    return { start: { line, character }, end: { line, character: character + 1 } };
+}
+
+for (const pushed of [false, true]) {
+    test(`diagnostics deduplicates identical entries from one ${pushed ? "push" : "pull"} response`, async (t) => {
+        const diags = [diagnostic, structuredClone(diagnostic), diagnostic];
+        const before = structuredClone(diags);
+        const result = await renderList(t, diags, pushed);
+        assert.equal(
+            result,
+            "1 diagnostic(s) for a.py (3 reported):\n" +
+                renderDiagnostic("a.py", diagnostic) +
+                "  [3 occurrences]",
+        );
+        assert.deepEqual(diags, before, "must not mutate the server's cached diagnostics");
+    });
+}
+
+test("diagnostics keeps different ranges, severities, sources, codes, and messages separate", async (t) => {
+    const diags = [
+        diagnostic,
+        { ...diagnostic, range: at(1) },
+        { ...diagnostic, range: { start: diagnostic.range.start, end: { line: 0, character: 2 } } },
+        { ...diagnostic, severity: 2 },
+        { ...diagnostic, source: "pyright" },
+        { ...diagnostic, code: 1 },
+        { ...diagnostic, code: "1" },
+        { ...diagnostic, message: "Another error" },
+    ];
+    const result = await renderList(t, diags);
+    assert.equal(
+        result,
+        `8 diagnostic(s) for a.py:\n${diags.map((d) => renderDiagnostic("a.py", d)).join("\n")}`,
+    );
+});
+
+const warningText = "'save' overrides a member function but is not marked 'override'";
+function cclsInstantiation(type, line) {
+    const note = `in instantiation of template class 'Index<${type}>' requested here`;
+    const common = { source: "ccls", code: 3, relatedInformation: [] };
+    return [
+        {
+            ...common,
+            range: at(62, 27),
+            severity: 2,
+            message: `${warningText}\n\na.py:${line}:5: note: ${note}\n\n/base.h:50:18:\nnote: overridden virtual function is here`,
+        },
+        {
+            ...common,
+            range: at(line - 1, 4),
+            severity: 3,
+            message: `${note}\n\nindex.h:63:28: warning: ${warningText}`,
+        },
+    ];
+}
+
+for (const pushed of [false, true]) {
+    test(`diagnostics groups ccls template warnings and folds reciprocal info notes (${pushed ? "push" : "pull"})`, async (t) => {
+        const diags = [...cclsInstantiation("float", 100), ...cclsInstantiation("int", 200)];
+        // ccls can repeat exactly the same instantiation chain as well.
+        diags.push(...structuredClone(cclsInstantiation("int", 200)));
+        const before = structuredClone(diags);
+        const result = await renderList(t, diags, pushed);
+        assert.equal(
+            result,
+            "1 diagnostic(s) for a.py (6 reported; 3 related diagnostics folded):\n" +
+                `a.py:63:28  warning  ccls (3)  ${warningText}  [3 occurrences]\n` +
+                "  a.py:100:5  note: in instantiation of template class 'Index<float>' requested here\n" +
+                "  /base.h:50:18  note: overridden virtual function is here\n" +
+                "  a.py:200:5  note: in instantiation of template class 'Index<int>' requested here",
+        );
+        assert.deepEqual(diags, before);
+    });
+}
+
+test("diagnostics keeps standalone and non-reciprocal ccls info diagnostics", async (t) => {
+    const [parent, mirror] = cclsInstantiation("float", 100);
+    const otherFile = { ...parent, message: parent.message.replace("a.py:100", "other.py:100") };
+    const unrelated = {
+        ...mirror,
+        message: mirror.message.replace(warningText, "A different warning"),
+    };
+    const extraContext = {
+        ...mirror,
+        message: mirror.message + "\n\nother.h:1:1: note: Unique context",
+    };
+    for (const diags of [
+        [mirror],
+        [parent, unrelated],
+        [otherFile, mirror],
+        [parent, extraContext],
+    ]) {
+        const result = await renderList(t, diags);
+        assert.match(result, new RegExp(`^${diags.length} diagnostic\\(s\\)`));
+        assert.doesNotMatch(result, /folded/);
+        assert.match(result, /  info  ccls/);
+    }
+});
+
+test("diagnostics also folds mirrored ccls error context with CRLF separators", async (t) => {
+    const diags = cclsInstantiation("float", 100).map((d) => ({
+        ...d,
+        severity: d.severity === 2 ? 1 : d.severity,
+        message: d.message.replace("warning:", "error:").replaceAll("\n", "\r\n"),
+    }));
+    const result = await renderList(t, diags);
+    assert.match(
+        result,
+        /^1 diagnostic\(s\) for a.py \(2 reported; 1 related diagnostics folded\):/,
+    );
+    assert.match(result, /a.py:63:28  error  ccls/);
+    assert.match(result, /a.py:100:5  note: in instantiation/);
+    assert.doesNotMatch(result, /  info  ccls/);
+});
+
+test("diagnostics preserves arbitrary multiline messages, including ccls suffixes it cannot parse", async (t) => {
+    for (const source of ["ty", "ccls"]) {
+        const d = {
+            ...diagnostic,
+            source,
+            message: "Primary message\n\nDetailed explanation\n  with indentation",
+        };
+        assert.equal(
+            await renderList(t, [d]),
+            `1 diagnostic(s) for a.py:\n${renderDiagnostic("a.py", d)}`,
+        );
+    }
+    const d = { ...cclsInstantiation("float", 100)[0], source: "custom" };
+    assert.equal(
+        await renderList(t, [d]),
+        `1 diagnostic(s) for a.py:\n${renderDiagnostic("a.py", d)}`,
+    );
+});
 
 test("diagnostics retries retriggerable cancellation and renders the real result", async (t) => {
     const root = await workspace(t);
