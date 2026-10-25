@@ -42,6 +42,22 @@ force the caller to wait until its 60-second deadline. Most servers are
 refreshed with `didChange`; ccls uses `didClose` + `didOpen` so it rebuilds the
 translation unit preamble and sees simultaneous edits to included headers.
 
+## Retry server-cancelled pulls before considering push
+
+A concurrent `didOpen` or `didChange` can invalidate ty's in-flight analysis,
+causing `textDocument/diagnostic` to fail with LSP `ServerCancelled` (`-32802`)
+and `data: { retriggerRequest: true }`. This is an explicit request to retry,
+not evidence that pull diagnostics are unsupported. Waiting for push instead
+used to stall the tool for 60 seconds and then fail because ty uses pull.
+
+`diagnostics()` retries that exact code/data combination up to **four total
+attempts**, backing off **25/50/100ms** between attempts so a burst of document
+syncs can settle. Each tool call has its own retry budget; retries neither
+reopen the document nor serialize other calls. An exhausted cancellation budget
+is a hard diagnostics-unavailable error immediately, with no push wait. Other
+errors (including cancellation without `retriggerRequest: true`) retain the
+existing push fallback, as does a null pull result.
+
 ## Why event-driven, not a fixed-budget poll
 
 An earlier implementation polled `getPushedDiagnostics()` on a fixed ~1.2s
@@ -101,7 +117,7 @@ we support, verified empirically:
 
 | Server | Advertises `diagnosticProvider`? | `textDocument/diagnostic` works? | Push fallback used? |
 | --- | --- | --- | --- |
-| ty (Astral) | yes | yes (returns diagnostics) | no (pull works) |
+| ty (Astral) | yes | yes (returns diagnostics; retriggerable cancellation is retried) | no (pull works) |
 | pyright-langserver | **no** | **yes** (answers anyway) | no (pull works) |
 | ccls | no | no (rejected) | yes (event-driven, after indexing) |
 | bash-language-server | no | no (rejected: "Unhandled method") | yes (event-driven) |
@@ -116,9 +132,10 @@ more accurate than trusting advertised capabilities.
 
 ## Success and failure messages
 
-An empty pull result or an empty push notification is authoritative and renders
-`(no diagnostics for <path>)`. A rejected pull request alone is not evidence
-that the file is clean. The tool waits up to 60 seconds for the push. If no
+An empty pull diagnostic list or an empty push notification is authoritative
+and renders `(no diagnostics for <path>)`. A rejected pull request alone is
+not evidence that the file is clean. Except for exhausted retriggerable
+cancellations (above), the tool waits up to 60 seconds for the push. If no
 notification arrives before then (including when the server terminates), it
 returns a hard error that names both failures, for example:
 

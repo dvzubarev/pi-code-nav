@@ -17,13 +17,25 @@
  */
 
 import { readFile } from "node:fs/promises";
-import type { Diagnostic } from "vscode-languageserver-protocol";
+import { setTimeout as delay } from "node:timers/promises";
+import { LSPErrorCodes, type Diagnostic } from "vscode-languageserver-protocol/node";
 import { DEFAULT_PUSH_DIAGNOSTICS_TIMEOUT_MS, type LspClient } from "./lsp-client";
 import { awaitReadyForQuery, ClientProvider, UnknownLanguageError } from "./nav-core";
 import { langForFile, renderDiagnostic, toAbs } from "./render";
 
 export interface DiagnosticsParams {
     path: string;
+}
+
+const MAX_PULL_DIAGNOSTICS_ATTEMPTS = 4;
+
+function isRetriggerableCancellation(error: unknown): boolean {
+    if (typeof error !== "object" || error === null) return false;
+    const { code, data } = error as {
+        code?: unknown;
+        data?: { retriggerRequest?: unknown } | null;
+    };
+    return code === LSPErrorCodes.ServerCancelled && data?.retriggerRequest === true;
 }
 
 function pullFailureDescription(error: Error): string {
@@ -73,10 +85,28 @@ export async function diagnostics(
     // from (below) rather than trusting advertised capabilities.
     let diags: Diagnostic[] | null | undefined;
     let pullError: Error | null = null;
-    try {
-        diags = await client.pullDiagnostics(abs);
-    } catch (e) {
-        pullError = e instanceof Error ? e : new Error(String(e));
+    for (let attempt = 0; attempt < MAX_PULL_DIAGNOSTICS_ATTEMPTS; attempt++) {
+        try {
+            diags = await client.pullDiagnostics(abs);
+            break;
+        } catch (e) {
+            if (isRetriggerableCancellation(e)) {
+                // A concurrent didOpen/didChange can invalidate ty's in-flight
+                // analysis. ServerCancelled + retriggerRequest asks us to pull
+                // again, not wait for a push that a pull server may never send.
+                // Back off briefly (25/50/100ms) to let a burst of syncs settle;
+                // do not reopen the document or serialize unrelated tool calls.
+                if (attempt === MAX_PULL_DIAGNOSTICS_ATTEMPTS - 1) {
+                    throw new Error(
+                        `${lang}: diagnostics unavailable for ${params.path}: the server cancelled the pull-diagnostics request after ${MAX_PULL_DIAGNOSTICS_ATTEMPTS} attempts`,
+                    );
+                }
+                await delay(25 * 2 ** attempt);
+                continue;
+            }
+            pullError = e instanceof Error ? e : new Error(String(e));
+            break;
+        }
     }
     // FALLBACK: push model (textDocument/publishDiagnostics). Servers that reject
     // the pull model (typescript-language-server, bash-language-server, ccls)
