@@ -17,6 +17,28 @@ pythonScenario("code_search_symbol finds the requested workspace class", {
     ],
 });
 
+pythonScenario("code_search_symbol expands Python stub definitions, hover, and references", {
+    given: {
+        files: {
+            "native.pyi": "def scan_map(raw: bytes, /) -> dict[str, int]: ...",
+            "main.py": "from native import scan_map\nresult = scan_map(b'')",
+        },
+    },
+    when: ({ root, clientOf }) =>
+        nav.symbol(
+            { query: "scan_map", include: ["definition", "hover", "references"] },
+            root,
+            clientOf,
+        ),
+    then: [
+        matches(/\[python\] Function scan_map  .*native\.pyi:1:5/, "stub symbol missing"),
+        matches(/--- definition ---[\s\S]*def scan_map\(raw: bytes/, "stub definition missing"),
+        matches(/--- hover ---[\s\S]*scan_map/, "stub hover missing"),
+        matches(/--- references ---[\s\S]*main\.py:2:10/, "call reference missing"),
+        notMatches(/ERROR:/, "stub expansion failed"),
+    ],
+});
+
 thirdPartyScenario("code_search_symbol finds qualified stdlib typing.cast", {
     given: project("import typing\nx = typing.cast(int, 5)"),
     when: ({ root, clientOf }) =>

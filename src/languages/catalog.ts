@@ -77,7 +77,7 @@ export const LANGUAGES = [
     {
         id: "python",
         displayName: "Python",
-        sourceExts: [".py"],
+        sourceExts: [".py", ".pyi"],
         rootMarkers: [
             "pyproject.toml",
             "setup.py",

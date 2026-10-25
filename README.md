@@ -123,7 +123,7 @@ Supported source extensions:
 | Language              | Extensions                                 |
 |-----------------------|--------------------------------------------|
 | C/C++/Objective-C     | `.c .cc .cpp .cxx .h .hh .hpp .hxx .m .mm` |
-| Python                | `.py`                                      |
+| Python                | `.py .pyi`                                 |
 | Bash                  | `.sh .bash`                                |
 | TypeScript/JavaScript | `.ts .tsx .js .jsx .mts .cts .mjs .cjs`    |
 

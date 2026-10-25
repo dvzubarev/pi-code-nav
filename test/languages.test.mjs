@@ -66,6 +66,14 @@ test(".m and .mm route to cpp in BOTH EXT_LANG and SOURCE_EXTS (the fix)", async
     assert.equal(langForFile("Thing.mm"), "cpp");
 });
 
+test("Python stubs route to python and count as source files", async () => {
+    const { SOURCE_EXTS, EXT_LANG, langForFile } = await loadCatalog();
+    assert.equal(EXT_LANG[".pyi"], "python");
+    assert.ok(SOURCE_EXTS.python.includes(".pyi"));
+    assert.equal(langForFile("package/_native.pyi"), "python");
+    assert.equal(langForFile("package/_native.PYI"), "python");
+});
+
 test("langForFile is case-insensitive and returns null for unknown/extensionless", async () => {
     const { langForFile } = await loadCatalog();
     assert.equal(langForFile("app.PY"), "python");

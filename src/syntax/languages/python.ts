@@ -13,7 +13,7 @@ import { classifyPythonRole } from "../classifiers/python";
 export const pythonLanguage = {
     grammar: "python",
     lspLanguage: "python",
-    extensions: [".py"],
+    extensions: [".py", ".pyi"],
     classifyRole: classifyPythonRole,
     qualifierSeparator: ".",
     referenceNodes: {

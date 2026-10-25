@@ -87,6 +87,17 @@ test("source-only: .cpp file with no build marker is found by the scan", async (
     }
 });
 
+test("stub-only: .pyi file detects Python without a project marker", async () => {
+    const root = await mkroot();
+    try {
+        await writeFile(join(root, "native.pyi"), "def scan_map(raw: bytes) -> dict: ...\n");
+        const { detectProjectLanguages } = await load("./src/nav.ts");
+        assert.deepEqual(await detectProjectLanguages(root), ["python"]);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test("source scan is recursive (file in a subdir)", async () => {
     const root = await mkroot();
     try {

@@ -67,6 +67,8 @@ test("every referenceNodes + definitionPolicy node type is named in its grammar"
 test("tsLangForFile and tsLangToLspLang route through profiles", async () => {
     const { tsLangForFile, tsLangToLspLang } = await loadRegistry();
     assert.equal(tsLangForFile("x.py"), "python");
+    assert.equal(tsLangForFile("x.pyi"), "python");
+    assert.equal(tsLangForFile("x.PYI"), "python");
     assert.equal(tsLangForFile("x.cpp"), "cpp");
     assert.equal(tsLangForFile("x.tsx"), "tsx");
     assert.equal(tsLangForFile("x.jsx"), "tsx");
